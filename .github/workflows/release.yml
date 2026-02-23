@@ -21,17 +21,13 @@ jobs:
             os: macos-latest
             artifact: clawmacdo-darwin-arm64
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2022
             artifact: clawmacdo-windows-amd64
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup MSVC (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -42,12 +38,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
-      - name: Install OpenSSL (Windows)
+      - name: Setup Windows build env
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
           vcpkg install openssl:x64-windows-static-md
-          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+          echo "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
