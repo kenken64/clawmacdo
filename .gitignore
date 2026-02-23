@@ -1,0 +1,6 @@
+/target
+*.exe
+*.pdb
+.env
+envdump.txt
+build_output.txt
