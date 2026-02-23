@@ -5,3 +5,5 @@
 envdump.txt
 build_output.txt
 clawmacdo-*.tar.gz
+clawmacdo-*.zip
+.cargo/config.toml
