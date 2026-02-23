@@ -20,7 +20,7 @@ jobs:
             os: macos-latest
             artifact: clawmacdo-darwin-arm64
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-latest
             artifact: clawmacdo-darwin-amd64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -30,6 +30,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
