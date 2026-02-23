@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -19,9 +20,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: clawmacdo-darwin-arm64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact: clawmacdo-darwin-amd64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: clawmacdo-windows-amd64
@@ -43,6 +41,13 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Install OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vcpkg install openssl:x64-windows-static-md
+          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
