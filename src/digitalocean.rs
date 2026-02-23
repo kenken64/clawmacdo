@@ -50,6 +50,7 @@ struct GetDropletResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct DropletInfo {
     pub id: u64,
     pub name: String,
@@ -72,6 +73,7 @@ pub struct NetworkV4 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct RegionInfo {
     pub slug: String,
     pub name: String,
