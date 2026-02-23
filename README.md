@@ -1,5 +1,8 @@
 # clawmacdo
 
+[![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
+[![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
+
 Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an existing DigitalOcean droplet to a new DigitalOcean droplet — with Claude Code and Codex pre-installed.
 
 ## Features
@@ -10,7 +13,23 @@ Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an exist
 - **Status**: list all `openclaw`-tagged droplets with IPs
 - **List backups**: show local backup archives with sizes and dates
 
+## Download
+
+Pre-built binaries for every release are available on the [Releases page](https://github.com/kenken64/clawmacdo/releases):
+
+| Platform | Architecture | File |
+|----------|-------------|------|
+| Windows  | x86_64      | `clawmacdo-windows-amd64.zip` |
+| Linux    | x86_64      | `clawmacdo-linux-amd64.tar.gz` |
+| macOS    | Apple Silicon (arm64) | `clawmacdo-darwin-arm64.tar.gz` |
+
 ## Installation
+
+### From release binary
+
+Download the archive for your platform from [Releases](https://github.com/kenken64/clawmacdo/releases), extract, and add to your `PATH`.
+
+### From source
 
 ```bash
 cargo build --release
@@ -18,10 +37,11 @@ cargo build --release
 
 The binary will be at `target/release/clawmacdo.exe` (Windows) or `target/release/clawmacdo` (Linux/macOS).
 
-### Prerequisites
+#### Build prerequisites
 
 - Rust toolchain (stable)
 - On Windows: MSVC build tools + Windows SDK (for `libssh2` native compilation)
+- On Linux: `libssl-dev`, `pkg-config`
 
 ## Usage
 
@@ -58,6 +78,23 @@ Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`),
 
 Missing values trigger interactive prompts.
 
+#### Deploy flow (12 steps)
+
+```
+ 1. Resolve parameters (interactive prompts for missing values)
+ 2. Generate Ed25519 SSH key pair → ~/.clawmacdo/keys/
+ 3. Upload public key to DigitalOcean
+ 4. Create droplet with cloud-init (tagged "openclaw")
+ 5. Poll until droplet is active (5min timeout)
+ 6. Wait for SSH to accept connections (2min timeout)
+ 7. Wait for cloud-init to complete (10min timeout)
+ 8. SCP backup archive to server (if selected)
+ 9. Extract configs into ~/.openclaw/, preserve .env
+10. Start OpenClaw gateway via systemd
+11. Save deploy record to ~/.clawmacdo/deploys/
+12. Print provisioning summary
+```
+
 ### Migrate (DO to DO)
 
 ```bash
@@ -68,6 +105,8 @@ clawmacdo migrate \
   --source-ip=164.90.x.x \
   --source-key=~/.ssh/id_ed25519
 ```
+
+Connects to the source droplet, creates a remote backup, downloads it locally, then runs the full deploy flow on a new droplet with the backup auto-selected.
 
 ### Status
 
@@ -109,6 +148,26 @@ Tokens can be passed as flags or environment variables:
 | `~/.clawmacdo/backups/` | Backup archives |
 | `~/.clawmacdo/keys/` | Generated SSH key pairs |
 | `~/.clawmacdo/deploys/` | Deploy record JSON files |
+
+## Project structure
+
+```
+src/
+├── main.rs              # Clap CLI entry point
+├── commands/
+│   ├── mod.rs
+│   ├── backup.rs        # Scan + tar.gz ~/.openclaw/
+│   ├── deploy.rs        # 12-step deploy orchestrator
+│   ├── migrate.rs       # DO→DO: remote backup + deploy
+│   ├── status.rs        # DO API → list tagged droplets
+│   └── list_backups.rs  # List local backup files
+├── config.rs            # App paths, constants, DeployRecord
+├── digitalocean.rs      # DO API client
+├── ssh.rs               # Ed25519 keygen, SSH exec, SCP
+├── cloud_init.rs        # Cloud-init YAML template
+├── ui.rs                # Interactive prompts, spinners, summary
+└── error.rs             # Typed errors (thiserror)
+```
 
 ## License
 
