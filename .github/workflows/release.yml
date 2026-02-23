@@ -20,8 +20,8 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: clawmacdo-darwin-arm64
-          - target: x86_64-pc-windows-msvc
-            os: windows-2022
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
             artifact: clawmacdo-windows-amd64
 
     runs-on: ${{ matrix.os }}
@@ -47,33 +47,28 @@ jobs:
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Setup Windows build env
-        if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          vcpkg install openssl:x64-windows-static-md
-          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
-          echo "RUSTFLAGS=-C target-feature=+crt-static" >> $env:GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+          if echo "${{ matrix.target }}" | grep -q windows; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+          fi
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
-        if: runner.os != 'Windows'
+        if: ${{ !contains(matrix.target, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf ../../../${{ matrix.artifact }}.tar.gz clawmacdo
           cd ../../..
 
       - name: Package (Windows)
-        if: runner.os == 'Windows'
+        if: ${{ contains(matrix.target, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.artifact }}.zip clawmacdo.exe
+          zip ../../../${{ matrix.artifact }}.zip clawmacdo.exe
           cd ../../..
 
       - name: Upload artifact
