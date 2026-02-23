@@ -1,0 +1,59 @@
+name: Changelog
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get the previous tag (if any)
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+          COMMIT_DATE=$(git log -1 --pretty=%ci)
+
+          {
+            echo "notes<<NOTES_EOF"
+            echo "## Commit \`${COMMIT_SHA}\`"
+            echo ""
+            echo "**${COMMIT_MSG}**"
+            echo ""
+            echo "- Author: ${COMMIT_AUTHOR}"
+            echo "- Date: ${COMMIT_DATE}"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "### Changes since ${PREV_TAG}"
+              echo ""
+              git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges
+            else
+              echo "### Recent commits"
+              echo ""
+              git log --pretty=format:"- %s (%h)" --no-merges -20
+            fi
+            echo ""
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "sha=${COMMIT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Update rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest Build (main)"
+          body: ${{ steps.notes.outputs.notes }}
+          prerelease: true
+          make_latest: false
