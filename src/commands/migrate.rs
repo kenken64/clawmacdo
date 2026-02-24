@@ -35,9 +35,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
     let sp = ui::spinner("[Migrate 2/5] Creating backup on source droplet...");
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let remote_archive = format!("/tmp/openclaw_migrate_{timestamp}.tar.gz");
-    let tar_cmd = format!(
-        "cd /root && tar czf {remote_archive} .openclaw/ 2>/dev/null && echo ok"
-    );
+    let tar_cmd = format!("cd /root && tar czf {remote_archive} .openclaw/ 2>/dev/null && echo ok");
     let tar_ip = source_ip.clone();
     let tar_key = source_key.clone();
     tokio::task::spawn_blocking(move || ssh::exec(&tar_ip, &tar_key, &tar_cmd))
@@ -53,11 +51,9 @@ pub async fn run(params: MigrateParams) -> Result<()> {
     let dl_key = source_key.clone();
     let dl_remote = remote_archive.clone();
     let dl_local = local_archive.clone();
-    tokio::task::spawn_blocking(move || {
-        ssh::scp_download(&dl_ip, &dl_key, &dl_remote, &dl_local)
-    })
-    .await?
-    .context("Failed to download backup from source")?;
+    tokio::task::spawn_blocking(move || ssh::scp_download(&dl_ip, &dl_key, &dl_remote, &dl_local))
+        .await?
+        .context("Failed to download backup from source")?;
     sp.finish_with_message(format!(
         "[Migrate 3/5] Backup downloaded: {}",
         local_archive.display()

@@ -111,14 +111,21 @@ pub fn prompt_backup() -> Result<Option<PathBuf>, anyhow::Error> {
     entries.reverse(); // newest first
 
     if entries.is_empty() {
-        println!("{}", style("No backup archives found. Deploying without config restore.").yellow());
+        println!(
+            "{}",
+            style("No backup archives found. Deploying without config restore.").yellow()
+        );
         return Ok(None);
     }
 
     let mut labels: Vec<String> = entries
         .iter()
         .map(|p| {
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let size = std::fs::metadata(p)
                 .map(|m| format_bytes(m.len()))
                 .unwrap_or_else(|_| "?".into());
