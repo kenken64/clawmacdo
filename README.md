@@ -10,6 +10,7 @@ Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an exist
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
 - **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, start the gateway
 - **DO-to-DO migration**: SSH into a source droplet, back up remotely, deploy to a new droplet, restore
+- **Destroy**: delete a droplet by name with confirmation, clean up SSH keys (DO + local)
 - **Status**: list all `openclaw`-tagged droplets with IPs
 - **List backups**: show local backup archives with sizes and dates
 
@@ -51,6 +52,7 @@ clawmacdo <COMMAND>
 Commands:
   backup        Archive ~/.openclaw/ and LaunchAgent plist into a .tar.gz
   deploy        Full 1-click deploy to DigitalOcean
+  destroy       Destroy a droplet by name and clean up SSH keys
   migrate       DO → DO migration: backup source, deploy new, restore
   status        List deployed openclaw-tagged droplets
   list-backups  Show local backup archives
@@ -108,6 +110,19 @@ clawmacdo migrate \
 
 Connects to the source droplet, creates a remote backup, downloads it locally, then runs the full deploy flow on a new droplet with the backup auto-selected.
 
+### Destroy
+
+```bash
+clawmacdo destroy \
+  --do-token=dop_v1_xxx \
+  --name=openclaw-8d533bfd
+```
+
+Finds the named droplet among `openclaw`-tagged droplets, shows its details (name, IP, region), and asks for confirmation before destroying. Also cleans up:
+
+- The associated SSH key from your DigitalOcean account (`clawmacdo-<hostname_suffix>`)
+- The local key file from `~/.clawmacdo/keys/`
+
 ### Status
 
 ```bash
@@ -159,6 +174,7 @@ src/
 │   ├── backup.rs        # Scan + tar.gz ~/.openclaw/
 │   ├── deploy.rs        # 12-step deploy orchestrator
 │   ├── migrate.rs       # DO→DO: remote backup + deploy
+│   ├── destroy.rs       # Destroy droplet + clean up SSH keys
 │   ├── status.rs        # DO API → list tagged droplets
 │   └── list_backups.rs  # List local backup files
 ├── config.rs            # App paths, constants, DeployRecord
