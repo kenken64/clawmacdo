@@ -36,10 +36,7 @@ pub fn run() -> Result<()> {
 
     entries.sort_by(|a, b| b.2.cmp(&a.2)); // newest first
 
-    println!(
-        "Backups in {}:\n",
-        backups_dir.display()
-    );
+    println!("Backups in {}:\n", backups_dir.display());
     println!("  {:<50}  {:>10}  {}", "Name", "Size", "Date");
     println!("  {}", "-".repeat(80));
     for (name, size, date) in &entries {

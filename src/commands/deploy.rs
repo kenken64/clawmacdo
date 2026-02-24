@@ -77,7 +77,10 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         .upload_ssh_key(&key_name, &keypair.public_key_openssh)
         .await
         .context("Failed to upload SSH key to DigitalOcean")?;
-    println!("  Key ID: {}, Fingerprint: {}", key_info.id, key_info.fingerprint);
+    println!(
+        "  Key ID: {}, Fingerprint: {}",
+        key_info.id, key_info.fingerprint
+    );
 
     // ── Step 4: Create droplet ──────────────────────────────────────────
     println!("\n[Step 4/12] Creating droplet with cloud-init...");
@@ -163,7 +166,9 @@ async fn deploy_steps_5_through_12(
     sp.finish_with_message("[Step 6/12] SSH ready");
 
     // ── Step 7: Wait for cloud-init ─────────────────────────────────────
-    let sp = ui::spinner("[Step 7/12] Waiting for cloud-init to finish (this may take a few minutes)...");
+    let sp = ui::spinner(
+        "[Step 7/12] Waiting for cloud-init to finish (this may take a few minutes)...",
+    );
     ssh::wait_for_cloud_init(&ip, private_key_path, std::time::Duration::from_secs(600))
         .await
         .context("Cloud-init did not complete within 10 minutes")?;
@@ -195,10 +200,8 @@ async fn deploy_steps_5_through_12(
         );
         let ip_clone = ip.clone();
         let key_clone = private_key_path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            ssh::exec(&ip_clone, &key_clone, extract_cmd)
-        })
-        .await??;
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_clone, &key_clone, extract_cmd))
+            .await??;
         sp.finish_with_message("[Step 9/12] Backup restored (preserved .env)");
     } else {
         println!("[Step 8/12] No backup to upload, skipping.");

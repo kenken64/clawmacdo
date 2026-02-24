@@ -8,11 +8,16 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 use commands::deploy::DeployParams;
+use commands::destroy::DestroyParams;
 use commands::migrate::MigrateParams;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "clawmacdo", version, about = "CLI for migrating OpenClaw to DigitalOcean")]
+#[command(
+    name = "clawmacdo",
+    version,
+    about = "CLI for migrating OpenClaw to DigitalOcean"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -100,6 +105,17 @@ enum Commands {
         do_token: String,
     },
 
+    /// Destroy an openclaw-tagged droplet by name and clean up SSH keys
+    Destroy {
+        /// DigitalOcean API token
+        #[arg(long, env = "DO_TOKEN")]
+        do_token: String,
+
+        /// Droplet name
+        #[arg(long)]
+        name: String,
+    },
+
     /// Show local backup archives with sizes and dates
     ListBackups,
 }
@@ -159,6 +175,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Status { do_token } => {
             commands::status::run(&do_token).await?;
+        }
+        Commands::Destroy { do_token, name } => {
+            let params = DestroyParams { do_token, name };
+            commands::destroy::run(params).await?;
         }
         Commands::ListBackups => {
             commands::list_backups::run()?;

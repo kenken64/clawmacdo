@@ -84,6 +84,18 @@ struct ListDropletsResponse {
     droplets: Vec<DropletInfo>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountSshKey {
+    pub id: u64,
+    pub name: String,
+    pub fingerprint: String,
+}
+
+#[derive(Deserialize)]
+struct ListSshKeysResponse {
+    ssh_keys: Vec<AccountSshKey>,
+}
+
 impl DropletInfo {
     pub fn public_ip(&self) -> Option<String> {
         self.networks
@@ -239,5 +251,63 @@ impl DoClient {
 
         let parsed: ListDropletsResponse = resp.json().await?;
         Ok(parsed.droplets)
+    }
+
+    /// Delete a droplet by ID.
+    pub async fn delete_droplet(&self, droplet_id: u64) -> Result<(), AppError> {
+        let resp = self
+            .client
+            .delete(format!("{API_BASE}/droplets/{droplet_id}"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "Delete droplet failed ({status}): {text}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// List account SSH keys.
+    pub async fn list_ssh_keys(&self) -> Result<Vec<AccountSshKey>, AppError> {
+        let resp = self
+            .client
+            .get(format!("{API_BASE}/account/keys"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "List SSH keys failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: ListSshKeysResponse = resp.json().await?;
+        Ok(parsed.ssh_keys)
+    }
+
+    /// Delete an SSH key by ID.
+    pub async fn delete_ssh_key(&self, ssh_key_id: u64) -> Result<(), AppError> {
+        let resp = self
+            .client
+            .delete(format!("{API_BASE}/account/keys/{ssh_key_id}"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "Delete SSH key failed ({status}): {text}"
+            )));
+        }
+
+        Ok(())
     }
 }

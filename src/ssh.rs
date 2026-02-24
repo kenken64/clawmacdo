@@ -109,12 +109,7 @@ pub fn scp_upload(
     let file_size = metadata.len();
 
     let mut remote_file = sess
-        .scp_send(
-            Path::new(remote_path),
-            0o644,
-            file_size,
-            None,
-        )
+        .scp_send(Path::new(remote_path), 0o644, file_size, None)
         .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
 
     let local_data = std::fs::read(local_path)?;
@@ -206,8 +201,7 @@ pub async fn wait_for_cloud_init(
         let ip_clone = ip.clone();
         let key_clone = key.clone();
         let cmd = format!("test -f {sentinel} && echo done");
-        let result =
-            tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, &cmd)).await;
+        let result = tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, &cmd)).await;
 
         match result {
             Ok(Ok(out)) if out.trim() == "done" => return Ok(()),
