@@ -73,7 +73,8 @@ Creates `~/.clawmacdo/backups/openclaw_backup_<timestamp>.tar.gz`.
 clawmacdo deploy \
   --do-token=dop_v1_xxx \
   --anthropic-key=sk-ant-xxx \
-  --openai-key=sk-xxx
+  --openai-key=sk-xxx \
+  --gemini-key=AIzaSy...
 ```
 
 Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`.
@@ -143,7 +144,7 @@ clawmacdo list-backups
 4. OpenClaw gateway
 5. Claude Code CLI (`@anthropic-ai/claude-code`)
 6. Codex CLI (`@openai/codex`)
-7. API keys written to `/root/.openclaw/.env`
+7. API keys written to `/root/.openclaw/.env` (Anthropic, OpenAI, Gemini)
 
 ### Self-healing & resilience
 
@@ -177,11 +178,12 @@ The fix: clawmacdo now detects OAuth tokens and refuses to write them to `.env`.
 
 Tokens can be passed as flags or environment variables:
 
-| Flag | Env var |
-|---|---|
-| `--do-token` | `DO_TOKEN` |
-| `--anthropic-key` | `ANTHROPIC_API_KEY` |
-| `--openai-key` | `OPENAI_API_KEY` |
+| Flag | Env var | Required |
+|---|---|---|
+| `--do-token` | `DO_TOKEN` | ✅ Yes |
+| `--anthropic-key` | `ANTHROPIC_API_KEY` | ✅ Yes |
+| `--openai-key` | `OPENAI_API_KEY` | Optional |
+| `--gemini-key` | `GEMINI_API_KEY` | Optional |
 
 ## Data directories
 
