@@ -22,6 +22,31 @@ pub struct DeployParams {
     pub non_interactive: bool,
 }
 
+fn has_value(s: &str) -> bool {
+    !s.trim().is_empty()
+}
+
+fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Option<String> {
+    if !openai_enabled && !gemini_enabled {
+        return None;
+    }
+
+    let mut cmd = String::from(
+        "export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus; ",
+    );
+    cmd.push_str("openclaw models set anthropic/claude-opus-4-6 >/dev/null 2>&1 || true;");
+
+    if openai_enabled {
+        cmd.push_str(" openclaw models fallbacks add openai/gpt-5-mini >/dev/null 2>&1 || true;");
+    }
+    if gemini_enabled {
+        cmd.push_str(" openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;");
+    }
+
+    cmd.push_str(" echo ok");
+    Some(cmd)
+}
+
 /// Run the full 12-step deploy flow. Returns the DeployRecord on success.
 pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
@@ -129,6 +154,8 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         &hostname,
         &region,
         &size,
+        has_value(&params.openai_key),
+        has_value(&params.gemini_key),
     )
     .await;
 
@@ -165,6 +192,8 @@ async fn deploy_steps_5_through_12(
     hostname: &str,
     region: &str,
     size: &str,
+    openai_enabled: bool,
+    gemini_enabled: bool,
 ) -> Result<DeployRecord> {
     // ── Step 5: Poll until droplet is active ────────────────────────────
     let sp = ui::spinner("[Step 5/12] Waiting for droplet to become active...");
@@ -242,6 +271,25 @@ async fn deploy_steps_5_through_12(
     let key_clone = private_key_path.to_path_buf();
     tokio::task::spawn_blocking(move || ssh::exec(&ip_clone, &key_clone, start_cmd)).await??;
     sp.finish_with_message("[Step 10/12] Gateway started (user service)");
+
+    if let Some(failover_cmd) = build_failover_setup_cmd(openai_enabled, gemini_enabled) {
+        let sp = ui::spinner("[Step 10/12] Configuring model failover chain...");
+        let ip_clone = ip.clone();
+        let key_clone = private_key_path.to_path_buf();
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_clone, &key_clone, &failover_cmd))
+            .await??;
+        let mut chain = vec!["Anthropic"];
+        if openai_enabled {
+            chain.push("OpenAI");
+        }
+        if gemini_enabled {
+            chain.push("Gemini");
+        }
+        sp.finish_with_message(format!(
+            "[Step 10/12] Model failover configured ({})",
+            chain.join(" -> ")
+        ));
+    }
 
     // ── Step 11: Save DeployRecord ──────────────────────────────────────
     println!("[Step 11/12] Saving deploy record...");
