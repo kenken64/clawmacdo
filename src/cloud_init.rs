@@ -106,6 +106,8 @@ runcmd:
     #!/bin/bash
     # OpenClaw Gateway Health Check & Auto-Restart
     LOG_PREFIX="[$(date '+%Y-%m-%d %H:%M:%S')]"
+    export XDG_RUNTIME_DIR=/run/user/0
+    export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus
 
     # Check if gateway process is running
     if ! systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then

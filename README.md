@@ -95,7 +95,7 @@ Missing values trigger interactive prompts.
  7. Wait for cloud-init to complete (10min timeout)
  8. SCP backup archive to server (if selected)
  9. Extract configs into ~/.openclaw/, preserve .env
-10. Start OpenClaw gateway via systemd
+10. Start OpenClaw gateway via user-level systemd (`systemctl --user`)
 11. Save deploy record to ~/.clawmacdo/deploys/
 12. Print provisioning summary
 ```

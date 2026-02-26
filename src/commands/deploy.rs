@@ -226,18 +226,22 @@ async fn deploy_steps_5_through_12(
         backup_restored = None;
     }
 
-    // ── Step 10: Start gateway ──────────────────────────────────────────
-    let sp = ui::spinner("[Step 10/12] Starting OpenClaw gateway...");
+    // ── Step 10: Start gateway (user-level service) ────────────────────
+    let sp = ui::spinner("[Step 10/12] Starting OpenClaw gateway (user service)...");
     let start_cmd = concat!(
-        "openclaw onboard --install-daemon 2>/dev/null; ",
-        "systemctl enable openclaw-gateway && ",
-        "systemctl start openclaw-gateway && ",
+        "loginctl enable-linger root && ",
+        "systemctl restart user@0.service && ",
+        "export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus && ",
+        "openclaw onboard --install-daemon 2>/dev/null && ",
+        "systemctl --user daemon-reload && ",
+        "systemctl --user enable --now openclaw-gateway.service && ",
+        "systemctl --user is-active openclaw-gateway.service >/dev/null && ",
         "echo ok"
     );
     let ip_clone = ip.clone();
     let key_clone = private_key_path.to_path_buf();
     tokio::task::spawn_blocking(move || ssh::exec(&ip_clone, &key_clone, start_cmd)).await??;
-    sp.finish_with_message("[Step 10/12] Gateway started");
+    sp.finish_with_message("[Step 10/12] Gateway started (user service)");
 
     // ── Step 11: Save DeployRecord ──────────────────────────────────────
     println!("[Step 11/12] Saving deploy record...");
