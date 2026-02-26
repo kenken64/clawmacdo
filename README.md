@@ -159,6 +159,20 @@ Every deployed droplet includes automatic recovery mechanisms:
 
 > **Note:** OpenClaw's installer creates its own user-level systemd service at `~/.config/systemd/user/openclaw-gateway.service`. The cloud-init script does not create a competing systemd unit — it only prepares the environment and resilience tooling.
 
+### API key validation
+
+The deploy process validates Anthropic API keys before writing them to `.env`:
+
+| Key prefix | Type | Action |
+|-----------|------|--------|
+| `sk-ant-api-...` | Real API key | ✅ Written to `.env` |
+| `sk-ant-oat-...` | OAuth session token | ❌ Filtered out — empty string written |
+| _(empty)_ | Not provided | ⚠️ Skipped |
+
+**Why?** When you authenticate via `openclaw login`, OpenClaw stores an OAuth session token (`sk-ant-oat-...`) in `openclaw.json`. If this token gets backed up and restored to a new instance, the gateway injects it as `ANTHROPIC_API_KEY` into child processes. Claude Code expects a real API key and fails with auth errors.
+
+The fix: clawmacdo now detects OAuth tokens and refuses to write them to `.env`. The OpenClaw gateway is unaffected — it manages its own auth via `openclaw.json` profiles. A warning is printed during deploy if an OAuth token is detected.
+
 ## Environment variables
 
 Tokens can be passed as flags or environment variables:
