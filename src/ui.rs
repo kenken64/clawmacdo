@@ -189,7 +189,7 @@ pub fn print_summary(record: &DeployRecord) {
     println!("  Next steps:");
     println!("    1. ssh -i {key} root@{ip}");
     println!("    2. curl http://{ip}:{port}/health");
-    println!("    3. ssh -i {key} root@{ip} journalctl -u openclaw-gateway -f");
+    println!("    3. ssh -i {key} root@{ip} 'XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus journalctl --user -u openclaw-gateway.service -f'");
     println!("{divider}\n");
 }
 
