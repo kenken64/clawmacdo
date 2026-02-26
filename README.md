@@ -8,7 +8,7 @@ Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an exist
 ## Features
 
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
-- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, configure `.env` (API + messaging), start the gateway
+- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **DO-to-DO migration**: SSH into a source droplet, back up remotely, deploy to a new droplet, restore
 - **Destroy**: delete a droplet by name with confirmation, clean up SSH keys (DO + local)
 - **Status**: list all `openclaw`-tagged droplets with IPs
@@ -95,7 +95,7 @@ Missing values trigger interactive prompts.
  7. Wait for cloud-init to complete (10min timeout)
  8. SCP backup archive to server (if selected)
  9. Extract configs into ~/.openclaw/, preserve .env
-10. Start OpenClaw gateway via user-level systemd (`systemctl --user`)
+10. Start OpenClaw gateway via user-level systemd (`systemctl --user`) and auto-configure model fallbacks based on available provider keys
 11. Save deploy record to ~/.clawmacdo/deploys/
 12. Print provisioning summary
 ```
@@ -128,6 +128,14 @@ GEMINI_API_KEY=...
 WHATSAPP_PHONE_NUMBER=...
 TELEGRAM_BOT_TOKEN=...
 ```
+
+### Automatic model failover configuration
+
+After the gateway is started, deploy/migrate automatically configures model routing:
+
+- Primary model: `anthropic/claude-opus-4-6`
+- Adds fallback: `openai/gpt-5-mini` when `OPENAI_API_KEY` is provided
+- Adds fallback: `google/gemini-2.5-flash` when `GEMINI_API_KEY` is provided
 
 ### Destroy
 
