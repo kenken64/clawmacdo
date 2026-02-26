@@ -46,6 +46,14 @@ enum Commands {
         #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
         gemini_key: String,
 
+        /// WhatsApp phone number (written to server .env)
+        #[arg(long, env = "WHATSAPP_PHONE_NUMBER", default_value = "")]
+        whatsapp_phone_number: String,
+
+        /// Telegram bot token (written to server .env)
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+        telegram_bot_token: String,
+
         /// DigitalOcean region slug (e.g. sgp1, nyc1)
         #[arg(long)]
         region: Option<String>,
@@ -84,6 +92,14 @@ enum Commands {
         /// Google Gemini API key (written to server .env)
         #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
         gemini_key: String,
+
+        /// WhatsApp phone number (written to server .env)
+        #[arg(long, env = "WHATSAPP_PHONE_NUMBER", default_value = "")]
+        whatsapp_phone_number: String,
+
+        /// Telegram bot token (written to server .env)
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+        telegram_bot_token: String,
 
         /// IP address of the source droplet
         #[arg(long)]
@@ -141,6 +157,8 @@ async fn main() -> anyhow::Result<()> {
             anthropic_key,
             openai_key,
             gemini_key,
+            whatsapp_phone_number,
+            telegram_bot_token,
             region,
             size,
             hostname,
@@ -152,6 +170,8 @@ async fn main() -> anyhow::Result<()> {
                 anthropic_key,
                 openai_key,
                 gemini_key,
+                whatsapp_phone_number,
+                telegram_bot_token,
                 region,
                 size,
                 hostname,
@@ -166,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
             anthropic_key,
             openai_key,
             gemini_key,
+            whatsapp_phone_number,
+            telegram_bot_token,
             source_ip,
             source_key,
             region,
@@ -177,6 +199,8 @@ async fn main() -> anyhow::Result<()> {
                 anthropic_key,
                 openai_key,
                 gemini_key,
+                whatsapp_phone_number,
+                telegram_bot_token,
                 source_ip,
                 source_key,
                 region,
