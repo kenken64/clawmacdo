@@ -8,7 +8,7 @@ Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an exist
 ## Features
 
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
-- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, start the gateway
+- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, configure `.env` (API + messaging), start the gateway
 - **DO-to-DO migration**: SSH into a source droplet, back up remotely, deploy to a new droplet, restore
 - **Destroy**: delete a droplet by name with confirmation, clean up SSH keys (DO + local)
 - **Status**: list all `openclaw`-tagged droplets with IPs
@@ -115,6 +115,20 @@ clawmacdo migrate \
 
 Connects to the source droplet, creates a remote backup, downloads it locally, then runs the full deploy flow on a new droplet with the backup auto-selected.
 
+### Resulting .env on server
+
+After deploy/migrate, credentials and messaging settings are written to:
+
+`/root/.openclaw/.env`
+
+```bash
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+GEMINI_API_KEY=...
+WHATSAPP_PHONE_NUMBER=...
+TELEGRAM_BOT_TOKEN=...
+```
+
 ### Destroy
 
 ```bash
@@ -180,7 +194,7 @@ The fix: clawmacdo now detects OAuth tokens and refuses to write them to `.env`.
 
 ## Environment variables
 
-Tokens can be passed as flags or environment variables:
+Credentials and messaging settings can be passed as flags or environment variables:
 
 | Flag | Env var | Required |
 |---|---|---|
