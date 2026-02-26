@@ -184,6 +184,7 @@ pub fn print_summary(record: &DeployRecord) {
     println!();
     println!("  API Keys:         /root/.openclaw/.env on server");
     println!("                     (ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY)");
+    println!("  Messaging Config: (WHATSAPP_PHONE_NUMBER + TELEGRAM_BOT_TOKEN)");
     println!("{divider}");
     println!("  Next steps:");
     println!("    1. ssh -i {key} root@{ip}");

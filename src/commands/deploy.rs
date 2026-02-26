@@ -11,6 +11,8 @@ pub struct DeployParams {
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
+    pub whatsapp_phone_number: String,
+    pub telegram_bot_token: String,
     pub region: Option<String>,
     pub size: Option<String>,
     pub hostname: Option<String>,
@@ -89,10 +91,18 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     if params.anthropic_key.starts_with("sk-ant-oat") {
         println!("  ⚠️  Warning: Anthropic key looks like an OAuth token (sk-ant-oat...).");
         println!("     OAuth tokens are short-lived and break Claude Code.");
-        println!("     It will NOT be written to .env. Use a real API key (sk-ant-api...) instead.");
+        println!(
+            "     It will NOT be written to .env. Use a real API key (sk-ant-api...) instead."
+        );
         println!("     OpenClaw gateway auth will still work via openclaw.json profiles.");
     }
-    let user_data = cloud_init::generate(&params.anthropic_key, &params.openai_key, &params.gemini_key);
+    let user_data = cloud_init::generate(
+        &params.anthropic_key,
+        &params.openai_key,
+        &params.gemini_key,
+        &params.whatsapp_phone_number,
+        &params.telegram_bot_token,
+    );
     let droplet = do_client
         .create_droplet(
             &hostname,

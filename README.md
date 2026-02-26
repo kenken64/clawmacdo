@@ -74,7 +74,9 @@ clawmacdo deploy \
   --do-token=dop_v1_xxx \
   --anthropic-key=sk-ant-xxx \
   --openai-key=sk-xxx \
-  --gemini-key=AIzaSy...
+  --gemini-key=AIzaSy... \
+  --whatsapp-phone-number=15551234567 \
+  --telegram-bot-token=123456789:AA...
 ```
 
 Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`.
@@ -105,6 +107,8 @@ clawmacdo migrate \
   --do-token=dop_v1_xxx \
   --anthropic-key=sk-ant-xxx \
   --openai-key=sk-xxx \
+  --whatsapp-phone-number=15551234567 \
+  --telegram-bot-token=123456789:AA... \
   --source-ip=164.90.x.x \
   --source-key=~/.ssh/id_ed25519
 ```
@@ -144,7 +148,7 @@ clawmacdo list-backups
 4. OpenClaw gateway
 5. Claude Code CLI (`@anthropic-ai/claude-code`)
 6. Codex CLI (`@openai/codex`)
-7. API keys written to `/root/.openclaw/.env` (Anthropic, OpenAI, Gemini)
+7. API keys and messaging config written to `/root/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
 
 ### Self-healing & resilience
 
@@ -184,6 +188,8 @@ Tokens can be passed as flags or environment variables:
 | `--anthropic-key` | `ANTHROPIC_API_KEY` | ✅ Yes |
 | `--openai-key` | `OPENAI_API_KEY` | Optional |
 | `--gemini-key` | `GEMINI_API_KEY` | Optional |
+| `--whatsapp-phone-number` | `WHATSAPP_PHONE_NUMBER` | Optional |
+| `--telegram-bot-token` | `TELEGRAM_BOT_TOKEN` | Optional |
 
 ## Data directories
 
