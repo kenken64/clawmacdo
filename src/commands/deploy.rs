@@ -10,6 +10,7 @@ pub struct DeployParams {
     pub do_token: String,
     pub anthropic_key: String,
     pub openai_key: String,
+    pub gemini_key: String,
     pub region: Option<String>,
     pub size: Option<String>,
     pub hostname: Option<String>,
@@ -91,7 +92,7 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         println!("     It will NOT be written to .env. Use a real API key (sk-ant-api...) instead.");
         println!("     OpenClaw gateway auth will still work via openclaw.json profiles.");
     }
-    let user_data = cloud_init::generate(&params.anthropic_key, &params.openai_key);
+    let user_data = cloud_init::generate(&params.anthropic_key, &params.openai_key, &params.gemini_key);
     let droplet = do_client
         .create_droplet(
             &hostname,

@@ -27,7 +27,7 @@ fn is_valid_anthropic_api_key(key: &str) -> bool {
     true
 }
 
-pub fn generate(anthropic_key: &str, openai_key: &str) -> String {
+pub fn generate(anthropic_key: &str, openai_key: &str, gemini_key: &str) -> String {
     // Filter out OAuth tokens — they break Claude Code and cause auth failures.
     // OpenClaw manages its own auth via openclaw.json profiles, so the gateway
     // itself doesn't need this key. Only Claude Code (child process) uses it.
@@ -79,6 +79,7 @@ runcmd:
     cat > /root/.openclaw/.env <<'ENVEOF'
     ANTHROPIC_API_KEY={safe_anthropic_key}
     OPENAI_API_KEY={openai_key}
+    GEMINI_API_KEY={gemini_key}
     ENVEOF
   - chmod 600 /root/.openclaw/.env
 
@@ -152,6 +153,7 @@ runcmd:
 "##,
         safe_anthropic_key = safe_anthropic_key,
         openai_key = openai_key,
+        gemini_key = gemini_key,
         sentinel = CLOUD_INIT_SENTINEL,
     )
 }

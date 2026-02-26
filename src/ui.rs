@@ -183,7 +183,7 @@ pub fn print_summary(record: &DeployRecord) {
     println!("    - OpenAI Codex CLI (codex --version)");
     println!();
     println!("  API Keys:         /root/.openclaw/.env on server");
-    println!("                     (ANTHROPIC_API_KEY + OPENAI_API_KEY)");
+    println!("                     (ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY)");
     println!("{divider}");
     println!("  Next steps:");
     println!("    1. ssh -i {key} root@{ip}");

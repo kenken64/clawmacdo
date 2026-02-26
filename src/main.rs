@@ -42,6 +42,10 @@ enum Commands {
         #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
         openai_key: String,
 
+        /// Google Gemini API key (written to server .env)
+        #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
+        gemini_key: String,
+
         /// DigitalOcean region slug (e.g. sgp1, nyc1)
         #[arg(long)]
         region: Option<String>,
@@ -76,6 +80,10 @@ enum Commands {
         /// OpenAI API key (written to server .env)
         #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
         openai_key: String,
+
+        /// Google Gemini API key (written to server .env)
+        #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
+        gemini_key: String,
 
         /// IP address of the source droplet
         #[arg(long)]
@@ -132,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
             do_token,
             anthropic_key,
             openai_key,
+            gemini_key,
             region,
             size,
             hostname,
@@ -142,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
                 do_token,
                 anthropic_key,
                 openai_key,
+                gemini_key,
                 region,
                 size,
                 hostname,
@@ -155,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
             do_token,
             anthropic_key,
             openai_key,
+            gemini_key,
             source_ip,
             source_key,
             region,
@@ -165,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
                 do_token,
                 anthropic_key,
                 openai_key,
+                gemini_key,
                 source_ip,
                 source_key,
                 region,
