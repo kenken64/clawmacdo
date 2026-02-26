@@ -144,7 +144,20 @@ clawmacdo list-backups
 5. Claude Code CLI (`@anthropic-ai/claude-code`)
 6. Codex CLI (`@openai/codex`)
 7. API keys written to `/root/.openclaw/.env`
-8. Systemd service: `openclaw-gateway.service`
+
+### Self-healing & resilience
+
+Every deployed droplet includes automatic recovery mechanisms:
+
+| Feature | Description |
+|---------|-------------|
+| **loginctl linger** | Enabled for root — gateway survives SSH disconnects |
+| **Health-check script** | `/root/.openclaw/workspace/openclaw-healthcheck.sh` — checks gateway process + RPC probe |
+| **Cron: health-check** | Runs every 5 minutes (`*/5 * * * *`), auto-restarts gateway on failure |
+| **Cron: log rotation** | Truncates health-check log daily at midnight to prevent disk fill |
+| **Double-check restart** | Health-check retries after 15s before restarting to avoid false positives |
+
+> **Note:** OpenClaw's installer creates its own user-level systemd service at `~/.config/systemd/user/openclaw-gateway.service`. The cloud-init script does not create a competing systemd unit — it only prepares the environment and resilience tooling.
 
 ## Environment variables
 
@@ -180,7 +193,7 @@ src/
 ├── config.rs            # App paths, constants, DeployRecord
 ├── digitalocean.rs      # DO API client
 ├── ssh.rs               # Ed25519 keygen, SSH exec, SCP
-├── cloud_init.rs        # Cloud-init YAML template
+├── cloud_init.rs        # Cloud-init YAML template (includes healthcheck + linger)
 ├── ui.rs                # Interactive prompts, spinners, summary
 └── error.rs             # Typed errors (thiserror)
 ```
