@@ -10,7 +10,33 @@ use crate::config::CLOUD_INIT_SENTINEL;
 /// NOTE: We do NOT create a systemd unit here — OpenClaw's own installer
 /// creates a user-level service at ~/.config/systemd/user/ which takes
 /// precedence. Our job is just to ensure the environment is ready.
+/// Check if an Anthropic key is a real API key (not an OAuth session token).
+/// OAuth tokens start with `sk-ant-oat` and are short-lived session tokens
+/// that break Claude Code. Only real API keys (`sk-ant-api`) should be written
+/// to the .env file.
+fn is_valid_anthropic_api_key(key: &str) -> bool {
+    let key = key.trim();
+    if key.is_empty() {
+        return false;
+    }
+    // Real API keys start with sk-ant-api
+    // OAuth tokens start with sk-ant-oat — these MUST NOT be used
+    if key.starts_with("sk-ant-oat") {
+        return false;
+    }
+    true
+}
+
 pub fn generate(anthropic_key: &str, openai_key: &str) -> String {
+    // Filter out OAuth tokens — they break Claude Code and cause auth failures.
+    // OpenClaw manages its own auth via openclaw.json profiles, so the gateway
+    // itself doesn't need this key. Only Claude Code (child process) uses it.
+    let safe_anthropic_key = if is_valid_anthropic_api_key(anthropic_key) {
+        anthropic_key.to_string()
+    } else {
+        String::new()
+    };
+
     format!(
         r##"#cloud-config
 package_update: true
@@ -45,10 +71,13 @@ runcmd:
   - npm install -g @openai/codex
 
   # --- API keys (written to .env, NOT in logs/args) ---
+  # NOTE: ANTHROPIC_API_KEY is only written if it's a real API key (sk-ant-api...).
+  # OAuth session tokens (sk-ant-oat...) are filtered out because they break
+  # Claude Code. OpenClaw handles its own auth via openclaw.json profiles.
   - mkdir -p /root/.openclaw
   - |
     cat > /root/.openclaw/.env <<'ENVEOF'
-    ANTHROPIC_API_KEY={anthropic_key}
+    ANTHROPIC_API_KEY={safe_anthropic_key}
     OPENAI_API_KEY={openai_key}
     ENVEOF
   - chmod 600 /root/.openclaw/.env
@@ -121,7 +150,7 @@ runcmd:
   # --- Sentinel file: signals completion to the CLI ---
   - touch {sentinel}
 "##,
-        anthropic_key = anthropic_key,
+        safe_anthropic_key = safe_anthropic_key,
         openai_key = openai_key,
         sentinel = CLOUD_INIT_SENTINEL,
     )

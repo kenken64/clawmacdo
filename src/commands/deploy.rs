@@ -85,6 +85,12 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     // ── Step 4: Create droplet ──────────────────────────────────────────
     println!("\n[Step 4/12] Creating droplet with cloud-init...");
 
+    if params.anthropic_key.starts_with("sk-ant-oat") {
+        println!("  ⚠️  Warning: Anthropic key looks like an OAuth token (sk-ant-oat...).");
+        println!("     OAuth tokens are short-lived and break Claude Code.");
+        println!("     It will NOT be written to .env. Use a real API key (sk-ant-api...) instead.");
+        println!("     OpenClaw gateway auth will still work via openclaw.json profiles.");
+    }
     let user_data = cloud_init::generate(&params.anthropic_key, &params.openai_key);
     let droplet = do_client
         .create_droplet(
