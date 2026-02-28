@@ -50,10 +50,21 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
 
 /// Connect to a remote host via SSH using a private key file.
 fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
-    let tcp = TcpStream::connect(format!("{ip}:22"))
+    let addr = format!("{ip}:22");
+    let sock_addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| AppError::Ssh(format!("Invalid address {addr}: {e}")))?;
+
+    // Use connect_timeout to avoid long hangs on Windows (default TCP timeout is ~21s)
+    let tcp = TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))
         .map_err(|e| AppError::Ssh(format!("TCP connect to {ip}: {e}")))?;
 
+    // Set read/write timeouts so SSH handshake doesn't hang indefinitely
+    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+
     let mut sess = Session::new().map_err(|e| AppError::Ssh(format!("Session::new: {e}")))?;
+    sess.set_timeout(10_000); // 10s timeout for SSH-level operations
     sess.set_tcp_stream(tcp);
     sess.handshake()
         .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
