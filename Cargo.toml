@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
 
