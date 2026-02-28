@@ -77,6 +77,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         backup: Some(local_archive),
         enable_backups: false,
         non_interactive: false,
+        progress_tx: None,
     };
     let record = deploy::run(deploy_params).await?;
 

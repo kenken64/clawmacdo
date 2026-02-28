@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod digitalocean;
 mod error;
+mod progress;
 mod ssh;
 mod ui;
 
@@ -142,6 +143,13 @@ enum Commands {
 
     /// Show local backup archives with sizes and dates
     ListBackups,
+
+    /// Launch a local web UI for deploying OpenClaw
+    Serve {
+        /// Port for the web server
+        #[arg(long, default_value = "3456")]
+        port: u16,
+    },
 }
 
 #[tokio::main]
@@ -178,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
                 backup,
                 enable_backups,
                 non_interactive: false,
+                progress_tx: None,
             };
             commands::deploy::run(params).await?;
         }
@@ -218,6 +227,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::ListBackups => {
             commands::list_backups::run()?;
+        }
+        Commands::Serve { port } => {
+            commands::serve::run(port).await?;
         }
     }
 
