@@ -70,12 +70,12 @@ fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
     let tcp = TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))
         .map_err(|e| AppError::Ssh(format!("TCP connect to {ip}: {e}")))?;
 
-    // Set read/write timeouts so SSH handshake doesn't hang indefinitely
-    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+    // Keep command I/O timeout long enough for package installs and service setup.
+    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(300)));
+    let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(300)));
 
     let mut sess = Session::new().map_err(|e| AppError::Ssh(format!("Session::new: {e}")))?;
-    sess.set_timeout(10_000); // 10s timeout for SSH-level operations
+    sess.set_timeout(300_000); // 5 min timeout for SSH-level operations
     sess.set_tcp_stream(tcp);
     sess.handshake()
         .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
@@ -216,17 +216,47 @@ pub async fn wait_for_cloud_init(
     let sentinel = config::CLOUD_INIT_SENTINEL;
     let key = private_key_path.to_path_buf();
     let ip = ip.to_string();
+    let mut last_status = String::from("unknown");
     loop {
         if start.elapsed() > timeout {
-            return Err(AppError::Timeout("cloud-init to complete".into()));
+            let ip_clone = ip.clone();
+            let key_clone = key.clone();
+            let diag_cmd = concat!(
+                "(cloud-init status --long 2>/dev/null || cloud-init status 2>/dev/null || true);",
+                " echo '--- cloud-init.log (tail) ---';",
+                " (tail -n 30 /var/log/cloud-init.log 2>/dev/null || true);",
+                " echo '--- cloud-init-output.log (tail) ---';",
+                " (tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true)",
+            );
+            let diagnostics = match tokio::task::spawn_blocking(move || {
+                exec(&ip_clone, &key_clone, diag_cmd)
+            })
+            .await
+            {
+                Ok(Ok(out)) if !out.trim().is_empty() => out,
+                _ => "No diagnostic output available".to_string(),
+            };
+
+            return Err(AppError::Timeout(format!(
+                "cloud-init to complete (last status: {last_status})\n{diagnostics}"
+            )));
         }
         let ip_clone = ip.clone();
         let key_clone = key.clone();
-        let cmd = format!("test -f {sentinel} && echo done");
+        let cmd = format!(
+            "if test -f {sentinel}; then echo done; else cloud-init status 2>/dev/null || echo pending; fi"
+        );
         let result = tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, &cmd)).await;
 
         match result {
             Ok(Ok(out)) if out.trim() == "done" => return Ok(()),
+            Ok(Ok(out)) => {
+                let trimmed = out.trim();
+                if !trimmed.is_empty() {
+                    last_status = trimmed.to_string();
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
             _ => {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             }

@@ -3,12 +3,12 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an existing DigitalOcean droplet to a new DigitalOcean droplet — with Claude Code and Codex pre-installed.
+Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an existing DigitalOcean droplet to a new DigitalOcean droplet — with Claude Code, Codex, and Gemini CLI pre-installed.
 
 ## Features
 
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
-- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
+- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **DO-to-DO migration**: SSH into a source droplet, back up remotely, deploy to a new droplet, restore
 - **Destroy**: delete a droplet by name with confirmation, clean up SSH keys (DO + local)
 - **Status**: list all `openclaw`-tagged droplets with IPs
@@ -119,7 +119,7 @@ Connects to the source droplet, creates a remote backup, downloads it locally, t
 
 After deploy/migrate, credentials and messaging settings are written to:
 
-`/root/.openclaw/.env`
+`/home/openclaw/.openclaw/.env`
 
 ```bash
 ANTHROPIC_API_KEY=...
@@ -170,7 +170,8 @@ clawmacdo list-backups
 4. OpenClaw gateway
 5. Claude Code CLI (`@anthropic-ai/claude-code`)
 6. Codex CLI (`@openai/codex`)
-7. API keys and messaging config written to `/root/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
+7. Gemini CLI (`@google/gemini-cli`)
+8. API keys and messaging config written to `/home/openclaw/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
 
 ### Self-healing & resilience
 

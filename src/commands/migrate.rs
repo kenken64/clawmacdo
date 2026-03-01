@@ -17,6 +17,7 @@ pub struct MigrateParams {
     pub region: Option<String>,
     pub size: Option<String>,
     pub hostname: Option<String>,
+    pub tailscale: bool,
 }
 
 /// Run the full migrate flow: remote backup from source, then deploy to new droplet.
@@ -76,6 +77,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         hostname: params.hostname,
         backup: Some(local_archive),
         enable_backups: false,
+        tailscale: params.tailscale,
         non_interactive: false,
         progress_tx: None,
     };

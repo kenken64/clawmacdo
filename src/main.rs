@@ -4,6 +4,7 @@ mod config;
 mod digitalocean;
 mod error;
 mod progress;
+pub mod provision;
 mod ssh;
 mod ui;
 
@@ -74,6 +75,10 @@ enum Commands {
         /// Enable DigitalOcean automated backups
         #[arg(long, default_value = "false")]
         enable_backups: bool,
+
+        /// Enable Tailscale VPN on the droplet
+        #[arg(long, default_value = "false")]
+        tailscale: bool,
     },
 
     /// DO → DO migration: backup source droplet, deploy new, restore config
@@ -121,6 +126,10 @@ enum Commands {
         /// Hostname for the new droplet
         #[arg(long)]
         hostname: Option<String>,
+
+        /// Enable Tailscale VPN on the droplet
+        #[arg(long, default_value = "false")]
+        tailscale: bool,
     },
 
     /// List deployed openclaw-tagged droplets
@@ -172,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
             hostname,
             backup,
             enable_backups,
+            tailscale,
         } => {
             let params = DeployParams {
                 do_token,
@@ -185,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
                 hostname,
                 backup,
                 enable_backups,
+                tailscale,
                 non_interactive: false,
                 progress_tx: None,
             };
@@ -202,6 +213,7 @@ async fn main() -> anyhow::Result<()> {
             region,
             size,
             hostname,
+            tailscale,
         } => {
             let params = MigrateParams {
                 do_token,
@@ -215,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
                 region,
                 size,
                 hostname,
+                tailscale,
             };
             commands::migrate::run(params).await?;
         }

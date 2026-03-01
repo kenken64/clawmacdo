@@ -27,6 +27,9 @@ pub enum AppError {
     #[error("Cloud-init generation error: {0}")]
     CloudInit(String),
 
+    #[error("Provision error ({phase}): {message}")]
+    Provision { phase: String, message: String },
+
     #[error("Missing required parameter: {0}")]
     MissingParam(String),
 
