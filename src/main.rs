@@ -76,6 +76,10 @@ enum Commands {
         #[arg(long, default_value = "false")]
         enable_backups: bool,
 
+        /// Enable OpenClaw sandbox mode (Docker-based tool isolation)
+        #[arg(long, default_value = "false")]
+        enable_sandbox: bool,
+
         /// Enable Tailscale VPN on the droplet
         #[arg(long, default_value = "false")]
         tailscale: bool,
@@ -126,6 +130,10 @@ enum Commands {
         /// Hostname for the new droplet
         #[arg(long)]
         hostname: Option<String>,
+
+        /// Enable OpenClaw sandbox mode (Docker-based tool isolation)
+        #[arg(long, default_value = "false")]
+        enable_sandbox: bool,
 
         /// Enable Tailscale VPN on the droplet
         #[arg(long, default_value = "false")]
@@ -181,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             hostname,
             backup,
             enable_backups,
+            enable_sandbox,
             tailscale,
         } => {
             let params = DeployParams {
@@ -195,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
                 hostname,
                 backup,
                 enable_backups,
+                enable_sandbox,
                 tailscale,
                 non_interactive: false,
                 progress_tx: None,
@@ -213,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
             region,
             size,
             hostname,
+            enable_sandbox,
             tailscale,
         } => {
             let params = MigrateParams {
@@ -227,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
                 region,
                 size,
                 hostname,
+                enable_sandbox,
                 tailscale,
             };
             commands::migrate::run(params).await?;

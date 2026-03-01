@@ -57,6 +57,8 @@ struct DeployRequest {
     #[serde(default)]
     enable_backups: bool,
     #[serde(default)]
+    enable_sandbox: bool,
+    #[serde(default)]
     tailscale: bool,
 }
 
@@ -177,6 +179,7 @@ async fn start_deploy_handler(
             hostname: if req.hostname.is_empty() { None } else { Some(req.hostname) },
             backup,
             enable_backups: req.enable_backups,
+            enable_sandbox: req.enable_sandbox,
             tailscale: req.tailscale,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
@@ -578,6 +581,10 @@ function addDeployCard() {
           <span class="text-sm text-slate-300">Enable DigitalOcean automated backups</span>
         </label>
         <label class="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" name="enable_sandbox" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
+          <span class="text-sm text-slate-300">Enable OpenClaw sandboxing (Docker)</span>
+        </label>
+        <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" name="tailscale" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
           <span class="text-sm text-slate-300">Enable Tailscale VPN</span>
         </label>
@@ -799,6 +806,7 @@ async function startDeploy(e, cardNum) {
     hostname: val('hostname'),
     backup: val('backup'),
     enable_backups: form.querySelector('[name="enable_backups"]').checked,
+    enable_sandbox: form.querySelector('[name="enable_sandbox"]').checked,
     tailscale: form.querySelector('[name="tailscale"]').checked,
   };
 
