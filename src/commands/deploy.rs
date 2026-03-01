@@ -21,6 +21,8 @@ pub struct DeployParams {
     pub hostname: Option<String>,
     pub backup: Option<PathBuf>,
     pub enable_backups: bool,
+    /// Enable OpenClaw sandbox mode (Docker-based tool isolation).
+    pub enable_sandbox: bool,
     /// Enable Tailscale VPN on the droplet.
     pub tailscale: bool,
     /// If true, skip interactive prompts and use the pre-set backup path.
@@ -172,6 +174,7 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         &params.gemini_key,
         &params.whatsapp_phone_number,
         &params.telegram_bot_token,
+        params.enable_sandbox,
         params.tailscale,
         &params.progress_tx,
     )
@@ -216,6 +219,7 @@ async fn deploy_steps_5_through_16(
     gemini_key: &str,
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
+    enable_sandbox: bool,
     tailscale: bool,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
 ) -> Result<DeployRecord> {
@@ -315,15 +319,28 @@ async fn deploy_steps_5_through_16(
     } else {
         ""
     };
+    let sandbox_setup_cmd = if enable_sandbox {
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi && \
+             (docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)) && ",
+            home = config::OPENCLAW_HOME
+        )
+    } else {
+        String::new()
+    };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi && \
          (openclaw onboard --non-interactive --mode local --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || \
-           openclaw daemon install --port 18789 --runtime node --force >/dev/null 2>&1) && \
+            openclaw daemon install --port 18789 --runtime node --force >/dev/null 2>&1) && \
          if [ -n \"$TELEGRAM_BOT_TOKEN\" ] && [ -f {home}/.openclaw/openclaw.json ]; then \
            node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.channels=cfg.channels||{{}};cfg.channels.telegram=cfg.channels.telegram||{{}};cfg.channels.telegram.botToken=process.env.TELEGRAM_BOT_TOKEN;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
          fi && \
+         {sandbox_setup_cmd}\
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
          printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          systemctl --user daemon-reload && \
@@ -333,6 +350,7 @@ async fn deploy_steps_5_through_16(
         home = config::OPENCLAW_HOME,
         openai_onboard_arg = openai_onboard_arg,
         gemini_onboard_arg = gemini_onboard_arg,
+        sandbox_setup_cmd = sandbox_setup_cmd,
     );
     let ip_clone = ip.clone();
     let key_clone = private_key_path.to_path_buf();
@@ -342,6 +360,12 @@ async fn deploy_steps_5_through_16(
     .await??;
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
+    if enable_sandbox {
+        progress::emit(
+            tx,
+            "[Step 15/16] Sandbox enabled (mode=non-main, scope=session, workspaceAccess=none)",
+        );
+    }
 
     let openai_enabled = has_value(openai_key);
     let gemini_enabled = has_value(gemini_key);

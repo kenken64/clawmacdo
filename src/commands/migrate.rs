@@ -17,6 +17,7 @@ pub struct MigrateParams {
     pub region: Option<String>,
     pub size: Option<String>,
     pub hostname: Option<String>,
+    pub enable_sandbox: bool,
     pub tailscale: bool,
 }
 
@@ -77,6 +78,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         hostname: params.hostname,
         backup: Some(local_archive),
         enable_backups: false,
+        enable_sandbox: params.enable_sandbox,
         tailscale: params.tailscale,
         non_interactive: false,
         progress_tx: None,
