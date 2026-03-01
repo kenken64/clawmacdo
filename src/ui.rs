@@ -166,7 +166,6 @@ pub fn print_summary(record: &DeployRecord) {
     println!("  SSH Access:");
     println!("    ssh -i {key} root@{ip}");
     println!();
-    println!("  OpenClaw Gateway:  http://{ip}:{port}");
     println!("  SSH Private Key:   {key}");
     println!(
         "  Backup Restored:   {}",
@@ -181,8 +180,9 @@ pub fn print_summary(record: &DeployRecord) {
     println!("    - OpenClaw gateway (port {port})");
     println!("    - Claude Code CLI  (claude --version)");
     println!("    - OpenAI Codex CLI (codex --version)");
+    println!("    - Gemini CLI       (gemini --version)");
     println!();
-    println!("  API Keys:         /root/.openclaw/.env on server");
+    println!("  API Keys:         /home/openclaw/.openclaw/.env on server");
     println!("                     (ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY)");
     println!("  Messaging Config: (WHATSAPP_PHONE_NUMBER + TELEGRAM_BOT_TOKEN)");
     println!("{divider}");

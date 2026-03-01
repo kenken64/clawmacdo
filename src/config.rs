@@ -8,6 +8,8 @@ pub const DEFAULT_SIZE: &str = "s-2vcpu-4gb";
 pub const OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DROPLET_TAG: &str = "openclaw";
 pub const CLOUD_INIT_SENTINEL: &str = "/root/.clawmacdo_cloud_init_done";
+pub const OPENCLAW_USER: &str = "openclaw";
+pub const OPENCLAW_HOME: &str = "/home/openclaw";
 
 /// Resolve the app data directory: ~/.clawmacdo/
 pub fn app_dir() -> Result<PathBuf, AppError> {
