@@ -37,7 +37,7 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
     }
 
     let mut cmd = String::from(
-        "export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus; ",
+        "export PATH=\"/usr/local/bin:/root/.openclaw/bin:/root/.cargo/bin:$PATH\" XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus; ",
     );
     cmd.push_str("openclaw models set anthropic/claude-opus-4-6 >/dev/null 2>&1 || true;");
 
@@ -101,7 +101,7 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     );
 
     // ── Step 2: Generate SSH key pair ───────────────────────────────────
-    progress::emit(tx, "\n[Step 2/12] Generating Ed25519 SSH key pair...");
+    progress::emit(tx, "\n[Step 2/12] Generating SSH key pair...");
 
     let keypair = ssh::generate_keypair(&deploy_id)?;
     progress::emit(tx, &format!("  Key saved: {}", keypair.private_key_path.display()));
@@ -284,6 +284,7 @@ async fn deploy_steps_5_through_12(
     progress::emit(tx, "\n[Step 10/12] Starting OpenClaw gateway (user service)...");
     let sp = ui::spinner("[Step 10/12] Starting OpenClaw gateway (user service)...");
     let start_cmd = concat!(
+        "export PATH=\"/usr/local/bin:/root/.openclaw/bin:/root/.cargo/bin:$PATH\" && ",
         "loginctl enable-linger root && ",
         "systemctl restart user@0.service && ",
         "export XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus && ",
