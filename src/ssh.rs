@@ -11,29 +11,40 @@ pub struct KeyPair {
     pub public_key_openssh: String,
 }
 
-/// Generate an Ed25519 SSH key pair and save to ~/.clawmacdo/keys/
+/// Generate an RSA-4096 SSH key pair (PEM format) via ssh-keygen.
+///
+/// PEM-format RSA keys are used because libssh2 (the C library behind the
+/// `ssh2` crate) does not reliably support Ed25519 keys on Windows.
 pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
-    use rand_core::OsRng;
-    use ssh_key::private::Ed25519Keypair;
-    use ssh_key::PrivateKey;
-
-    let ed25519_pair = Ed25519Keypair::random(&mut OsRng);
-    let private_key = PrivateKey::from(ed25519_pair);
-
     let keys_dir = config::keys_dir()?;
     std::fs::create_dir_all(&keys_dir)?;
 
     let private_path = keys_dir.join(format!("clawmacdo_{deploy_id}"));
-    let public_openssh = private_key
-        .public_key()
-        .to_openssh()
-        .map_err(|e| AppError::SshKeyGen(format!("Failed to encode public key: {e}")))?;
+    let pub_path = keys_dir.join(format!("clawmacdo_{deploy_id}.pub"));
 
-    let private_pem = private_key
-        .to_openssh(ssh_key::LineEnding::LF)
-        .map_err(|e| AppError::SshKeyGen(format!("Failed to encode private key: {e}")))?;
+    // Generate RSA key in PEM format (universally supported by libssh2)
+    let status = std::process::Command::new("ssh-keygen")
+        .args([
+            "-t", "rsa",
+            "-b", "4096",
+            "-m", "PEM",
+            "-f",
+        ])
+        .arg(&private_path)
+        .args(["-N", "", "-q"])
+        .status()
+        .map_err(|e| AppError::SshKeyGen(format!("Failed to run ssh-keygen: {e}")))?;
 
-    std::fs::write(&private_path, private_pem.as_bytes())?;
+    if !status.success() {
+        return Err(AppError::SshKeyGen(
+            "ssh-keygen exited with non-zero status".into(),
+        ));
+    }
+
+    let public_openssh = std::fs::read_to_string(&pub_path)
+        .map_err(|e| AppError::SshKeyGen(format!("Failed to read public key: {e}")))?
+        .trim()
+        .to_string();
 
     // Attempt to set file permissions to 600 on Unix-like systems
     #[cfg(unix)]

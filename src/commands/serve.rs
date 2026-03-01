@@ -254,9 +254,9 @@ tailwind.config = {
 <style>
   @keyframes pulse-border { 0%,100%{border-color:rgba(59,130,246,0.5)} 50%{border-color:rgba(59,130,246,1)} }
   .pulse-border { animation: pulse-border 2s ease-in-out infinite; }
-  #log-area::-webkit-scrollbar { width: 8px; }
-  #log-area::-webkit-scrollbar-track { background: #0f172a; }
-  #log-area::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  .deploy-log-area::-webkit-scrollbar { width: 8px; }
+  .deploy-log-area::-webkit-scrollbar-track { background: #0f172a; }
+  .deploy-log-area::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
   .eye-btn { position:absolute; right:12px; top:50%; transform:translateY(-50%); cursor:pointer; color:#94a3b8; }
   .eye-btn:hover { color:#e2e8f0; }
 </style>
@@ -425,42 +425,14 @@ tailwind.config = {
   </form>
 </div>
 
-<!-- Progress Panel (hidden until deploy starts) -->
-<div id="progress-panel" class="hidden mt-6 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-  <!-- Status header -->
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-semibold text-slate-100">Deploy Progress</h2>
-    <span id="status-badge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">
-      <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
-      Running
-    </span>
-  </div>
-
-  <!-- Progress bar -->
-  <div class="mb-4">
-    <div class="flex justify-between text-sm text-slate-400 mb-1">
-      <span>Step <span id="step-current">0</span> / 12</span>
-      <span id="step-percent">0%</span>
-    </div>
-    <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-      <div id="progress-bar" class="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out" style="width:0%"></div>
-    </div>
-  </div>
-
-  <!-- Log area -->
-  <div id="log-area" class="bg-slate-950 border border-slate-800 rounded-lg p-4 h-80 overflow-y-auto font-mono text-sm leading-relaxed"></div>
-
-  <!-- Summary card (hidden until complete) -->
-  <div id="summary-card" class="hidden mt-4 bg-slate-800/50 border border-green-500/30 rounded-lg p-4">
-    <h3 class="text-green-400 font-semibold mb-2">Deployment Complete</h3>
-    <div id="summary-content" class="text-sm text-slate-300 space-y-1 font-mono"></div>
-  </div>
-</div>
+<!-- Deploy panels container -->
+<div id="deploys-container" class="space-y-6 mt-6"></div>
 
 </main>
 
 <script>
 const TOTAL_STEPS = 12;
+let deployCounter = 0;
 
 // ── Eye toggle ──────────────────────────────────────────────────────────
 function toggleEye(btn) {
@@ -495,11 +467,42 @@ async function loadBackups() {
 }
 loadBackups();
 
-// ── Deploy ──────────────────────────────────────────────────────────────
-let currentStep = 0;
+// ── Deploy panel helpers ────────────────────────────────────────────────
 
-function appendLog(text, color) {
-  const area = document.getElementById('log-area');
+function createDeployPanel(panelId, label) {
+  const container = document.getElementById('deploys-container');
+  const panel = document.createElement('div');
+  panel.id = panelId;
+  panel.className = 'bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl';
+  panel.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-slate-100">${label}</h2>
+      <span class="deploy-badge inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">
+        <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
+        Running
+      </span>
+    </div>
+    <div class="mb-4">
+      <div class="flex justify-between text-sm text-slate-400 mb-1">
+        <span>Step <span class="deploy-step-current">0</span> / 12</span>
+        <span class="deploy-step-percent">0%</span>
+      </div>
+      <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+        <div class="deploy-progress-bar h-full bg-blue-500 rounded-full transition-all duration-500 ease-out" style="width:0%"></div>
+      </div>
+    </div>
+    <div class="deploy-log-area bg-slate-950 border border-slate-800 rounded-lg p-4 h-80 overflow-y-auto font-mono text-sm leading-relaxed"></div>
+    <div class="deploy-summary hidden mt-4 bg-slate-800/50 border border-green-500/30 rounded-lg p-4">
+      <h3 class="text-green-400 font-semibold mb-2">Deployment Complete</h3>
+      <div class="deploy-summary-content text-sm text-slate-300 space-y-1 font-mono"></div>
+    </div>
+  `;
+  container.prepend(panel);
+  return panel;
+}
+
+function panelAppendLog(panel, text, color) {
+  const area = panel.querySelector('.deploy-log-area');
   const line = document.createElement('div');
   line.className = color || 'text-slate-300';
   line.textContent = text;
@@ -507,42 +510,44 @@ function appendLog(text, color) {
   area.scrollTop = area.scrollHeight;
 }
 
-function updateProgress(step) {
-  if (step <= currentStep) return;
-  currentStep = step;
+function panelUpdateProgress(panel, step) {
+  const prev = parseInt(panel.querySelector('.deploy-step-current').textContent) || 0;
+  if (step <= prev) return;
   const pct = Math.round((step / TOTAL_STEPS) * 100);
-  document.getElementById('step-current').textContent = step;
-  document.getElementById('step-percent').textContent = pct + '%';
-  document.getElementById('progress-bar').style.width = pct + '%';
+  panel.querySelector('.deploy-step-current').textContent = step;
+  panel.querySelector('.deploy-step-percent').textContent = pct + '%';
+  panel.querySelector('.deploy-progress-bar').style.width = pct + '%';
 }
 
-function resetDeployBtn() {
-  const btn = document.getElementById('deploy-btn');
-  btn.disabled = false;
-  btn.textContent = 'Deploy';
-  btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
-  currentStep = 0;
-}
-
-function setStatus(status) {
-  const badge = document.getElementById('status-badge');
+function panelSetStatus(panel, status) {
+  const badge = panel.querySelector('.deploy-badge');
   if (status === 'completed') {
-    badge.className = 'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-500/30';
+    badge.className = 'deploy-badge inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-300 border border-green-500/30';
     badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-400"></span> Completed';
   } else if (status === 'failed') {
-    badge.className = 'inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-500/20 text-red-300 border border-red-500/30';
+    badge.className = 'deploy-badge inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-500/20 text-red-300 border border-red-500/30';
     badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-400"></span> Failed';
   }
 }
+
+function panelShowSummary(panel, ip, keyPath, hostname) {
+  const card = panel.querySelector('.deploy-summary');
+  const content = panel.querySelector('.deploy-summary-content');
+  card.classList.remove('hidden');
+  content.innerHTML = `
+    <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
+    <p><span class="text-slate-500">IP:</span> ${ip}</p>
+    <p><span class="text-slate-500">Gateway:</span> http://${ip}:18789</p>
+    <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} root@${ip}</p>
+  `;
+}
+
+// ── Deploy ──────────────────────────────────────────────────────────────
 
 async function startDeploy(e) {
   e.preventDefault();
 
   const form = document.getElementById('deploy-form');
-  const btn = document.getElementById('deploy-btn');
-  btn.disabled = true;
-  btn.textContent = 'Deploying...';
-  btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-slate-700 cursor-not-allowed');
 
   const body = {
     do_token: form.do_token.value,
@@ -558,9 +563,14 @@ async function startDeploy(e) {
     enable_backups: form.enable_backups.checked,
   };
 
-  // Show progress panel
-  document.getElementById('progress-panel').classList.remove('hidden');
-  document.getElementById('progress-panel').scrollIntoView({ behavior: 'smooth' });
+  deployCounter++;
+  const num = deployCounter;
+  const panelId = 'deploy-panel-' + num;
+  const hostnameLabel = body.hostname || 'auto';
+  const label = 'Deploy #' + num + ' <span class="text-sm text-slate-500 font-normal ml-2">' + body.region + ' / ' + hostnameLabel + '</span>';
+
+  const panel = createDeployPanel(panelId, label);
+  panel.scrollIntoView({ behavior: 'smooth' });
 
   try {
     const res = await fetch('/api/deploy', {
@@ -571,47 +581,42 @@ async function startDeploy(e) {
     const data = await res.json();
     const deployId = data.deploy_id;
 
-    // Open SSE
     const evtSource = new EventSource(`/api/deploy/${deployId}/events`);
     evtSource.onmessage = function(event) {
       const msg = event.data;
 
-      // Check for completion signal
       if (msg.startsWith('DEPLOY_COMPLETE:')) {
         const parts = msg.split(':');
         const ip = parts[1];
         const keyPath = parts[2];
         const hostname = parts[3];
-        setStatus('completed');
-        updateProgress(TOTAL_STEPS);
-        appendLog('Deploy completed successfully!', 'text-green-400 font-semibold');
+        panelSetStatus(panel, 'completed');
+        panelUpdateProgress(panel, TOTAL_STEPS);
+        panelAppendLog(panel, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
-        showSummary(ip, keyPath, hostname);
+        panelShowSummary(panel, ip, keyPath, hostname);
         return;
       }
 
       if (msg.startsWith('DEPLOY_ERROR:')) {
         const err = msg.substring(13);
-        setStatus('failed');
-        appendLog('ERROR: ' + err, 'text-red-400 font-semibold');
+        panelSetStatus(panel, 'failed');
+        panelAppendLog(panel, 'ERROR: ' + err, 'text-red-400 font-semibold');
         evtSource.close();
-        resetDeployBtn();
         return;
       }
 
-      // Parse step number from "[Step N/12]"
       const match = msg.match(/\[Step (\d+)\/12\]/);
       if (match) {
-        updateProgress(parseInt(match[1]));
+        panelUpdateProgress(panel, parseInt(match[1]));
       }
 
-      // Color code
       const trimmed = msg.trim();
       if (!trimmed) return;
       let color = 'text-slate-400';
       if (trimmed.startsWith('[Step')) color = 'text-blue-300 font-medium';
       else if (trimmed.startsWith('  ')) color = 'text-slate-400';
-      appendLog(trimmed, color);
+      panelAppendLog(panel, trimmed, color);
     };
 
     evtSource.onerror = function() {
@@ -619,22 +624,9 @@ async function startDeploy(e) {
     };
 
   } catch(err) {
-    setStatus('failed');
-    appendLog('Failed to start deploy: ' + err.message, 'text-red-400');
-    resetDeployBtn();
+    panelSetStatus(panel, 'failed');
+    panelAppendLog(panel, 'Failed to start deploy: ' + err.message, 'text-red-400');
   }
-}
-
-function showSummary(ip, keyPath, hostname) {
-  const card = document.getElementById('summary-card');
-  const content = document.getElementById('summary-content');
-  card.classList.remove('hidden');
-  content.innerHTML = `
-    <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
-    <p><span class="text-slate-500">IP:</span> ${ip}</p>
-    <p><span class="text-slate-500">Gateway:</span> http://${ip}:18789</p>
-    <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} root@${ip}</p>
-  `;
 }
 </script>
 </body>
