@@ -79,7 +79,7 @@ clawmacdo deploy \
   --telegram-bot-token=123456789:AA...
 ```
 
-Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`, `--tailscale`, `--enable-sandbox`.
+Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`, `--tailscale`, `--tailscale-auth-key`, `--enable-sandbox`.
 
 Missing values trigger interactive prompts.
 
@@ -99,7 +99,7 @@ Missing values trigger interactive prompts.
  11. Configure Docker daemon
  12. Set up Node.js/pnpm and install AI CLIs
  13. Install OpenClaw + write `.env`
- 14. Optional Tailscale install (`--tailscale`)
+ 14. Optional Tailscale install (`--tailscale`) + auto-connect when `--tailscale-auth-key` is provided
  15. Start OpenClaw gateway and apply model/sandbox config
  16. Save deploy record and print summary
 ```
@@ -177,7 +177,7 @@ clawmacdo list-backups
 7. Codex CLI (`@openai/codex`)
 8. Gemini CLI (`@google/gemini-cli`)
 9. API keys and messaging config written to `/home/openclaw/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
-10. Optional Tailscale VPN (`--tailscale`)
+10. Optional Tailscale VPN (`--tailscale`) with optional auto-connect (`--tailscale-auth-key`)
 11. Optional OpenClaw sandbox config (`--enable-sandbox`)
 
 ### Self-healing & resilience
@@ -220,6 +220,7 @@ Credentials and messaging settings can be passed as flags or environment variabl
 | `--gemini-key` | `GEMINI_API_KEY` | Optional |
 | `--whatsapp-phone-number` | `WHATSAPP_PHONE_NUMBER` | Optional |
 | `--telegram-bot-token` | `TELEGRAM_BOT_TOKEN` | Optional |
+| `--tailscale-auth-key` | `TAILSCALE_AUTH_KEY` | Optional (used with `--tailscale`) |
 
 ## Data directories
 
@@ -237,7 +238,7 @@ src/
 ├── commands/
 │   ├── mod.rs
 │   ├── backup.rs        # Scan + tar.gz ~/.openclaw/
-│   ├── deploy.rs        # 12-step deploy orchestrator
+│   ├── deploy.rs        # 16-step deploy orchestrator
 │   ├── migrate.rs       # DO→DO: remote backup + deploy
 │   ├── destroy.rs       # Destroy droplet + clean up SSH keys
 │   ├── status.rs        # DO API → list tagged droplets

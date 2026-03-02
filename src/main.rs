@@ -83,6 +83,10 @@ enum Commands {
         /// Enable Tailscale VPN on the droplet
         #[arg(long, default_value = "false")]
         tailscale: bool,
+
+        /// Tailscale auth key for automatic `tailscale up` (optional)
+        #[arg(long, env = "TAILSCALE_AUTH_KEY")]
+        tailscale_auth_key: Option<String>,
     },
 
     /// DO → DO migration: backup source droplet, deploy new, restore config
@@ -138,6 +142,10 @@ enum Commands {
         /// Enable Tailscale VPN on the droplet
         #[arg(long, default_value = "false")]
         tailscale: bool,
+
+        /// Tailscale auth key for automatic `tailscale up` (optional)
+        #[arg(long, env = "TAILSCALE_AUTH_KEY")]
+        tailscale_auth_key: Option<String>,
     },
 
     /// List deployed openclaw-tagged droplets
@@ -191,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
             enable_backups,
             enable_sandbox,
             tailscale,
+            tailscale_auth_key,
         } => {
             let params = DeployParams {
                 do_token,
@@ -206,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
                 enable_backups,
                 enable_sandbox,
                 tailscale,
+                tailscale_auth_key,
                 non_interactive: false,
                 progress_tx: None,
             };
@@ -225,6 +235,7 @@ async fn main() -> anyhow::Result<()> {
             hostname,
             enable_sandbox,
             tailscale,
+            tailscale_auth_key,
         } => {
             let params = MigrateParams {
                 do_token,
@@ -240,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
                 hostname,
                 enable_sandbox,
                 tailscale,
+                tailscale_auth_key,
             };
             commands::migrate::run(params).await?;
         }

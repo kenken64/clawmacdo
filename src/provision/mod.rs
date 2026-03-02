@@ -20,7 +20,9 @@ pub struct ProvisionOpts<'a> {
     pub whatsapp_phone_number: &'a str,
     pub telegram_bot_token: &'a str,
     pub public_key_openssh: &'a str,
+    pub hostname: &'a str,
     pub tailscale: bool,
+    pub tailscale_auth_key: Option<&'a str>,
     /// Optional channel for streaming progress to the web UI (SSE).
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
@@ -78,8 +80,24 @@ pub async fn run(
     // Step 14: Optional Tailscale
     if opts.tailscale {
         progress::emit(tx, "\n[Step 14/16] Installing Tailscale VPN...");
-        tailscale::provision(ip, key).await?;
-        progress::emit(tx, "  Tailscale installed (run `sudo tailscale up` on server to connect)");
+        match tailscale::provision(ip, key, opts.hostname, opts.tailscale_auth_key).await? {
+            tailscale::TailscaleProvisionStatus::Connected => {
+                progress::emit(tx, "  Tailscale installed and connected");
+            }
+            tailscale::TailscaleProvisionStatus::InstalledOnly => {
+                progress::emit(
+                    tx,
+                    "  Tailscale installed (run `sudo tailscale up` on server to connect)",
+                );
+            }
+            tailscale::TailscaleProvisionStatus::ConnectFailed(err) => {
+                progress::emit(
+                    tx,
+                    "  Tailscale installed, but auto-connect failed; run `sudo tailscale up` manually",
+                );
+                progress::emit(tx, &format!("  Tailscale auto-connect error: {err}"));
+            }
+        }
     } else {
         progress::emit(tx, "\n[Step 14/16] Tailscale skipped (not enabled)");
     }

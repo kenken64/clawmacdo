@@ -25,6 +25,8 @@ pub struct DeployParams {
     pub enable_sandbox: bool,
     /// Enable Tailscale VPN on the droplet.
     pub tailscale: bool,
+    /// Optional Tailscale auth key for non-interactive `tailscale up`.
+    pub tailscale_auth_key: Option<String>,
     /// If true, skip interactive prompts and use the pre-set backup path.
     pub non_interactive: bool,
     /// Optional channel for streaming progress to the web UI (SSE).
@@ -176,6 +178,7 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         &params.telegram_bot_token,
         params.enable_sandbox,
         params.tailscale,
+        params.tailscale_auth_key.as_deref(),
         &params.progress_tx,
     )
     .await;
@@ -221,6 +224,7 @@ async fn deploy_steps_5_through_16(
     telegram_bot_token: &str,
     enable_sandbox: bool,
     tailscale: bool,
+    tailscale_auth_key: Option<&str>,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
 ) -> Result<DeployRecord> {
     let tx = progress_tx;
@@ -300,6 +304,8 @@ async fn deploy_steps_5_through_16(
         telegram_bot_token,
         public_key_openssh,
         tailscale,
+        tailscale_auth_key,
+        hostname,
         progress_tx: tx.clone(),
     };
     provision::run(&ip, private_key_path, &provision_opts)
@@ -325,28 +331,47 @@ async fn deploy_steps_5_through_16(
                node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              (docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)) && ",
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1))",
             home = config::OPENCLAW_HOME
         )
     } else {
-        String::new()
+        "true".to_string()
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi && \
-         (openclaw onboard --non-interactive --mode local --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || \
-            openclaw daemon install --port 18789 --runtime node --force >/dev/null 2>&1) && \
+         if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then \
+           dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; \
+         fi && \
+         if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
+         (openclaw onboard --non-interactive --mode local --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw daemon install --port 18789 --runtime node --force || true); \
+         SVC={home}/.config/systemd/user/openclaw-gateway.service; \
+         if [ -f \"$SVC\" ]; then \
+           OC_EXT=$(find {home}/.local/share/pnpm -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
+           if [ -n \"$OC_EXT\" ]; then \
+             rm -rf {home}/.openclaw/bundled-extensions && \
+             cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; \
+           fi; \
+           sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
+           sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
+         fi; \
          if [ -n \"$TELEGRAM_BOT_TOKEN\" ] && [ -f {home}/.openclaw/openclaw.json ]; then \
            node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.channels=cfg.channels||{{}};cfg.channels.telegram=cfg.channels.telegram||{{}};cfg.channels.telegram.botToken=process.env.TELEGRAM_BOT_TOKEN;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-         fi && \
-         {sandbox_setup_cmd}\
+         fi; \
+         ({sandbox_setup_cmd}) && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
-         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
-         systemctl --user daemon-reload && \
-         systemctl --user enable --now openclaw-gateway.service && \
-         systemctl --user is-active openclaw-gateway.service >/dev/null && \
-         echo ok",
+         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
+         (systemctl --user daemon-reload || true) && \
+         (systemctl --user enable --now openclaw-gateway.service || true) && \
+         for i in $(seq 1 90); do \
+           if systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then \
+             echo ok; \
+             exit 0; \
+           fi; \
+           sleep 1; \
+         done; \
+         exit 1",
         home = config::OPENCLAW_HOME,
         openai_onboard_arg = openai_onboard_arg,
         gemini_onboard_arg = gemini_onboard_arg,
@@ -354,10 +379,53 @@ async fn deploy_steps_5_through_16(
     );
     let ip_clone = ip.clone();
     let key_clone = private_key_path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
+    let start_result = tokio::task::spawn_blocking(move || {
         provision::commands::ssh_as_openclaw(&ip_clone, &key_clone, &start_cmd)
     })
-    .await??;
+    .await?;
+    if let Err(start_err) = start_result {
+        let diag_cmd = format!(
+            "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+             echo '--- systemctl --user status openclaw-gateway.service ---' && \
+             (systemctl --user status openclaw-gateway.service --no-pager -n 50 2>&1 || true) && \
+             echo '--- journalctl --user -u openclaw-gateway.service ---' && \
+             (journalctl --user -u openclaw-gateway.service --no-pager -n 80 2>&1 || true)"
+        );
+        let ip_diag = ip.clone();
+        let key_diag = private_key_path.to_path_buf();
+        let diagnostics = tokio::task::spawn_blocking(move || {
+            provision::commands::ssh_as_openclaw(&ip_diag, &key_diag, &diag_cmd)
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_else(|| "No service diagnostics available.".to_string());
+
+        let active_check_cmd = "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+            if systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then echo active; else echo inactive; fi";
+        let ip_active = ip.clone();
+        let key_active = private_key_path.to_path_buf();
+        let service_active = tokio::task::spawn_blocking(move || {
+            provision::commands::ssh_as_openclaw(&ip_active, &key_active, active_check_cmd)
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|s| s.trim() == "active")
+        .unwrap_or(false);
+
+        if service_active {
+            progress::emit(
+                tx,
+                "[Step 15/16] Gateway service is active despite transient startup exit; continuing",
+            );
+        } else {
+        bail!(
+            "OpenClaw gateway start failed: {start_err}\n{}",
+            diagnostics.trim()
+        );
+        }
+    }
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
     if enable_sandbox {

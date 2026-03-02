@@ -114,18 +114,16 @@ chmod 700 {cd}"#,
 
     if !anthropic_key.trim().is_empty() {
         // Warm up Claude in headless mode so first manual run is not blocked by onboarding prompts.
+        // This is best-effort and should never fail the deploy.
         let claude_bootstrap = format!(
             "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
              HOME={home} \
-             claude -p \"health check\" --output-format text --max-turns 1 >/dev/null",
+             timeout 240s claude -p \"health check\" --output-format text --max-turns 1 >/dev/null 2>&1 || true",
             home = home,
         );
-        ssh_as_openclaw_async(ip, key, &claude_bootstrap)
-            .await
-            .map_err(|e| AppError::Provision {
-                phase: "claude bootstrap".into(),
-                message: e.to_string(),
-            })?;
+        if let Err(e) = ssh_as_openclaw_async(ip, key, &claude_bootstrap).await {
+            eprintln!("  Warning: Claude bootstrap failed; continuing: {e}");
+        }
     }
 
     Ok(())

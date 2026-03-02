@@ -19,6 +19,7 @@ pub struct MigrateParams {
     pub hostname: Option<String>,
     pub enable_sandbox: bool,
     pub tailscale: bool,
+    pub tailscale_auth_key: Option<String>,
 }
 
 /// Run the full migrate flow: remote backup from source, then deploy to new droplet.
@@ -80,6 +81,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         enable_backups: false,
         enable_sandbox: params.enable_sandbox,
         tailscale: params.tailscale,
+        tailscale_auth_key: params.tailscale_auth_key,
         non_interactive: false,
         progress_tx: None,
     };

@@ -2,10 +2,21 @@ use crate::error::AppError;
 use crate::provision::commands::ssh_root_async;
 use std::path::Path;
 
+pub enum TailscaleProvisionStatus {
+    InstalledOnly,
+    Connected,
+    ConnectFailed(String),
+}
+
 /// Optional: Install and configure Tailscale (--tailscale flag).
 /// Translated from openclaw-ansible/roles/openclaw/tasks/tailscale-linux.yml.
 /// Hardcodes Ubuntu 24.04 (noble) since that's the DO image we use.
-pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
+pub async fn provision(
+    ip: &str,
+    key: &Path,
+    hostname: &str,
+    tailscale_auth_key: Option<&str>,
+) -> Result<TailscaleProvisionStatus, AppError> {
     // Add Tailscale GPG key + repository
     let add_repo = r#"
 curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg" | \
@@ -32,5 +43,25 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.lis
     // Allow Tailscale UDP port through UFW
     ssh_root_async(ip, key, "ufw allow 41641/udp comment 'Tailscale'").await?;
 
-    Ok(())
+    // Auto-connect if an auth key is provided.
+    if let Some(auth_key) = tailscale_auth_key {
+        let trimmed = auth_key.trim();
+        if !trimmed.is_empty() {
+            let up_cmd = format!(
+                "tailscale up --auth-key {} --hostname {}",
+                shell_quote(trimmed),
+                shell_quote(hostname),
+            );
+            return match ssh_root_async(ip, key, &up_cmd).await {
+                Ok(_) => Ok(TailscaleProvisionStatus::Connected),
+                Err(e) => Ok(TailscaleProvisionStatus::ConnectFailed(e.to_string())),
+            };
+        }
+    }
+
+    Ok(TailscaleProvisionStatus::InstalledOnly)
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
