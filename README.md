@@ -79,25 +79,29 @@ clawmacdo deploy \
   --telegram-bot-token=123456789:AA...
 ```
 
-Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`.
+Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`, `--tailscale`, `--enable-sandbox`.
 
 Missing values trigger interactive prompts.
 
-#### Deploy flow (12 steps)
+#### Deploy flow (16 steps)
 
 ```
- 1. Resolve parameters (interactive prompts for missing values)
- 2. Generate Ed25519 SSH key pair → ~/.clawmacdo/keys/
- 3. Upload public key to DigitalOcean
- 4. Create droplet with cloud-init (tagged "openclaw")
- 5. Poll until droplet is active (5min timeout)
- 6. Wait for SSH to accept connections (2min timeout)
- 7. Wait for cloud-init to complete (10min timeout)
- 8. SCP backup archive to server (if selected)
- 9. Extract configs into ~/.openclaw/, preserve .env
-10. Start OpenClaw gateway via user-level systemd (`systemctl --user`) and auto-configure model fallbacks based on available provider keys
-11. Save deploy record to ~/.clawmacdo/deploys/
-12. Print provisioning summary
+  1. Resolve parameters (interactive prompts for missing values)
+  2. Generate SSH key pair → ~/.clawmacdo/keys/
+  3. Upload public key to DigitalOcean
+  4. Create droplet with cloud-init (tagged "openclaw")
+  5. Poll until droplet is active
+  6. Wait for SSH to accept connections
+  7. Wait for cloud-init to complete
+  8. SCP backup archive to server (if selected)
+  9. Create `openclaw` user + SSH access
+ 10. Harden firewall (UFW + fail2ban + Docker isolation rules)
+ 11. Configure Docker daemon
+ 12. Set up Node.js/pnpm and install AI CLIs
+ 13. Install OpenClaw + write `.env`
+ 14. Optional Tailscale install (`--tailscale`)
+ 15. Start OpenClaw gateway and apply model/sandbox config
+ 16. Save deploy record and print summary
 ```
 
 ### Migrate (DO to DO)
@@ -164,14 +168,17 @@ clawmacdo list-backups
 
 ## What gets installed on the droplet
 
-1. System packages: `curl`, `gnupg`, `ufw`, `git`, `build-essential`
-2. Firewall (UFW): ports 22 (SSH) and 18789 (OpenClaw gateway) only
-3. Node.js 24 LTS via NodeSource
-4. OpenClaw gateway
-5. Claude Code CLI (`@anthropic-ai/claude-code`)
-6. Codex CLI (`@openai/codex`)
-7. Gemini CLI (`@google/gemini-cli`)
-8. API keys and messaging config written to `/home/openclaw/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
+1. System packages: `curl`, `gnupg`, `ufw`, `git`, `build-essential`, `docker.io`, `fail2ban`, `unattended-upgrades`
+2. Firewall hardening: UFW baseline + Docker isolation (`DOCKER-USER`) + fail2ban
+3. Docker daemon configuration (`/etc/docker/daemon.json`)
+4. Node.js 24 LTS via NodeSource + pnpm setup
+5. OpenClaw gateway (user-level systemd service)
+6. Claude Code CLI (`@anthropic-ai/claude-code`)
+7. Codex CLI (`@openai/codex`)
+8. Gemini CLI (`@google/gemini-cli`)
+9. API keys and messaging config written to `/home/openclaw/.openclaw/.env` (Anthropic, OpenAI, Gemini, WhatsApp phone number, Telegram bot token)
+10. Optional Tailscale VPN (`--tailscale`)
+11. Optional OpenClaw sandbox config (`--enable-sandbox`)
 
 ### Self-healing & resilience
 
