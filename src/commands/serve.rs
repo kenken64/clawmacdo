@@ -60,11 +60,18 @@ struct DeployRequest {
     enable_sandbox: bool,
     #[serde(default)]
     tailscale: bool,
+    #[serde(default)]
+    tailscale_auth_key: String,
 }
 
 #[derive(Serialize)]
 struct DeployResponse {
     deploy_id: String,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -147,6 +154,16 @@ async fn start_deploy_handler(
     State(jobs): State<Jobs>,
     Json(req): Json<DeployRequest>,
 ) -> impl IntoResponse {
+    if req.tailscale && req.tailscale_auth_key.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                message: "Tailscale auth key is required when Tailscale is enabled.".into(),
+            }),
+        )
+            .into_response();
+    }
+
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
@@ -181,6 +198,11 @@ async fn start_deploy_handler(
             enable_backups: req.enable_backups,
             enable_sandbox: req.enable_sandbox,
             tailscale: req.tailscale,
+            tailscale_auth_key: if req.tailscale_auth_key.trim().is_empty() {
+                None
+            } else {
+                Some(req.tailscale_auth_key)
+            },
             non_interactive: true,
             progress_tx: Some(tx.clone()),
         };
@@ -206,7 +228,7 @@ async fn start_deploy_handler(
         }
     });
 
-    Json(DeployResponse { deploy_id })
+    Json(DeployResponse { deploy_id }).into_response()
 }
 
 async fn deploy_events_handler(
@@ -461,9 +483,11 @@ function eyeBtn() {
 }
 
 function passwordField(name, label, placeholder, required) {
-  const req = required ? '<span class="text-red-400">*</span>' : '<span class="text-slate-500">(optional)</span>';
+  const req = required
+    ? '<span class="field-required-indicator text-red-400">*</span>'
+    : '<span class="field-required-indicator text-slate-500">(optional)</span>';
   const reqAttr = required ? 'required' : '';
-  return `<div>
+  return `<div data-field="${name}">
     <label class="block text-sm font-medium text-slate-300 mb-1">${label} ${req}</label>
     <div class="relative">
       <input type="password" name="${name}" ${reqAttr} class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="${placeholder}">
@@ -524,6 +548,7 @@ function addDeployCard() {
         ${passwordField('anthropic_key', 'Anthropic API Key', 'sk-ant-...', true)}
         ${passwordField('openai_key', 'OpenAI API Key', 'sk-...', false)}
         ${passwordField('gemini_key', 'Gemini API Key', 'AI...', false)}
+        ${passwordField('tailscale_auth_key', 'Tailscale Auth Key', 'tskey-auth-...', false)}
       </fieldset>
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Messaging <span class="text-slate-500 normal-case">(optional)</span></legend>
@@ -618,7 +643,34 @@ function addDeployCard() {
     </div>
   `;
   container.appendChild(card);
+  const form = card.querySelector('form');
+  const tailscaleToggle = form.querySelector('[name="tailscale"]');
+  if (tailscaleToggle) {
+    tailscaleToggle.addEventListener('change', () => syncTailscaleKeyRequirement(form));
+    syncTailscaleKeyRequirement(form);
+  }
   card.scrollIntoView({ behavior: 'smooth' });
+}
+
+function syncTailscaleKeyRequirement(form) {
+  const tailscaleToggle = form.querySelector('[name="tailscale"]');
+  const tailscaleKeyInput = form.querySelector('[name="tailscale_auth_key"]');
+  const indicator = form.querySelector('[data-field="tailscale_auth_key"] .field-required-indicator');
+  if (!tailscaleToggle || !tailscaleKeyInput) return;
+
+  const isRequired = tailscaleToggle.checked;
+  tailscaleKeyInput.required = isRequired;
+  tailscaleKeyInput.setAttribute('aria-required', isRequired ? 'true' : 'false');
+
+  if (indicator) {
+    if (isRequired) {
+      indicator.className = 'field-required-indicator text-red-400';
+      indicator.textContent = '* required when Tailscale enabled';
+    } else {
+      indicator.className = 'field-required-indicator text-slate-500';
+      indicator.textContent = '(optional)';
+    }
+  }
 }
 
 function removeCard(n) {
@@ -792,6 +844,8 @@ async function startDeploy(e, cardNum) {
   const form = card.querySelector('form');
   const btn = card.querySelector('.deploy-submit-btn');
   const progressDiv = card.querySelector('.deploy-progress');
+  syncTailscaleKeyRequirement(form);
+  if (!form.reportValidity()) return;
 
   const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
   const body = {
@@ -808,6 +862,7 @@ async function startDeploy(e, cardNum) {
     enable_backups: form.querySelector('[name="enable_backups"]').checked,
     enable_sandbox: form.querySelector('[name="enable_sandbox"]').checked,
     tailscale: form.querySelector('[name="tailscale"]').checked,
+    tailscale_auth_key: val('tailscale_auth_key'),
   };
 
   // Disable button and show progress
@@ -832,6 +887,9 @@ async function startDeploy(e, cardNum) {
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    if (!res.ok) {
+      throw new Error((data && data.message) || 'Failed to start deploy');
+    }
     const deployId = data.deploy_id;
 
     const evtSource = new EventSource(`/api/deploy/${deployId}/events`);

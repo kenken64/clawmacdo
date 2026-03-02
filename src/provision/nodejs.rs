@@ -61,5 +61,23 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
             message: e.to_string(),
         })?;
 
+    // Symlink CLI binaries into /usr/local/bin so they are accessible to all users
+    // (e.g. root via DigitalOcean console login).
+    let symlink_cmd = format!(
+        "for bin in claude codex gemini; do \
+           src={home}/.local/bin/$bin; \
+           if [ -f \"$src\" ] || [ -L \"$src\" ]; then \
+             ln -sf \"$src\" /usr/local/bin/$bin; \
+           fi; \
+         done",
+        home = home,
+    );
+    ssh_root_async(ip, key, &symlink_cmd)
+        .await
+        .map_err(|e| AppError::Provision {
+            phase: "cli symlinks".into(),
+            message: e.to_string(),
+        })?;
+
     Ok(())
 }

@@ -197,15 +197,48 @@ impl DoClient {
         timeout: std::time::Duration,
     ) -> Result<DropletInfo, AppError> {
         let start = std::time::Instant::now();
+        let mut last_poll_error: Option<String> = None;
         loop {
             if start.elapsed() > timeout {
-                return Err(AppError::Timeout("droplet to become active".into()));
+                let detail = last_poll_error
+                    .as_deref()
+                    .map(|e| format!("droplet to become active (last poll error: {e})"))
+                    .unwrap_or_else(|| "droplet to become active".to_string());
+                return Err(AppError::Timeout(detail));
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-            let droplet = self.get_droplet(droplet_id).await?;
-            if droplet.status == "active" && droplet.public_ip().is_some() {
-                return Ok(droplet);
+            let elapsed = start.elapsed();
+            if elapsed > timeout {
+                let detail = last_poll_error
+                    .as_deref()
+                    .map(|e| format!("droplet to become active (last poll error: {e})"))
+                    .unwrap_or_else(|| "droplet to become active".to_string());
+                return Err(AppError::Timeout(detail));
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            let request_timeout = remaining.min(std::time::Duration::from_secs(15));
+            let droplet_result =
+                tokio::time::timeout(request_timeout, self.get_droplet(droplet_id)).await;
+
+            match droplet_result {
+                Ok(Ok(droplet)) => {
+                    if droplet.status == "active" && droplet.public_ip().is_some() {
+                        return Ok(droplet);
+                    }
+                }
+                Ok(Err(AppError::Http(err))) => {
+                    // Transport errors (connection resets/timeouts) can happen while polling;
+                    // keep retrying until the overall poll timeout expires.
+                    last_poll_error = Some(err.to_string());
+                    continue;
+                }
+                Ok(Err(err)) => return Err(err),
+                Err(_) => {
+                    // A single request timed out; keep polling until the overall timeout is hit.
+                    last_poll_error = Some("single poll request timed out".to_string());
+                    continue;
+                }
             }
         }
     }

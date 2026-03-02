@@ -102,16 +102,31 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
         .read_to_string(&mut output)
         .map_err(|e| AppError::Ssh(format!("Read output: {e}")))?;
 
+    let mut stderr_out = String::new();
+    channel
+        .stderr()
+        .read_to_string(&mut stderr_out)
+        .map_err(|e| AppError::Ssh(format!("Read stderr: {e}")))?;
+
     channel
         .wait_close()
         .map_err(|e| AppError::Ssh(format!("Wait close: {e}")))?;
 
     let exit_status = channel.exit_status().unwrap_or(-1);
     if exit_status != 0 {
-        let mut stderr_out = String::new();
-        let _ = channel.stderr().read_to_string(&mut stderr_out);
+        let stderr_trimmed = stderr_out.trim();
+        let stdout_trimmed = output.trim();
+        let details = if !stderr_trimmed.is_empty() && !stdout_trimmed.is_empty() {
+            format!("stderr: {stderr_trimmed}\nstdout: {stdout_trimmed}")
+        } else if !stderr_trimmed.is_empty() {
+            format!("stderr: {stderr_trimmed}")
+        } else if !stdout_trimmed.is_empty() {
+            format!("stdout: {stdout_trimmed}")
+        } else {
+            "no output captured".to_string()
+        };
         return Err(AppError::Ssh(format!(
-            "Command exited with status {exit_status}: {stderr_out}"
+            "Command exited with status {exit_status}: {details}"
         )));
     }
 

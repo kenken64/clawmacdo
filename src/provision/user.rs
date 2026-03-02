@@ -153,6 +153,19 @@ chmod 700 /run/user/$OPENCLAW_UID"#,
     );
     ssh_root_async(ip, key, &runtime_dir).await?;
 
+    // Ensure the user systemd manager is started now, not only on next login/reboot.
+    let user_manager = format!(
+        r#"OPENCLAW_UID=$(id -u {user}) && \
+systemctl start user@$OPENCLAW_UID.service >/dev/null 2>&1 || true && \
+for i in $(seq 1 20); do \
+  [ -S /run/user/$OPENCLAW_UID/bus ] && exit 0; \
+  sleep 1; \
+done; \
+exit 0"#,
+        user = user,
+    );
+    ssh_root_async(ip, key, &user_manager).await?;
+
     // If a backup was restored to /root/.openclaw, move it into the openclaw home.
     let restore_backup = format!(
         r#"if [ -d /root/.openclaw ]; then \
