@@ -264,10 +264,13 @@ async fn start_deploy_handler(
 
         let final_status = match &result {
             Ok(record) => {
-                let _ = tx.send(format!(
-                    "DEPLOY_COMPLETE:{}:{}:{}",
-                    record.ip_address, record.ssh_key_path, record.hostname
-                ));
+                let payload = serde_json::json!({
+                    "ip": record.ip_address,
+                    "ssh_key_path": record.ssh_key_path,
+                    "hostname": record.hostname
+                })
+                .to_string();
+                let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
                 JobStatus::Completed
             }
             Err(e) => {
@@ -623,11 +626,16 @@ tailwind.config = {
   <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-xl shadow-lg max-w-xs sm:max-w-sm w-full">
 </div>
 
-<!-- Add Deployment button -->
-<button type="button" onclick="addDeployCard()" class="w-full mb-6 bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
-  <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-  Add Deployment
-</button>
+<!-- Actions -->
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+  <button type="button" onclick="addDeployCard()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
+    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+    Add Deployment
+  </button>
+  <button type="button" onclick="resetSavedDeployments()" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+    Reset Saved Deployments
+  </button>
+</div>
 
 <!-- Deploy cards container -->
 <div id="deploys-container" class="space-y-6"></div>
@@ -636,6 +644,7 @@ tailwind.config = {
 
 <script>
 const TOTAL_STEPS = 16;
+const DEPLOY_STORAGE_KEY = 'clawmacdo.savedDeploys.v1';
 let deployCounter = 0;
 let backupOptions = '<option value="none">None</option>';
 
@@ -689,9 +698,60 @@ async function loadBackups() {
 }
 loadBackups();
 
+function loadSavedDeployments() {
+  try {
+    const raw = localStorage.getItem(DEPLOY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(d => d && d.ip && d.keyPath && d.hostname);
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveSavedDeployments(items) {
+  localStorage.setItem(DEPLOY_STORAGE_KEY, JSON.stringify(items));
+}
+
+function deployFingerprint(ip, keyPath, hostname) {
+  return `${ip}|${keyPath}|${hostname}`;
+}
+
+function persistCompletedDeployment(ip, keyPath, hostname) {
+  const list = loadSavedDeployments();
+  const fp = deployFingerprint(ip, keyPath, hostname);
+  const next = list.filter(d => deployFingerprint(d.ip, d.keyPath, d.hostname) !== fp);
+  next.push({ ip, keyPath, hostname, savedAt: Date.now() });
+  saveSavedDeployments(next);
+}
+
+function removeCompletedDeployment(fp) {
+  if (!fp) return;
+  const list = loadSavedDeployments();
+  const next = list.filter(d => deployFingerprint(d.ip, d.keyPath, d.hostname) !== fp);
+  saveSavedDeployments(next);
+}
+
+function resetSavedDeployments() {
+  localStorage.removeItem(DEPLOY_STORAGE_KEY);
+  document.querySelectorAll('[id^="deploy-card-"][data-deploy-fingerprint]').forEach(c => c.remove());
+  if (!document.querySelector('[id^="deploy-card-"]')) {
+    addDeployCard();
+  }
+  alert('Saved completed deployments were cleared.');
+}
+
+function restoreSavedDeployments() {
+  const saved = loadSavedDeployments();
+  for (const d of saved) {
+    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, restored: true });
+  }
+}
+
 // ── Add deploy card ─────────────────────────────────────────────────────
 
-function addDeployCard() {
+function addDeployCard(initialState) {
   deployCounter++;
   const n = deployCounter;
   const container = document.getElementById('deploys-container');
@@ -813,7 +873,19 @@ function addDeployCard() {
     tailscaleToggle.addEventListener('change', () => syncTailscaleKeyRequirement(form));
     syncTailscaleKeyRequirement(form);
   }
-  card.scrollIntoView({ behavior: 'smooth' });
+  if (initialState && initialState.completed) {
+    const progressDiv = card.querySelector('.deploy-progress');
+    progressDiv.classList.remove('hidden');
+    panelSetStatus(card, 'completed');
+    panelUpdateProgress(card, TOTAL_STEPS);
+    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname);
+    if (initialState.restored) {
+      panelAppendLog(card, 'Recovered completed deployment from local storage.', 'text-slate-400');
+    }
+  }
+  if (!initialState || !initialState.restored) {
+    card.scrollIntoView({ behavior: 'smooth' });
+  }
 }
 
 function syncTailscaleKeyRequirement(form) {
@@ -839,7 +911,10 @@ function syncTailscaleKeyRequirement(form) {
 
 function removeCard(n) {
   const card = document.getElementById('deploy-card-' + n);
-  if (card) card.remove();
+  if (card) {
+    removeCompletedDeployment(card.dataset.deployFingerprint || '');
+    card.remove();
+  }
 }
 
 // ── Deploy helpers ──────────────────────────────────────────────────────
@@ -881,6 +956,7 @@ function panelShowSummary(panel, ip, keyPath, hostname) {
   const content = panel.querySelector('.deploy-summary-content');
   panel.dataset.deployIp = ip;
   panel.dataset.deployKeyPath = keyPath;
+  panel.dataset.deployFingerprint = deployFingerprint(ip, keyPath, hostname);
   card.classList.remove('hidden');
   content.innerHTML = `
     <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
@@ -911,6 +987,7 @@ function panelShowSummary(panel, ip, keyPath, hostname) {
       <pre class="whatsapp-qr-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 font-mono text-[10px] leading-3 whitespace-pre text-slate-300 min-h-[26rem] max-h-[70vh] overflow-auto"></pre>
     </div>
   `;
+  persistCompletedDeployment(ip, keyPath, hostname);
 }
 
 async function approveTelegramPairing(btn) {
@@ -1147,11 +1224,38 @@ async function startDeploy(e, cardNum) {
     evtSource.onmessage = function(event) {
       const msg = event.data;
 
+      if (msg.startsWith('DEPLOY_COMPLETE_JSON:')) {
+        let ip = '';
+        let keyPath = '';
+        let hostname = '';
+        try {
+          const payload = JSON.parse(msg.substring('DEPLOY_COMPLETE_JSON:'.length));
+          ip = payload.ip || '';
+          keyPath = payload.ssh_key_path || '';
+          hostname = payload.hostname || '';
+        } catch (_) {}
+        if (!ip || !keyPath || !hostname) {
+          panelSetStatus(card, 'failed');
+          panelAppendLog(card, 'ERROR: Invalid deploy completion payload', 'text-red-400 font-semibold');
+          evtSource.close();
+          btn.disabled = false;
+          btn.textContent = 'Retry Deploy';
+          btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
+          return;
+        }
+        panelSetStatus(card, 'completed');
+        panelUpdateProgress(card, TOTAL_STEPS);
+        panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
+        evtSource.close();
+        panelShowSummary(card, ip, keyPath, hostname);
+        return;
+      }
+
       if (msg.startsWith('DEPLOY_COMPLETE:')) {
         const parts = msg.split(':');
-        const ip = parts[1];
-        const keyPath = parts[2];
-        const hostname = parts[3];
+        const ip = parts[1] || '';
+        const hostname = parts[parts.length - 1] || '';
+        const keyPath = parts.slice(2, parts.length - 1).join(':');
         panelSetStatus(card, 'completed');
         panelUpdateProgress(card, TOTAL_STEPS);
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
@@ -1199,6 +1303,7 @@ async function startDeploy(e, cardNum) {
 
 // Auto-add the first deployment card
 addDeployCard();
+restoreSavedDeployments();
 </script>
 </body>
 </html>
