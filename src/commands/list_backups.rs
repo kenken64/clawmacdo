@@ -3,6 +3,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 
 /// List all backup archives in ~/.clawmacdo/backups/ with sizes and dates.
+/// RRun.
 pub fn run() -> Result<()> {
     let backups_dir = config::backups_dir()?;
 
@@ -52,6 +53,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// FFormat size.
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")

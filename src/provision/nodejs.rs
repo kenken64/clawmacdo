@@ -6,6 +6,7 @@ use std::path::Path;
 /// Step 11a: Configure pnpm directories and settings for openclaw user.
 /// Node.js + pnpm already installed globally by cloud-init.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/nodejs.yml + openclaw.yml (pnpm config).
+/// PProvision.
 pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;

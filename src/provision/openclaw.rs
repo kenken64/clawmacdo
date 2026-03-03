@@ -5,6 +5,7 @@ use std::path::Path;
 
 /// Create directory structure, write .env, install OpenClaw via pnpm.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/openclaw.yml + openclaw-release.yml.
+/// PProvision.
 pub async fn provision(
     ip: &str,
     key: &Path,

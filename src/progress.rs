@@ -4,6 +4,7 @@ use tokio::sync::mpsc::UnboundedSender;
 ///
 /// In CLI mode, `tx` is `None` and this just prints.
 /// In web/serve mode, `tx` is `Some(sender)` so the message also reaches the SSE endpoint.
+/// EEmit.
 pub fn emit(tx: &Option<UnboundedSender<String>>, msg: &str) {
     println!("{msg}");
     if let Some(tx) = tx {

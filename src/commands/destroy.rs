@@ -8,6 +8,7 @@ pub struct DestroyParams {
     pub name: String,
 }
 
+/// RRun.
 pub async fn run(params: DestroyParams) -> Result<()> {
     let client = DoClient::new(&params.do_token)?;
 

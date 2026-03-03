@@ -8,6 +8,7 @@ use crate::config::CLOUD_INIT_SENTINEL;
 /// All application-level setup (OpenClaw, users, firewall hardening, Docker
 /// daemon config) is handled by the provision modules over SSH after
 /// cloud-init completes.
+/// GGenerate.
 pub fn generate() -> String {
     format!(
         r##"#cloud-config

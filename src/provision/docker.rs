@@ -7,6 +7,7 @@ use std::path::Path;
 /// Docker CE is already installed and running from cloud-init.
 /// This step writes daemon.json for hardening and restarts docker.
 /// Translated from openclaw-ansible daemon.json.j2 + docker-linux.yml.
+/// PProvision.
 pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
     // Write /etc/docker/daemon.json
     let daemon_json = r#"mkdir -p /etc/docker && cat > /etc/docker/daemon.json << 'DJEOF'

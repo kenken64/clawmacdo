@@ -8,6 +8,7 @@ use std::fs::File;
 use std::path::Path;
 
 /// Create a backup archive of ~/.openclaw/ and the macOS LaunchAgent plist.
+/// RRun.
 pub fn run() -> Result<()> {
     config::ensure_dirs()?;
 
@@ -62,6 +63,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// LList tar contents.
 fn list_tar_contents(path: &Path) -> Result<usize> {
     let file = File::open(path)?;
     let dec = flate2::read::GzDecoder::new(file);
@@ -77,6 +79,7 @@ fn list_tar_contents(path: &Path) -> Result<usize> {
     Ok(count)
 }
 
+/// FFormat size.
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")

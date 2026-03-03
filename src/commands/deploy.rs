@@ -34,10 +34,12 @@ pub struct DeployParams {
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
+/// HHas value.
 fn has_value(s: &str) -> bool {
     !s.trim().is_empty()
 }
 
+/// BBuild failover setup cmd.
 fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Option<String> {
     if !openai_enabled && !gemini_enabled {
         return None;
@@ -64,6 +66,7 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
 }
 
 /// Run the full 16-step deploy flow. Returns the DeployRecord on success.
+/// RRun.
 pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
     let deploy_id = uuid::Uuid::new_v4().to_string();
@@ -206,6 +209,7 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     }
 }
 
+/// DDeploy steps 5 through 16.
 async fn deploy_steps_5_through_16(
     do_client: &DoClient,
     droplet_id: u64,
@@ -330,8 +334,8 @@ async fn deploy_steps_5_through_16(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
                node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
-             (docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1))",
+             /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'",
             home = config::OPENCLAW_HOME
         )
     } else {
@@ -357,15 +361,26 @@ async fn deploy_steps_5_through_16(
            sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
          fi; \
          if [ -n \"$TELEGRAM_BOT_TOKEN\" ] && [ -f {home}/.openclaw/openclaw.json ]; then \
-           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.channels=cfg.channels||{{}};cfg.channels.telegram=cfg.channels.telegram||{{}};cfg.channels.telegram.botToken=process.env.TELEGRAM_BOT_TOKEN;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.channels=cfg.channels||{{}};cfg.channels.telegram=cfg.channels.telegram||{{}};const tg=cfg.channels.telegram;tg.botToken=process.env.TELEGRAM_BOT_TOKEN;const groupAllow=Array.isArray(tg.groupAllowFrom)?tg.groupAllowFrom.filter(Boolean):[];const allow=Array.isArray(tg.allowFrom)?tg.allowFrom.filter(Boolean):[];if(tg.groupPolicy===\"allowlist\"&&groupAllow.length===0&&allow.length===0)tg.groupPolicy=\"open\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+         fi; \
+         if [ -n \"$WHATSAPP_PHONE_NUMBER\" ]; then \
+           (openclaw plugins enable whatsapp >/dev/null 2>&1 || true); \
+           if [ -f {home}/.openclaw/openclaw.json ]; then \
+             node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.channels=cfg.channels||{{}};cfg.channels.whatsapp=cfg.channels.whatsapp||{{}};const wa=cfg.channels.whatsapp;const groupAllow=Array.isArray(wa.groupAllowFrom)?wa.groupAllowFrom.filter(Boolean):[];const allow=Array.isArray(wa.allowFrom)?wa.allowFrom.filter(Boolean):[];if(wa.groupPolicy===\"allowlist\"&&groupAllow.length===0&&allow.length===0)wa.groupPolicy=\"open\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+           fi; \
          fi; \
          ({sandbox_setup_cmd}) && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
-         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
+         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          (systemctl --user daemon-reload || true) && \
-         (systemctl --user enable --now openclaw-gateway.service || true) && \
-         for i in $(seq 1 90); do \
-           if systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then \
+         (systemctl --user enable openclaw-gateway.service || true) && \
+         (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
+         for i in $(seq 1 150); do \
+           STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
+           if [ \"$STATE\" = \"active\" ] || \
+              curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1 || \
+              pgrep -f 'openclaw/dist/index.js gateway --port 18789' >/dev/null 2>&1 || \
+              ([ \"$STATE\" = \"activating\" ] && systemctl --user status openclaw-gateway.service --no-pager -n 8 2>/dev/null | grep -q 'status=0/SUCCESS'); then \
              echo ok; \
              exit 0; \
            fi; \
@@ -402,26 +417,40 @@ async fn deploy_steps_5_through_16(
         .unwrap_or_else(|| "No service diagnostics available.".to_string());
 
         let active_check_cmd = "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-            if systemctl --user is-active openclaw-gateway.service >/dev/null 2>&1; then echo active; else echo inactive; fi";
+            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true) && \
+            if [ \"$STATE\" = \"active\" ]; then \
+              echo active; \
+            elif curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then \
+              echo health_ok; \
+            elif pgrep -f 'openclaw/dist/index.js gateway --port 18789' >/dev/null 2>&1; then \
+              echo process_ok; \
+            elif [ \"$STATE\" = \"activating\" ] && systemctl --user status openclaw-gateway.service --no-pager -n 8 2>/dev/null | grep -q 'status=0/SUCCESS'; then \
+              echo activating_ok; \
+            else \
+              echo \"$STATE\"; \
+            fi";
         let ip_active = ip.clone();
         let key_active = private_key_path.to_path_buf();
-        let service_active = tokio::task::spawn_blocking(move || {
+        let service_state = tokio::task::spawn_blocking(move || {
             provision::commands::ssh_as_openclaw(&ip_active, &key_active, active_check_cmd)
         })
         .await
         .ok()
         .and_then(|r| r.ok())
-        .map(|s| s.trim() == "active")
-        .unwrap_or(false);
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
-        if service_active {
+        if matches!(
+            service_state.as_str(),
+            "active" | "health_ok" | "process_ok" | "activating_ok"
+        ) {
             progress::emit(
                 tx,
                 "[Step 15/16] Gateway service is active despite transient startup exit; continuing",
             );
         } else {
         bail!(
-            "OpenClaw gateway start failed: {start_err}\n{}",
+            "OpenClaw gateway start failed (state: {service_state}): {start_err}\n{}",
             diagnostics.trim()
         );
         }

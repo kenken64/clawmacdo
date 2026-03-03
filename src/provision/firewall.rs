@@ -5,6 +5,7 @@ use std::path::Path;
 /// Step 9: Harden firewall — fail2ban, unattended-upgrades, UFW + DOCKER-USER chain.
 /// All packages already installed by cloud-init. This step only writes config files.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/firewall-linux.yml.
+/// PProvision.
 pub async fn provision(ip: &str, key: &Path, tailscale: bool) -> Result<(), AppError> {
     // --- fail2ban configuration ---
     let fail2ban_cfg = r#"cat > /etc/fail2ban/jail.local << 'F2BEOF'

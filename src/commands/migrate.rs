@@ -23,6 +23,7 @@ pub struct MigrateParams {
 }
 
 /// Run the full migrate flow: remote backup from source, then deploy to new droplet.
+/// RRun.
 pub async fn run(params: MigrateParams) -> Result<()> {
     config::ensure_dirs()?;
 

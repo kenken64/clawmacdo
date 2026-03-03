@@ -5,6 +5,7 @@ use std::path::Path;
 /// Configure vim and git globally.
 /// System tool packages already installed by cloud-init.
 /// Translated from openclaw-ansible system-tools.yml + vimrc.j2.
+/// PProvision.
 pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
     // Write global vim configuration
     let vimrc = r##"cat > /etc/vim/vimrc.local << 'VIMEOF'
