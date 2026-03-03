@@ -56,10 +56,23 @@ Commands:
   migrate       DO → DO migration: backup source, deploy new, restore
   status        List deployed openclaw-tagged droplets
   list-backups  Show local backup archives
+  serve         Start the local web UI
   whatsapp-repair  Repair WhatsApp channel support on an existing droplet
   docker-fix    Repair agent Docker access on an existing droplet
   help          Print help
 ```
+
+### Web UI (required for browser deploy flow)
+
+Run `serve` before opening the browser UI:
+
+```bash
+clawmacdo serve
+```
+
+Then open `http://127.0.0.1:3456/` and keep the serve process running while you deploy.
+
+![ClawMacToDO Web UI](assets/serve-web-ui.png)
 
 ### Backup
 
