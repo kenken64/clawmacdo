@@ -1,7 +1,7 @@
 pub mod backup;
 pub mod deploy;
-pub mod docker_fix;
 pub mod destroy;
+pub mod docker_fix;
 pub mod list_backups;
 pub mod migrate;
 pub mod serve;

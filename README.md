@@ -74,7 +74,7 @@ Creates `~/.clawmacdo/backups/openclaw_backup_<timestamp>.tar.gz`.
 ```bash
 clawmacdo deploy \
   --do-token=dop_v1_xxx \
-  --anthropic-key=sk-ant-xxx \
+  --anthropic-key=sk-ant-api-xxx \
   --openai-key=sk-xxx \
   --gemini-key=AIzaSy... \
   --whatsapp-phone-number=15551234567 \
@@ -111,7 +111,7 @@ Missing values trigger interactive prompts.
 ```bash
 clawmacdo migrate \
   --do-token=dop_v1_xxx \
-  --anthropic-key=sk-ant-xxx \
+  --anthropic-key=sk-ant-api-xxx \
   --openai-key=sk-xxx \
   --whatsapp-phone-number=15551234567 \
   --telegram-bot-token=123456789:AA... \
@@ -129,6 +129,7 @@ After deploy/migrate, credentials and messaging settings are written to:
 
 ```bash
 ANTHROPIC_API_KEY=...
+ANTHROPIC_SETUP_TOKEN=...
 OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 WHATSAPP_PHONE_NUMBER=...
@@ -220,19 +221,19 @@ Every deployed droplet includes automatic recovery mechanisms:
 
 > **Note:** OpenClaw's installer creates its own user-level systemd service at `~/.config/systemd/user/openclaw-gateway.service`. The cloud-init script does not create a competing systemd unit — it only prepares the environment and resilience tooling.
 
-### API key validation
+### Anthropic credential routing
 
-The deploy process validates Anthropic API keys before writing them to `.env`:
+The `--anthropic-key` field accepts both API keys and setup tokens:
 
 | Key prefix | Type | Action |
 |-----------|------|--------|
 | `sk-ant-api-...` | Real API key | ✅ Written to `.env` |
-| `sk-ant-oat-...` | OAuth session token | ❌ Filtered out — empty string written |
+| `sk-ant-oat-...` | OAuth setup token | ✅ Stored as `ANTHROPIC_SETUP_TOKEN` + setup-token auth command is attempted |
 | _(empty)_ | Not provided | ⚠️ Skipped |
 
-**Why?** When you authenticate via `openclaw login`, OpenClaw stores an OAuth session token (`sk-ant-oat-...`) in `openclaw.json`. If this token gets backed up and restored to a new instance, the gateway injects it as `ANTHROPIC_API_KEY` into child processes. Claude Code expects a real API key and fails with auth errors.
+`ANTHROPIC_API_KEY` and `ANTHROPIC_SETUP_TOKEN` are kept separate so OAuth-style tokens are not injected where an API key is expected.
 
-The fix: clawmacdo now detects OAuth tokens and refuses to write them to `.env`. The OpenClaw gateway is unaffected — it manages its own auth via `openclaw.json` profiles. A warning is printed during deploy if an OAuth token is detected.
+On deploy start, clawmacdo attempts `openclaw models auth setup-token` when a setup token is provided.
 
 ## Environment variables
 

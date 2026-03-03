@@ -14,7 +14,8 @@ use tokio::sync::mpsc;
 
 /// Options for the SSH-based provisioning steps (steps 9–14).
 pub struct ProvisionOpts<'a> {
-    pub anthropic_key: &'a str,
+    pub anthropic_api_key: &'a str,
+    pub anthropic_setup_token: &'a str,
     pub openai_key: &'a str,
     pub gemini_key: &'a str,
     pub whatsapp_phone_number: &'a str,
@@ -34,20 +35,22 @@ pub struct ProvisionOpts<'a> {
 ///
 /// Steps 9–14 of the 16-step deploy flow.
 /// RRun.
-pub async fn run(
-    ip: &str,
-    key: &Path,
-    opts: &ProvisionOpts<'_>,
-) -> Result<(), AppError> {
+pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), AppError> {
     let tx = &opts.progress_tx;
 
     // Step 9: Create openclaw user + sudoers + .ssh
-    progress::emit(tx, "\n[Step 9/16] Creating openclaw user and configuring access...");
+    progress::emit(
+        tx,
+        "\n[Step 9/16] Creating openclaw user and configuring access...",
+    );
     user::provision(ip, key, opts.public_key_openssh).await?;
     progress::emit(tx, "  User 'openclaw' created with SSH access");
 
     // Step 10: Harden firewall (fail2ban, UFW, DOCKER-USER)
-    progress::emit(tx, "\n[Step 10/16] Hardening firewall (fail2ban, UFW, Docker isolation)...");
+    progress::emit(
+        tx,
+        "\n[Step 10/16] Hardening firewall (fail2ban, UFW, Docker isolation)...",
+    );
     firewall::provision(ip, key, opts.tailscale).await?;
     progress::emit(tx, "  Firewall hardened");
 
@@ -66,7 +69,8 @@ pub async fn run(
     openclaw::provision(
         ip,
         key,
-        opts.anthropic_key,
+        opts.anthropic_api_key,
+        opts.anthropic_setup_token,
         opts.openai_key,
         opts.gemini_key,
         opts.whatsapp_phone_number,

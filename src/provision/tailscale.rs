@@ -25,10 +25,12 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg" | \
 curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list" | \
     tee /etc/apt/sources.list.d/tailscale.list > /dev/null
 "#;
-    ssh_root_async(ip, key, add_repo).await.map_err(|e| AppError::Provision {
-        phase: "tailscale repo".into(),
-        message: e.to_string(),
-    })?;
+    ssh_root_async(ip, key, add_repo)
+        .await
+        .map_err(|e| AppError::Provision {
+            phase: "tailscale repo".into(),
+            message: e.to_string(),
+        })?;
 
     // Install tailscale
     ssh_root_async(ip, key, "apt-get update && apt-get install -y tailscale").await?;

@@ -189,7 +189,9 @@ pub fn print_summary(record: &DeployRecord) {
     println!("    - Gemini CLI       (gemini --version)");
     println!();
     println!("  API Keys:         /home/openclaw/.openclaw/.env on server");
-    println!("                     (ANTHROPIC_API_KEY + OPENAI_API_KEY + GEMINI_API_KEY)");
+    println!(
+        "                     (ANTHROPIC_API_KEY / ANTHROPIC_SETUP_TOKEN + OPENAI_API_KEY + GEMINI_API_KEY)"
+    );
     println!("  Messaging Config: (WHATSAPP_PHONE_NUMBER + TELEGRAM_BOT_TOKEN)");
     println!("{divider}");
     println!("  Next steps:");

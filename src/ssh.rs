@@ -25,12 +25,7 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
 
     // Generate RSA key in PEM format (universally supported by libssh2)
     let status = std::process::Command::new("ssh-keygen")
-        .args([
-            "-t", "rsa",
-            "-b", "4096",
-            "-m", "PEM",
-            "-f",
-        ])
+        .args(["-t", "rsa", "-b", "4096", "-m", "PEM", "-f"])
         .arg(&private_path)
         .args(["-N", "", "-q"])
         .status()
@@ -250,14 +245,13 @@ pub async fn wait_for_cloud_init(
                 " echo '--- cloud-init-output.log (tail) ---';",
                 " (tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true)",
             );
-            let diagnostics = match tokio::task::spawn_blocking(move || {
-                exec(&ip_clone, &key_clone, diag_cmd)
-            })
-            .await
-            {
-                Ok(Ok(out)) if !out.trim().is_empty() => out,
-                _ => "No diagnostic output available".to_string(),
-            };
+            let diagnostics =
+                match tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, diag_cmd))
+                    .await
+                {
+                    Ok(Ok(out)) if !out.trim().is_empty() => out,
+                    _ => "No diagnostic output available".to_string(),
+                };
 
             return Err(AppError::Timeout(format!(
                 "cloud-init to complete (last status: {last_status})\n{diagnostics}"

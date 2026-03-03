@@ -23,20 +23,13 @@ pub async fn ssh_root_async(ip: &str, key: &Path, cmd: &str) -> Result<String, A
 /// Uses `su - openclaw -c '...'` so we only need root's SSH key.
 /// SSsh as openclaw.
 pub fn ssh_as_openclaw(ip: &str, key: &Path, cmd: &str) -> Result<String, AppError> {
-    let wrapped = format!(
-        "su - openclaw -c {}",
-        shell_escape(cmd)
-    );
+    let wrapped = format!("su - openclaw -c {}", shell_escape(cmd));
     ssh::exec(ip, key, &wrapped)
 }
 
 /// Execute a command as openclaw user, wrapped in spawn_blocking.
 /// SSsh as openclaw async.
-pub async fn ssh_as_openclaw_async(
-    ip: &str,
-    key: &Path,
-    cmd: &str,
-) -> Result<String, AppError> {
+pub async fn ssh_as_openclaw_async(ip: &str, key: &Path, cmd: &str) -> Result<String, AppError> {
     let ip = ip.to_string();
     let key = key.to_path_buf();
     let cmd = cmd.to_string();
