@@ -39,6 +39,18 @@ fn has_value(s: &str) -> bool {
     !s.trim().is_empty()
 }
 
+/// Resolve the Anthropic credential entered by the user.
+/// `sk-ant-oat...` is treated as a setup token; all other non-empty values
+/// are treated as API keys.
+fn split_anthropic_credential(input: &str) -> (String, String) {
+    let value = input.trim().to_string();
+    if value.starts_with("sk-ant-oat") {
+        (String::new(), value)
+    } else {
+        (value, String::new())
+    }
+}
+
 /// BBuild failover setup cmd.
 fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Option<String> {
     if !openai_enabled && !gemini_enabled {
@@ -58,7 +70,9 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
         cmd.push_str(" openclaw models fallbacks add openai/gpt-5-mini >/dev/null 2>&1 || true;");
     }
     if gemini_enabled {
-        cmd.push_str(" openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;");
+        cmd.push_str(
+            " openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;",
+        );
     }
 
     cmd.push_str(" echo ok");
@@ -114,14 +128,23 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         ),
     );
 
+    let (anthropic_api_key, anthropic_setup_token) =
+        split_anthropic_credential(&params.anthropic_key);
+
     // ── Step 2: Generate SSH key pair ───────────────────────────────────
     progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
 
     let keypair = ssh::generate_keypair(&deploy_id)?;
-    progress::emit(tx, &format!("  Key saved: {}", keypair.private_key_path.display()));
+    progress::emit(
+        tx,
+        &format!("  Key saved: {}", keypair.private_key_path.display()),
+    );
 
     // ── Step 3: Upload public key to DO ─────────────────────────────────
-    progress::emit(tx, "\n[Step 3/16] Uploading SSH public key to DigitalOcean...");
+    progress::emit(
+        tx,
+        "\n[Step 3/16] Uploading SSH public key to DigitalOcean...",
+    );
 
     let do_client = DoClient::new(&params.do_token)?;
     let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
@@ -131,20 +154,24 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         .context("Failed to upload SSH key to DigitalOcean")?;
     progress::emit(
         tx,
-        &format!("  Key ID: {}, Fingerprint: {}", key_info.id, key_info.fingerprint),
+        &format!(
+            "  Key ID: {}, Fingerprint: {}",
+            key_info.id, key_info.fingerprint
+        ),
     );
 
     // ── Step 4: Create droplet ──────────────────────────────────────────
     progress::emit(tx, "\n[Step 4/16] Creating droplet with cloud-init...");
 
-    if params.anthropic_key.starts_with("sk-ant-oat") {
-        progress::emit(tx, "  Warning: Anthropic key looks like an OAuth token (sk-ant-oat...).");
-        progress::emit(tx, "     OAuth tokens are short-lived and break Claude Code.");
+    if has_value(&anthropic_setup_token) {
         progress::emit(
             tx,
-            "     It will NOT be written to .env. Use a real API key (sk-ant-api...) instead.",
+            "  Detected Anthropic setup token (sk-ant-oat...). It will be configured for OpenClaw auth.",
         );
-        progress::emit(tx, "     OpenClaw gateway auth will still work via openclaw.json profiles.");
+        progress::emit(
+            tx,
+            "     ANTHROPIC_API_KEY will be left empty to avoid passing OAuth tokens as API keys.",
+        );
     }
     let user_data = cloud_init::generate();
     let droplet = do_client
@@ -174,7 +201,8 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         &hostname,
         &region,
         &size,
-        &params.anthropic_key,
+        &anthropic_api_key,
+        &anthropic_setup_token,
         &params.openai_key,
         &params.gemini_key,
         &params.whatsapp_phone_number,
@@ -221,7 +249,8 @@ async fn deploy_steps_5_through_16(
     hostname: &str,
     region: &str,
     size: &str,
-    anthropic_key: &str,
+    anthropic_api_key: &str,
+    anthropic_setup_token: &str,
     openai_key: &str,
     gemini_key: &str,
     whatsapp_phone_number: &str,
@@ -254,7 +283,10 @@ async fn deploy_steps_5_through_16(
     progress::emit(tx, "[Step 6/16] SSH ready");
 
     // ── Step 7: Wait for cloud-init ─────────────────────────────────────
-    progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish (this may take a few minutes)...");
+    progress::emit(
+        tx,
+        "\n[Step 7/16] Waiting for cloud-init to finish (this may take a few minutes)...",
+    );
     let sp = ui::spinner(
         "[Step 7/16] Waiting for cloud-init to finish (this may take a few minutes)...",
     );
@@ -301,7 +333,8 @@ async fn deploy_steps_5_through_16(
 
     // ── Steps 9–14: Provision (user, firewall, Docker, Node.js, OpenClaw, Tailscale) ──
     let provision_opts = ProvisionOpts {
-        anthropic_key,
+        anthropic_api_key,
+        anthropic_setup_token,
         openai_key,
         gemini_key,
         whatsapp_phone_number,
@@ -317,8 +350,16 @@ async fn deploy_steps_5_through_16(
         .context("Provision failed")?;
 
     // ── Step 15: Start gateway as openclaw user ─────────────────────────
-    progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway (user service)...");
+    progress::emit(
+        tx,
+        "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
+    );
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
+    let anthropic_onboard_arg = if has_value(anthropic_api_key) {
+        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
+    } else {
+        ""
+    };
     let openai_onboard_arg = if has_value(openai_key) {
         " --openai-api-key \"$OPENAI_API_KEY\""
     } else {
@@ -348,7 +389,12 @@ async fn deploy_steps_5_through_16(
            dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; \
          fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
+           (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || \
+            openclaw models auth setup-token --provider anthropic \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || \
+            openclaw models auth setup-token anthropic \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
+         fi; \
          (openclaw daemon install --port 18789 --runtime node --force || true); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          if [ -f \"$SVC\" ]; then \
@@ -386,8 +432,9 @@ async fn deploy_steps_5_through_16(
            fi; \
            sleep 1; \
          done; \
-         exit 1",
+        exit 1",
         home = config::OPENCLAW_HOME,
+        anthropic_onboard_arg = anthropic_onboard_arg,
         openai_onboard_arg = openai_onboard_arg,
         gemini_onboard_arg = gemini_onboard_arg,
         sandbox_setup_cmd = sandbox_setup_cmd,
@@ -449,10 +496,10 @@ async fn deploy_steps_5_through_16(
                 "[Step 15/16] Gateway service is active despite transient startup exit; continuing",
             );
         } else {
-        bail!(
-            "OpenClaw gateway start failed (state: {service_state}): {start_err}\n{}",
-            diagnostics.trim()
-        );
+            bail!(
+                "OpenClaw gateway start failed (state: {service_state}): {start_err}\n{}",
+                diagnostics.trim()
+            );
         }
     }
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");

@@ -147,7 +147,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/backups", get(list_backups_handler))
         .route("/api/deploy", post(start_deploy_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
-        .route("/api/telegram/pairing/approve", post(approve_telegram_pairing_handler))
+        .route(
+            "/api/telegram/pairing/approve",
+            post(approve_telegram_pairing_handler),
+        )
         .route("/api/agent/docker-fix", post(repair_agent_docker_handler))
         .route("/api/whatsapp/repair", post(repair_whatsapp_handler))
         .route("/api/whatsapp/qr", post(fetch_whatsapp_qr_handler))
@@ -173,7 +176,10 @@ async fn index_handler() -> Html<&'static str> {
 async fn mascot_handler() -> impl IntoResponse {
     const MASCOT: &[u8] = include_bytes!("../../assets/mascot.jpg");
     (
-        [("content-type", "image/jpeg"), ("cache-control", "public, max-age=86400")],
+        [
+            ("content-type", "image/jpeg"),
+            ("cache-control", "public, max-age=86400"),
+        ],
         MASCOT,
     )
 }
@@ -226,9 +232,21 @@ async fn start_deploy_handler(
             gemini_key: req.gemini_key,
             whatsapp_phone_number: req.whatsapp_phone_number,
             telegram_bot_token: req.telegram_bot_token,
-            region: if req.region.is_empty() { None } else { Some(req.region) },
-            size: if req.size.is_empty() { None } else { Some(req.size) },
-            hostname: if req.hostname.is_empty() { None } else { Some(req.hostname) },
+            region: if req.region.is_empty() {
+                None
+            } else {
+                Some(req.region)
+            },
+            size: if req.size.is_empty() {
+                None
+            } else {
+                Some(req.size)
+            },
+            hostname: if req.hostname.is_empty() {
+                None
+            } else {
+                Some(req.hostname)
+            },
             backup,
             enable_backups: req.enable_backups,
             enable_sandbox: req.enable_sandbox,
@@ -332,9 +350,8 @@ async fn approve_telegram_pairing_handler(
             StatusCode::OK,
             Json(TelegramPairingApproveResponse {
                 ok: true,
-                message:
-                    "Telegram pairing approved. Send a message to your bot to start chatting."
-                        .into(),
+                message: "Telegram pairing approved. Send a message to your bot to start chatting."
+                    .into(),
             }),
         ),
         Err(e) => (
@@ -692,7 +709,7 @@ function addDeployCard() {
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Credentials</legend>
         ${passwordField('do_token', 'DigitalOcean Token', 'dop_v1_...', true)}
-        ${passwordField('anthropic_key', 'Anthropic API Key', 'sk-ant-...', true)}
+        ${passwordField('anthropic_key', 'Anthropic Key / Setup Token', 'sk-ant-api-... or sk-ant-oat-...', true)}
         ${passwordField('openai_key', 'OpenAI API Key', 'sk-...', false)}
         ${passwordField('gemini_key', 'Gemini API Key', 'AI...', false)}
         ${passwordField('tailscale_auth_key', 'Tailscale Auth Key', 'tskey-auth-...', false)}

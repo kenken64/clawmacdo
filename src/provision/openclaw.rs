@@ -9,7 +9,8 @@ use std::path::Path;
 pub async fn provision(
     ip: &str,
     key: &Path,
-    anthropic_key: &str,
+    anthropic_api_key: &str,
+    anthropic_setup_token: &str,
     openai_key: &str,
     gemini_key: &str,
     whatsapp_phone_number: &str,
@@ -29,10 +30,11 @@ chown -R {user}:{user} {cd}"#,
     );
     ssh_root_async(ip, key, &mkdirs).await?;
 
-    // Write .env with API keys (chmod 600 for security)
+    // Write .env with provider credentials (chmod 600 for security)
     let write_env = format!(
         r#"cat > {cd}/.env << 'ENVEOF'
-ANTHROPIC_API_KEY={anthropic_key}
+ANTHROPIC_API_KEY={anthropic_api_key}
+ANTHROPIC_SETUP_TOKEN={anthropic_setup_token}
 OPENAI_API_KEY={openai_key}
 GEMINI_API_KEY={gemini_key}
 WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}
@@ -41,7 +43,8 @@ ENVEOF
 chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
         cd = config_dir,
         user = user,
-        anthropic_key = anthropic_key,
+        anthropic_api_key = anthropic_api_key,
+        anthropic_setup_token = anthropic_setup_token,
         openai_key = openai_key,
         gemini_key = gemini_key,
         whatsapp_phone_number = whatsapp_phone_number,
@@ -113,7 +116,7 @@ chmod 700 {cd}"#,
     let version = ssh_as_openclaw_async(ip, key, &verify_cmd).await?;
     println!("  OpenClaw version: {}", version.trim());
 
-    if !anthropic_key.trim().is_empty() {
+    if !anthropic_api_key.trim().is_empty() {
         // Warm up Claude in headless mode so first manual run is not blocked by onboarding prompts.
         // This is best-effort and should never fail the deploy.
         let claude_bootstrap = format!(

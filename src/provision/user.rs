@@ -118,10 +118,12 @@ chmod 440 /etc/sudoers.d/{user} && chown root:root /etc/sudoers.d/{user}
 visudo -cf /etc/sudoers.d/{user}"#,
         user = user,
     );
-    ssh_root_async(ip, key, &sudoers).await.map_err(|e| AppError::Provision {
-        phase: "sudoers".into(),
-        message: e.to_string(),
-    })?;
+    ssh_root_async(ip, key, &sudoers)
+        .await
+        .map_err(|e| AppError::Provision {
+            phase: "sudoers".into(),
+            message: e.to_string(),
+        })?;
 
     // Setup .ssh/authorized_keys with deploy key
     let ssh_setup = format!(
@@ -137,12 +139,7 @@ chown -R {user}:{user} {home}/.ssh"#,
     ssh_root_async(ip, key, &ssh_setup).await?;
 
     // Enable lingering for systemd user services
-    ssh_root_async(
-        ip,
-        key,
-        &format!("loginctl enable-linger {user}"),
-    )
-    .await?;
+    ssh_root_async(ip, key, &format!("loginctl enable-linger {user}")).await?;
 
     // Create runtime directory
     let runtime_dir = format!(

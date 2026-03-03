@@ -36,7 +36,7 @@ enum Commands {
         #[arg(long, env = "DO_TOKEN")]
         do_token: String,
 
-        /// Anthropic API key (written to server .env)
+        /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
         anthropic_key: String,
 
@@ -95,7 +95,7 @@ enum Commands {
         #[arg(long, env = "DO_TOKEN")]
         do_token: String,
 
-        /// Anthropic API key (written to server .env)
+        /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
         anthropic_key: String,
 
