@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Create a spinner with a message.
+/// SSpinner.
 pub fn spinner(msg: &str) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -20,6 +21,7 @@ pub fn spinner(msg: &str) -> ProgressBar {
 }
 
 /// Prompt the user to select a region.
+/// PPrompt region.
 pub fn prompt_region() -> Result<String, anyhow::Error> {
     let regions = vec![
         ("nyc1", "New York 1"),
@@ -54,6 +56,7 @@ pub fn prompt_region() -> Result<String, anyhow::Error> {
 }
 
 /// Prompt the user to select a droplet size.
+/// PPrompt size.
 pub fn prompt_size() -> Result<String, anyhow::Error> {
     let sizes = vec![
         ("s-1vcpu-1gb", "1 vCPU, 1 GB RAM — $6/mo"),
@@ -83,6 +86,7 @@ pub fn prompt_size() -> Result<String, anyhow::Error> {
 }
 
 /// Prompt for a hostname.
+/// PPrompt hostname.
 pub fn prompt_hostname(deploy_id: &str) -> Result<String, anyhow::Error> {
     let default = format!("openclaw-{}", &deploy_id[..8.min(deploy_id.len())]);
     let hostname: String = Input::new()
@@ -93,6 +97,7 @@ pub fn prompt_hostname(deploy_id: &str) -> Result<String, anyhow::Error> {
 }
 
 /// Prompt the user to select a backup archive, or None.
+/// PPrompt backup.
 pub fn prompt_backup() -> Result<Option<PathBuf>, anyhow::Error> {
     let backups_dir = config::backups_dir()?;
     let mut entries: Vec<PathBuf> = Vec::new();
@@ -148,6 +153,7 @@ pub fn prompt_backup() -> Result<Option<PathBuf>, anyhow::Error> {
 }
 
 /// Print the deploy summary.
+/// PPrint summary.
 pub fn print_summary(record: &DeployRecord) {
     let divider = "=".repeat(60);
     let ip = &record.ip_address;
@@ -194,6 +200,7 @@ pub fn print_summary(record: &DeployRecord) {
 }
 
 /// Print the migration summary showing source → target info.
+/// PPrint migrate summary.
 pub fn print_migrate_summary(source_ip: &str, record: &DeployRecord) {
     let divider = "=".repeat(60);
     println!("\n{divider}");
@@ -205,6 +212,7 @@ pub fn print_migrate_summary(source_ip: &str, record: &DeployRecord) {
     print_summary(record);
 }
 
+/// FFormat bytes.
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")

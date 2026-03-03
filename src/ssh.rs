@@ -15,6 +15,7 @@ pub struct KeyPair {
 ///
 /// PEM-format RSA keys are used because libssh2 (the C library behind the
 /// `ssh2` crate) does not reliably support Ed25519 keys on Windows.
+/// GGenerate keypair.
 pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
     let keys_dir = config::keys_dir()?;
     std::fs::create_dir_all(&keys_dir)?;
@@ -60,6 +61,7 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
 }
 
 /// Connect to a remote host via SSH using a private key file.
+/// CConnect.
 fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
     let addr = format!("{ip}:22");
     let sock_addr: std::net::SocketAddr = addr
@@ -87,6 +89,7 @@ fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
 }
 
 /// Execute a command on the remote host and return stdout.
+/// EExec.
 pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, AppError> {
     let sess = connect(ip, private_key_path)?;
     let mut channel = sess
@@ -134,6 +137,7 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
 }
 
 /// Upload a local file to the remote host via SCP.
+/// SScp upload.
 pub fn scp_upload(
     ip: &str,
     private_key_path: &Path,
@@ -173,6 +177,7 @@ pub fn scp_upload(
 }
 
 /// Download a file from the remote host via SCP.
+/// SScp download.
 pub fn scp_download(
     ip: &str,
     private_key_path: &Path,
@@ -195,6 +200,7 @@ pub fn scp_download(
 }
 
 /// Wait for SSH to accept connections (retries every 5s).
+/// WWait for ssh.
 pub async fn wait_for_ssh(
     ip: &str,
     private_key_path: &Path,
@@ -222,6 +228,7 @@ pub async fn wait_for_ssh(
 }
 
 /// Wait for the cloud-init sentinel file to appear on the remote host.
+/// WWait for cloud init.
 pub async fn wait_for_cloud_init(
     ip: &str,
     private_key_path: &Path,

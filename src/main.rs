@@ -175,9 +175,32 @@ enum Commands {
         #[arg(long, default_value = "3456")]
         port: u16,
     },
+
+    /// Repair WhatsApp channel support on an existing droplet (update OpenClaw + restart gateway)
+    WhatsappRepair {
+        /// Droplet IP address
+        #[arg(long)]
+        ip: String,
+
+        /// Path to SSH private key for the target droplet
+        #[arg(long)]
+        ssh_key_path: PathBuf,
+    },
+
+    /// Repair agent Docker access on an existing droplet (gateway service + docker socket perms path)
+    DockerFix {
+        /// Droplet IP address
+        #[arg(long)]
+        ip: String,
+
+        /// Path to SSH private key for the target droplet
+        #[arg(long)]
+        ssh_key_path: PathBuf,
+    },
 }
 
 #[tokio::main]
+/// MMain.
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -267,6 +290,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Serve { port } => {
             commands::serve::run(port).await?;
+        }
+        Commands::WhatsappRepair { ip, ssh_key_path } => {
+            commands::whatsapp::run(&ip, &ssh_key_path).await?;
+        }
+        Commands::DockerFix { ip, ssh_key_path } => {
+            commands::docker_fix::run(&ip, &ssh_key_path).await?;
         }
     }
 

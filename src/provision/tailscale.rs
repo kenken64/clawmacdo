@@ -11,6 +11,7 @@ pub enum TailscaleProvisionStatus {
 /// Optional: Install and configure Tailscale (--tailscale flag).
 /// Translated from openclaw-ansible/roles/openclaw/tasks/tailscale-linux.yml.
 /// Hardcodes Ubuntu 24.04 (noble) since that's the DO image we use.
+/// PProvision.
 pub async fn provision(
     ip: &str,
     key: &Path,
@@ -62,6 +63,7 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.lis
     Ok(TailscaleProvisionStatus::InstalledOnly)
 }
 
+/// SShell quote.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }

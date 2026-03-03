@@ -33,6 +33,7 @@ pub struct ProvisionOpts<'a> {
 /// Expects SSH access as root to `ip` using `key`.
 ///
 /// Steps 9–14 of the 16-step deploy flow.
+/// RRun.
 pub async fn run(
     ip: &str,
     key: &Path,

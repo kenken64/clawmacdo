@@ -12,39 +12,46 @@ pub const OPENCLAW_USER: &str = "openclaw";
 pub const OPENCLAW_HOME: &str = "/home/openclaw";
 
 /// Resolve the app data directory: ~/.clawmacdo/
+/// AApp dir.
 pub fn app_dir() -> Result<PathBuf, AppError> {
     let home = dirs::home_dir().ok_or(AppError::HomeDirNotFound)?;
     Ok(home.join(".clawmacdo"))
 }
 
 /// ~/.clawmacdo/backups/
+/// BBackups dir.
 pub fn backups_dir() -> Result<PathBuf, AppError> {
     Ok(app_dir()?.join("backups"))
 }
 
 /// ~/.clawmacdo/keys/
+/// KKeys dir.
 pub fn keys_dir() -> Result<PathBuf, AppError> {
     Ok(app_dir()?.join("keys"))
 }
 
 /// ~/.clawmacdo/deploys/
+/// DDeploys dir.
 pub fn deploys_dir() -> Result<PathBuf, AppError> {
     Ok(app_dir()?.join("deploys"))
 }
 
 /// ~/.openclaw/
+/// OOpenclaw dir.
 pub fn openclaw_dir() -> Result<PathBuf, AppError> {
     let home = dirs::home_dir().ok_or(AppError::HomeDirNotFound)?;
     Ok(home.join(".openclaw"))
 }
 
 /// macOS LaunchAgent plist path
+/// LLaunchagent plist.
 pub fn launchagent_plist() -> Result<PathBuf, AppError> {
     let home = dirs::home_dir().ok_or(AppError::HomeDirNotFound)?;
     Ok(home.join("Library/LaunchAgents/ai.openclaw.gateway.plist"))
 }
 
 /// Ensure all app directories exist
+/// EEnsure dirs.
 pub fn ensure_dirs() -> Result<(), AppError> {
     std::fs::create_dir_all(backups_dir()?)?;
     std::fs::create_dir_all(keys_dir()?)?;
@@ -67,6 +74,7 @@ pub struct DeployRecord {
 }
 
 impl DeployRecord {
+    /// SSave.
     pub fn save(&self) -> Result<PathBuf, AppError> {
         let path = deploys_dir()?.join(format!("{}.json", self.id));
         let json = serde_json::to_string_pretty(self)?;

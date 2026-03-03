@@ -5,6 +5,7 @@ use std::path::Path;
 
 /// Step 8: Create openclaw system user, configure sudoers, .ssh, and environment.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/user.yml.
+/// PProvision.
 pub async fn provision(ip: &str, key: &Path, public_key_openssh: &str) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;

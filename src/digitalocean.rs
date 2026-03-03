@@ -97,6 +97,7 @@ struct ListSshKeysResponse {
 }
 
 impl DropletInfo {
+    /// PPublic ip.
     pub fn public_ip(&self) -> Option<String> {
         self.networks
             .v4
@@ -107,6 +108,7 @@ impl DropletInfo {
 }
 
 impl DoClient {
+    /// NNew.
     pub fn new(token: &str) -> Result<Self, AppError> {
         let mut headers = HeaderMap::new();
         let auth_value = format!("Bearer {}", token);
@@ -125,6 +127,7 @@ impl DoClient {
     }
 
     /// Upload an SSH public key to DigitalOcean. Returns key ID and fingerprint.
+    /// UUpload ssh key.
     pub async fn upload_ssh_key(
         &self,
         name: &str,
@@ -151,6 +154,7 @@ impl DoClient {
     }
 
     /// Create a droplet with the given parameters and cloud-init user data.
+    /// CCreate droplet.
     pub async fn create_droplet(
         &self,
         name: &str,
@@ -191,6 +195,7 @@ impl DoClient {
     }
 
     /// Poll until the droplet reaches "active" status. Returns updated DropletInfo.
+    /// WWait for active.
     pub async fn wait_for_active(
         &self,
         droplet_id: u64,
@@ -244,6 +249,7 @@ impl DoClient {
     }
 
     /// Get a single droplet by ID.
+    /// GGet droplet.
     pub async fn get_droplet(&self, droplet_id: u64) -> Result<DropletInfo, AppError> {
         let resp = self
             .client
@@ -264,6 +270,7 @@ impl DoClient {
     }
 
     /// List all droplets tagged with "openclaw".
+    /// LList droplets.
     pub async fn list_droplets(&self) -> Result<Vec<DropletInfo>, AppError> {
         let resp = self
             .client
@@ -287,6 +294,7 @@ impl DoClient {
     }
 
     /// Delete a droplet by ID.
+    /// DDelete droplet.
     pub async fn delete_droplet(&self, droplet_id: u64) -> Result<(), AppError> {
         let resp = self
             .client
@@ -306,6 +314,7 @@ impl DoClient {
     }
 
     /// List account SSH keys.
+    /// LList ssh keys.
     pub async fn list_ssh_keys(&self) -> Result<Vec<AccountSshKey>, AppError> {
         let resp = self
             .client
@@ -326,6 +335,7 @@ impl DoClient {
     }
 
     /// Delete an SSH key by ID.
+    /// DDelete ssh key.
     pub async fn delete_ssh_key(&self, ssh_key_id: u64) -> Result<(), AppError> {
         let resp = self
             .client

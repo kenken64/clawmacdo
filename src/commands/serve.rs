@@ -1,4 +1,6 @@
 use crate::commands::deploy::{self, DeployParams};
+use crate::commands::docker_fix;
+use crate::commands::whatsapp;
 use crate::config;
 use crate::provision::commands::ssh_as_openclaw_async;
 use axum::extract::{Path, State};
@@ -107,8 +109,35 @@ struct WhatsAppQrResponse {
     qr_output: String,
 }
 
+#[derive(Deserialize)]
+struct WhatsAppRepairRequest {
+    ip: String,
+    ssh_key_path: String,
+}
+
+#[derive(Serialize)]
+struct WhatsAppRepairResponse {
+    ok: bool,
+    message: String,
+    repair_output: String,
+}
+
+#[derive(Deserialize)]
+struct DockerFixRequest {
+    ip: String,
+    ssh_key_path: String,
+}
+
+#[derive(Serialize)]
+struct DockerFixResponse {
+    ok: bool,
+    message: String,
+    fix_output: String,
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
+/// RRun.
 pub async fn run(port: u16) -> anyhow::Result<()> {
     let jobs: Jobs = Arc::new(RwLock::new(HashMap::new()));
 
@@ -119,6 +148,8 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/deploy", post(start_deploy_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
         .route("/api/telegram/pairing/approve", post(approve_telegram_pairing_handler))
+        .route("/api/agent/docker-fix", post(repair_agent_docker_handler))
+        .route("/api/whatsapp/repair", post(repair_whatsapp_handler))
         .route("/api/whatsapp/qr", post(fetch_whatsapp_qr_handler))
         .with_state(jobs);
 
@@ -133,10 +164,12 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
 // ── Route handlers ──────────────────────────────────────────────────────────
 
+/// IIndex handler.
 async fn index_handler() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
+/// MMascot handler.
 async fn mascot_handler() -> impl IntoResponse {
     const MASCOT: &[u8] = include_bytes!("../../assets/mascot.jpg");
     (
@@ -145,11 +178,13 @@ async fn mascot_handler() -> impl IntoResponse {
     )
 }
 
+/// LList backups handler.
 async fn list_backups_handler() -> impl IntoResponse {
     let entries = list_backup_files().unwrap_or_default();
     Json(entries)
 }
 
+/// SStart deploy handler.
 async fn start_deploy_handler(
     State(jobs): State<Jobs>,
     Json(req): Json<DeployRequest>,
@@ -231,6 +266,7 @@ async fn start_deploy_handler(
     Json(DeployResponse { deploy_id }).into_response()
 }
 
+/// DDeploy events handler.
 async fn deploy_events_handler(
     State(jobs): State<Jobs>,
     Path(id): Path<String>,
@@ -253,6 +289,7 @@ async fn deploy_events_handler(
     Sse::new(stream.map(|msg| Ok(Event::default().data(msg))))
 }
 
+/// AApprove telegram pairing handler.
 async fn approve_telegram_pairing_handler(
     Json(req): Json<TelegramPairingApproveRequest>,
 ) -> impl IntoResponse {
@@ -291,20 +328,15 @@ async fn approve_telegram_pairing_handler(
     );
 
     match ssh_as_openclaw_async(&ip, &key, &cmd).await {
-        Ok(out) => {
-            let msg = out.trim();
-            (
-                StatusCode::OK,
-                Json(TelegramPairingApproveResponse {
-                    ok: true,
-                    message: if msg.is_empty() {
-                        "Telegram pairing approved.".into()
-                    } else {
-                        msg.to_string()
-                    },
-                }),
-            )
-        }
+        Ok(_out) => (
+            StatusCode::OK,
+            Json(TelegramPairingApproveResponse {
+                ok: true,
+                message:
+                    "Telegram pairing approved. Send a message to your bot to start chatting."
+                        .into(),
+            }),
+        ),
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(TelegramPairingApproveResponse {
@@ -315,6 +347,7 @@ async fn approve_telegram_pairing_handler(
     }
 }
 
+/// FFetch whatsapp qr handler.
 async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl IntoResponse {
     let ip = req.ip.trim().to_string();
     let key_path = req.ssh_key_path.trim().to_string();
@@ -342,14 +375,30 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
     );
 
     match ssh_as_openclaw_async(&ip, &key, &cmd).await {
-        Ok(out) => (
-            StatusCode::OK,
-            Json(WhatsAppQrResponse {
-                ok: true,
-                message: "WhatsApp login output captured.".into(),
-                qr_output: out,
-            }),
-        ),
+        Ok(out) => {
+            let lowered = out.to_ascii_lowercase();
+            if lowered.contains("unsupported channel: whatsapp")
+                || lowered.contains("unsupported channel whatsapp")
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(WhatsAppQrResponse {
+                        ok: false,
+                        message: "This OpenClaw install does not support the WhatsApp channel. Click 'Install/Repair WhatsApp Support' first, then fetch QR again.".into(),
+                        qr_output: out,
+                    }),
+                );
+            }
+
+            (
+                StatusCode::OK,
+                Json(WhatsAppQrResponse {
+                    ok: true,
+                    message: "WhatsApp login output captured.".into(),
+                    qr_output: out,
+                }),
+            )
+        }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(WhatsAppQrResponse {
@@ -361,8 +410,105 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
     }
 }
 
+/// RRepair whatsapp handler.
+async fn repair_whatsapp_handler(Json(req): Json<WhatsAppRepairRequest>) -> impl IntoResponse {
+    let ip = req.ip.trim().to_string();
+    let key_path = req.ssh_key_path.trim().to_string();
+    if ip.is_empty() || key_path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(WhatsAppRepairResponse {
+                ok: false,
+                message: "Missing IP or SSH key path.".into(),
+                repair_output: String::new(),
+            }),
+        );
+    }
+
+    let key = PathBuf::from(key_path);
+    match whatsapp::repair_support(&ip, &key).await {
+        Ok(result) => {
+            let message = if result.supported {
+                "Repair completed. WhatsApp channel appears available now.".to_string()
+            } else {
+                "Repair completed, but WhatsApp is still unsupported on this OpenClaw build."
+                    .to_string()
+            };
+            let code = if result.supported {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                code,
+                Json(WhatsAppRepairResponse {
+                    ok: result.supported,
+                    message,
+                    repair_output: result.output,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(WhatsAppRepairResponse {
+                ok: false,
+                message: format!("Failed to run WhatsApp repair: {e}"),
+                repair_output: String::new(),
+            }),
+        ),
+    }
+}
+
+async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl IntoResponse {
+    let ip = req.ip.trim().to_string();
+    let key_path = req.ssh_key_path.trim().to_string();
+    if ip.is_empty() || key_path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DockerFixResponse {
+                ok: false,
+                message: "Missing IP or SSH key path.".into(),
+                fix_output: String::new(),
+            }),
+        );
+    }
+
+    let key = PathBuf::from(key_path);
+    match docker_fix::repair_access(&ip, &key).await {
+        Ok(result) => {
+            let code = if result.ok {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            let message = if result.ok {
+                "Docker access repair completed. Try messaging the bot again.".to_string()
+            } else {
+                "Repair ran but Docker/gateway checks still report an issue.".to_string()
+            };
+            (
+                code,
+                Json(DockerFixResponse {
+                    ok: result.ok,
+                    message,
+                    fix_output: result.output,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(DockerFixResponse {
+                ok: false,
+                message: format!("Failed to run Docker access repair: {e}"),
+                fix_output: String::new(),
+            }),
+        ),
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// NNormalize pairing code.
 fn normalize_pairing_code(raw: &str) -> Option<String> {
     let code = raw.trim().to_ascii_uppercase();
     if code.len() == 8 && code.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -372,6 +518,7 @@ fn normalize_pairing_code(raw: &str) -> Option<String> {
     }
 }
 
+/// LList backup files.
 fn list_backup_files() -> anyhow::Result<Vec<BackupEntry>> {
     let backups_dir = config::backups_dir()?;
     let mut entries = Vec::new();
@@ -732,10 +879,19 @@ function panelShowSummary(panel, ip, keyPath, hostname) {
       <div class="telegram-pairing-result text-xs mt-2 text-slate-400"></div>
     </div>
     <div class="mt-3 border border-slate-700 rounded-lg p-3">
+      <p class="text-slate-300 font-semibold mb-2">Agent Docker Access</p>
+      <p class="text-xs text-slate-400 mb-2">If bot replies with docker socket permission errors, run this fix.</p>
+      <button type="button" onclick="fixAgentDockerAccess(this)" class="agent-docker-fix-btn bg-rose-600 hover:bg-rose-500 text-white font-semibold px-4 py-2 rounded-lg">Fix Agent Docker Access</button>
+      <pre class="agent-docker-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 font-mono text-[10px] leading-3 whitespace-pre text-slate-300 min-h-[12rem] max-h-[40vh] overflow-auto"></pre>
+    </div>
+    <div class="mt-3 border border-slate-700 rounded-lg p-3">
       <p class="text-slate-300 font-semibold mb-2">WhatsApp Link QR</p>
-      <p class="text-xs text-slate-400 mb-2">Click fetch, then scan the QR from WhatsApp mobile (Linked Devices). Output below is live command output from the droplet.</p>
-      <button type="button" onclick="fetchWhatsAppQr(this)" class="whatsapp-qr-btn bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg">Fetch QR</button>
-      <pre class="whatsapp-qr-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 text-[11px] leading-4 whitespace-pre-wrap text-slate-300 max-h-64 overflow-y-auto"></pre>
+      <p class="text-xs text-slate-400 mb-2">If unsupported, run Install/Repair first. Then click Fetch and scan from WhatsApp mobile (Linked Devices).</p>
+      <div class="flex flex-col sm:flex-row gap-2">
+        <button type="button" onclick="repairWhatsAppSupport(this)" class="whatsapp-repair-btn bg-amber-600 hover:bg-amber-500 text-white font-semibold px-4 py-2 rounded-lg">Install/Repair WhatsApp Support</button>
+        <button type="button" onclick="fetchWhatsAppQr(this)" class="whatsapp-qr-btn bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg">Fetch QR</button>
+      </div>
+      <pre class="whatsapp-qr-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 font-mono text-[10px] leading-3 whitespace-pre text-slate-300 min-h-[26rem] max-h-[70vh] overflow-auto"></pre>
     </div>
   `;
 }
@@ -825,8 +981,86 @@ async function fetchWhatsAppQr(btn) {
     if (res.ok && data.ok) {
       output.textContent = (data.qr_output || '').trim() || 'No QR output returned.';
     } else {
-      output.textContent = data.message || 'Failed to fetch WhatsApp QR.';
+      const msg = data.message || 'Failed to fetch WhatsApp QR.';
+      const details = (data.qr_output || '').trim();
+      output.textContent = details ? (msg + '\n\n' + details) : msg;
     }
+  } catch (err) {
+    output.textContent = 'Request failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function fixAgentDockerAccess(btn) {
+  const panel = btn.closest('[id^="deploy-card-"]');
+  if (!panel) return;
+
+  const output = panel.querySelector('.agent-docker-output');
+  const ip = panel.dataset.deployIp || '';
+  const keyPath = panel.dataset.deployKeyPath || '';
+  if (!ip || !keyPath) {
+    output.textContent = 'Missing deploy connection details.';
+    return;
+  }
+
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Fixing...';
+  output.textContent = 'Applying Docker access repair on droplet...';
+
+  try {
+    const res = await fetch('/api/agent/docker-fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip: ip,
+        ssh_key_path: keyPath
+      })
+    });
+    const data = await res.json();
+    const msg = data.message || 'Docker repair completed.';
+    const details = (data.fix_output || '').trim();
+    output.textContent = details ? (msg + '\\n\\n' + details) : msg;
+  } catch (err) {
+    output.textContent = 'Request failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function repairWhatsAppSupport(btn) {
+  const panel = btn.closest('[id^="deploy-card-"]');
+  if (!panel) return;
+
+  const output = panel.querySelector('.whatsapp-qr-output');
+  const ip = panel.dataset.deployIp || '';
+  const keyPath = panel.dataset.deployKeyPath || '';
+  if (!ip || !keyPath) {
+    output.textContent = 'Missing deploy connection details.';
+    return;
+  }
+
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Repairing...';
+  output.textContent = 'Updating OpenClaw and refreshing extensions on droplet...';
+
+  try {
+    const res = await fetch('/api/whatsapp/repair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip: ip,
+        ssh_key_path: keyPath
+      })
+    });
+    const data = await res.json();
+    const msg = data.message || 'WhatsApp repair completed.';
+    const details = (data.repair_output || '').trim();
+    output.textContent = details ? (msg + '\n\n' + details) : msg;
   } catch (err) {
     output.textContent = 'Request failed: ' + err.message;
   } finally {

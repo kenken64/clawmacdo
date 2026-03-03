@@ -3,6 +3,7 @@ use anyhow::Result;
 use console::style;
 
 /// List deployed openclaw-tagged droplets with IPs and status.
+/// RRun.
 pub async fn run(do_token: &str) -> Result<()> {
     let client = DoClient::new(do_token)?;
 

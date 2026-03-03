@@ -56,6 +56,8 @@ Commands:
   migrate       DO → DO migration: backup source, deploy new, restore
   status        List deployed openclaw-tagged droplets
   list-backups  Show local backup archives
+  whatsapp-repair  Repair WhatsApp channel support on an existing droplet
+  docker-fix    Repair agent Docker access on an existing droplet
   help          Print help
 ```
 
@@ -166,6 +168,30 @@ clawmacdo status --do-token=dop_v1_xxx
 clawmacdo list-backups
 ```
 
+### WhatsApp Repair (post-deploy)
+
+Use this when `openclaw channels login --channel whatsapp` reports `Unsupported channel: whatsapp`.
+
+```bash
+clawmacdo whatsapp-repair \
+  --ip=152.42.247.145 \
+  --ssh-key-path=/Users/you/.clawmacdo/keys/clawmacdo_xxx
+```
+
+This updates OpenClaw, refreshes bundled extensions, restarts the gateway, and probes WhatsApp channel availability.
+
+### Docker Access Repair (post-deploy)
+
+Use this when bot replies fail with Docker socket permission errors (e.g. `/var/run/docker.sock: permission denied`).
+
+```bash
+clawmacdo docker-fix \
+  --ip=152.42.247.145 \
+  --ssh-key-path=/Users/you/.clawmacdo/keys/clawmacdo_xxx
+```
+
+This reapplies gateway service Docker group wrapping, restarts the gateway, and validates Docker access + gateway status.
+
 ## What gets installed on the droplet
 
 1. System packages: `curl`, `gnupg`, `ufw`, `git`, `build-essential`, `docker.io`, `fail2ban`, `unattended-upgrades`
@@ -242,7 +268,9 @@ src/
 │   ├── migrate.rs       # DO→DO: remote backup + deploy
 │   ├── destroy.rs       # Destroy droplet + clean up SSH keys
 │   ├── status.rs        # DO API → list tagged droplets
-│   └── list_backups.rs  # List local backup files
+│   ├── list_backups.rs  # List local backup files
+│   ├── whatsapp.rs      # Post-deploy WhatsApp support repair
+│   └── docker_fix.rs    # Post-deploy Docker access repair
 ├── config.rs            # App paths, constants, DeployRecord
 ├── digitalocean.rs      # DO API client
 ├── ssh.rs               # Ed25519 keygen, SSH exec, SCP
