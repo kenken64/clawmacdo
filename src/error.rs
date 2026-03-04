@@ -15,6 +15,12 @@ pub enum AppError {
     #[error("DigitalOcean API error: {0}")]
     DigitalOcean(String),
 
+    #[error("Tencent Cloud API error: {0}")]
+    TencentCloud(String),
+
+    #[error("{0}")]
+    Generic(String),
+
     #[error("SSH error: {0}")]
     Ssh(String),
 
