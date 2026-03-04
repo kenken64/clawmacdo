@@ -12,6 +12,7 @@ path = "src/main.rs"
 hmac = "0.12"
 sha2 = "0.10"
 async-trait = "0.1"
+hex = "0.4"
 
 anyhow = "1"
 base64 = "0.22"
