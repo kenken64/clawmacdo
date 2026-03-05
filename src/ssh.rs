@@ -58,6 +58,10 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
 /// Connect to a remote host via SSH using a private key file.
 /// CConnect.
 fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
+    connect_as(ip, private_key_path, "root")
+}
+
+fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Session, AppError> {
     let addr = format!("{ip}:22");
     let sock_addr: std::net::SocketAddr = addr
         .parse()
@@ -77,10 +81,29 @@ fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
     sess.handshake()
         .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
 
-    sess.userauth_pubkey_file("root", None, private_key_path, None)
+    sess.userauth_pubkey_file(username, None, private_key_path, None)
         .map_err(|e| AppError::Ssh(format!("SSH auth to {ip}: {e}")))?;
 
     Ok(sess)
+}
+
+/// Execute a command on the remote host as a specific user.
+pub fn exec_as(ip: &str, private_key_path: &Path, command: &str, username: &str) -> Result<String, AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+    channel
+        .exec(command)
+        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+    let mut output = String::new();
+    channel
+        .read_to_string(&mut output)
+        .map_err(|e| AppError::Ssh(format!("Read output: {e}")))?;
+    channel
+        .wait_close()
+        .map_err(|e| AppError::Ssh(format!("Wait close: {e}")))?;
+    Ok(output)
 }
 
 /// Execute a command on the remote host and return stdout.
@@ -211,7 +234,11 @@ pub async fn wait_for_ssh(
         let ip_clone = ip.clone();
         let key_clone = key.clone();
         let result =
-            tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, "echo ok")).await;
+            tokio::task::spawn_blocking(move || {
+                // Try root first, then ubuntu (Tencent Cloud default user)
+                exec(&ip_clone, &key_clone, "echo ok")
+                    .or_else(|_| exec_as(&ip_clone, &key_clone, "echo ok", "ubuntu"))
+            }).await;
 
         match result {
             Ok(Ok(_)) => return Ok(()),
