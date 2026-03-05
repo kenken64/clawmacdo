@@ -360,6 +360,72 @@ impl TencentClient {
         }
     }
 
+    /// Create a security group with SSH (22) and HTTP (80/443) ingress.
+    /// Returns the security group ID.
+    pub async fn create_security_group(&self, name: &str) -> Result<String, AppError> {
+        let payload = serde_json::json!({
+            "GroupName": name,
+            "GroupDescription": "OpenClaw security group - SSH + HTTP/HTTPS"
+        });
+        let resp = self
+            .signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "CreateSecurityGroup", "2017-03-12", &payload.to_string())
+            .await?;
+
+        let sg_id = resp["Response"]["SecurityGroup"]["SecurityGroupId"]
+            .as_str()
+            .ok_or_else(|| AppError::TencentCloud("Missing SecurityGroupId".into()))?
+            .to_string();
+
+        // Add ingress rules: SSH (22), HTTP (80), HTTPS (443)
+        let rules_payload = serde_json::json!({
+            "SecurityGroupId": sg_id,
+            "SecurityGroupPolicySet": {
+                "Ingress": [
+                    {
+                        "Protocol": "TCP",
+                        "Port": "22",
+                        "CidrBlock": "0.0.0.0/0",
+                        "Action": "ACCEPT",
+                        "PolicyDescription": "SSH"
+                    },
+                    {
+                        "Protocol": "TCP",
+                        "Port": "80",
+                        "CidrBlock": "0.0.0.0/0",
+                        "Action": "ACCEPT",
+                        "PolicyDescription": "HTTP"
+                    },
+                    {
+                        "Protocol": "TCP",
+                        "Port": "443",
+                        "CidrBlock": "0.0.0.0/0",
+                        "Action": "ACCEPT",
+                        "PolicyDescription": "HTTPS"
+                    }
+                ],
+                "Egress": [
+                    {
+                        "Protocol": "ALL",
+                        "Port": "ALL",
+                        "CidrBlock": "0.0.0.0/0",
+                        "Action": "ACCEPT",
+                        "PolicyDescription": "Allow all outbound"
+                    }
+                ]
+            }
+        });
+        self.signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "CreateSecurityGroupPolicies", "2017-03-12", &rules_payload.to_string()).await?;
+
+        Ok(sg_id)
+    }
+
+    /// Delete a security group.
+    pub async fn delete_security_group(&self, sg_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({ "SecurityGroupId": sg_id });
+        self.signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "DeleteSecurityGroup", "2017-03-12", &payload.to_string()).await?;
+        Ok(())
+    }
+
     /// List SSH key pairs.
     pub async fn list_key_pairs(&self) -> Result<Vec<(String, String)>, AppError> {
         let payload = serde_json::json!({

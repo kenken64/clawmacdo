@@ -3,16 +3,26 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for migrating [OpenClaw](https://openclaw.ai) from Mac or an existing DigitalOcean droplet to a new DigitalOcean droplet — with Claude Code, Codex, and Gemini CLI pre-installed.
+Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean** or **Tencent Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
 ## Features
 
+- **Multi-cloud**: Deploy to DigitalOcean or Tencent Cloud with `--provider` flag
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
-- **1-click deploy**: generate SSH keys, provision a DO droplet, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
-- **DO-to-DO migration**: SSH into a source droplet, back up remotely, deploy to a new droplet, restore
-- **Destroy**: delete a droplet by name with confirmation, clean up SSH keys (DO + local)
-- **Status**: list all `openclaw`-tagged droplets with IPs
+- **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
+- **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
+- **Destroy**: delete an instance by name with confirmation, clean up SSH keys (cloud + local)
+- **Status**: list all openclaw-tagged instances with IPs
 - **List backups**: show local backup archives with sizes and dates
+- **Web UI**: Browser-based deploy interface with real-time SSE progress streaming
+- **Security groups**: Auto-create firewall rules on Tencent Cloud (SSH + HTTP/HTTPS)
+
+## Supported Cloud Providers
+
+| Provider | Flag | Credentials |
+|----------|------|-------------|
+| DigitalOcean | `--provider=digitalocean` (default) | `--do-token` |
+| Tencent Cloud | `--provider=tencent` | `--tencent-secret-id` + `--tencent-secret-key` |
 
 ## Download
 
