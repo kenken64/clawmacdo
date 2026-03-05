@@ -103,11 +103,23 @@ enum Commands {
         tailscale_auth_key: Option<String>,
     },
 
-    /// DO → DO migration: backup source droplet, deploy new, restore config
+    /// Cloud-to-cloud migration: backup source instance, deploy new, restore config
     Migrate {
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
         do_token: String,
+
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
 
         /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
@@ -289,7 +301,10 @@ async fn main() -> anyhow::Result<()> {
             commands::deploy::run(params).await?;
         }
         Commands::Migrate {
+            provider,
             do_token,
+            tencent_secret_id,
+            tencent_secret_key,
             anthropic_key,
             openai_key,
             gemini_key,
@@ -305,7 +320,10 @@ async fn main() -> anyhow::Result<()> {
             tailscale_auth_key,
         } => {
             let params = MigrateParams {
+                provider,
                 do_token,
+                tencent_secret_id,
+                tencent_secret_key,
                 anthropic_key,
                 openai_key,
                 gemini_key,

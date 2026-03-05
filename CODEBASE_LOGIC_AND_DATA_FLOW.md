@@ -194,3 +194,108 @@ sequenceDiagram
 4. Operational output (IP/key/hostname/IDs) is persisted as `DeployRecord` JSON.
 5. Runtime operations (pairing, QR, repair) use stored IP/key path + SSH command execution.
 
+
+---
+
+## Multi-Cloud Architecture (Tencent Branch)
+
+### Cloud Provider Abstraction
+
+```
+┌─────────────────────────────────────────┐
+│          CloudProvider Trait             │
+│  (cloud_provider.rs)                    │
+│                                         │
+│  upload_ssh_key()                       │
+│  delete_ssh_key()                       │
+│  create_instance()                      │
+│  wait_for_active()                      │
+│  delete_instance()                      │
+│  list_instances()                       │
+├─────────────────┬───────────────────────┤
+│   DoClient      │   TencentClient      │
+│   (digitalocean │   (tencent.rs)        │
+│    .rs)         │                       │
+│                 │   TC3-HMAC-SHA256     │
+│   Bearer token  │   CVM + VPC APIs     │
+│   REST API      │   Security Groups    │
+└─────────────────┴───────────────────────┘
+```
+
+### Tencent Cloud API Flow
+
+```
+TencentClient
+  ├── TC3-HMAC-SHA256 Signing
+  │   ├── Date Key:    HMAC("TC3" + SecretKey, date)
+  │   ├── Service Key: HMAC(dateKey, service)
+  │   ├── Signing Key: HMAC(serviceKey, "tc3_request")
+  │   └── Signature:   HMAC(signingKey, stringToSign)
+  │
+  ├── CVM API (cvm.tencentcloudapi.com)
+  │   ├── ImportKeyPair    → Upload SSH public key
+  │   ├── RunInstances     → Create CVM instance
+  │   ├── DescribeInstances → Poll status / list
+  │   ├── TerminateInstances → Destroy
+  │   └── DescribeKeyPairs → List keys for cleanup
+  │
+  └── VPC API (vpc.tencentcloudapi.com)
+      ├── CreateSecurityGroup         → Firewall rules
+      ├── CreateSecurityGroupPolicies → SSH/HTTP/HTTPS ingress
+      └── DeleteSecurityGroup         → Cleanup
+```
+
+### Deploy Flow Dispatch
+
+```
+deploy::run(params)
+  │
+  ├─ provider == "digitalocean"
+  │   └─ run_do(params)          → DoClient → Steps 1-16
+  │
+  └─ provider == "tencent"
+      └─ run_tencent(params)     → TencentClient → Steps 1-16
+                                    │
+                                    ├─ Steps 1-4: Tencent-specific
+                                    │   (ImportKeyPair, RunInstances)
+                                    │
+                                    ├─ Steps 5-14: Shared SSH pipeline
+                                    │   (identical provisioning via SSH)
+                                    │
+                                    └─ Steps 15-16: Shared
+                                        (gateway start, DeployRecord)
+```
+
+### Web UI Provider Toggle
+
+```
+Provider Dropdown (DigitalOcean / Tencent Cloud)
+  │
+  ├─ "digitalocean" selected:
+  │   ├─ Show: DO Token field
+  │   ├─ Regions: sgp1, nyc1, sfo3, lon1, ...
+  │   └─ Sizes: s-1vcpu-1gb, s-2vcpu-4gb, ...
+  │
+  └─ "tencent" selected:
+      ├─ Show: SecretId + SecretKey fields
+      ├─ Regions: ap-singapore, ap-hongkong, ap-tokyo, ...
+      └─ Sizes: S5.MEDIUM2, S5.MEDIUM4, S5.LARGE8, ...
+```
+
+### DeployRecord (Extended)
+
+```json
+{
+  "id": "abc123",
+  "provider": "tencent",
+  "droplet_id": 0,
+  "instance_id": "ins-xxxxxxxx",
+  "hostname": "openclaw-abc12345",
+  "ip_address": "1.2.3.4",
+  "region": "ap-singapore",
+  "size": "S5.MEDIUM4",
+  "ssh_key_path": "~/.clawmacdo/keys/clawmacdo_abc12345",
+  "ssh_key_id": "skey-xxxxxxxx",
+  "created_at": "2026-03-05T00:00:00Z"
+}
+```
