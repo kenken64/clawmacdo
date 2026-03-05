@@ -69,8 +69,6 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
 fi
 BASHRCEOF
 chown {user}:{user} {home}/.bashrc && chmod 644 {home}/.bashrc"#,
-        home = home,
-        user = user,
     );
     ssh_root_async(ip, key, &bashrc).await?;
 
@@ -83,8 +81,6 @@ if [ -f ~/.bashrc ]; then
 fi
 BPEOF
 chown {user}:{user} {home}/.bash_profile && chmod 644 {home}/.bash_profile"#,
-        home = home,
-        user = user,
     );
     ssh_root_async(ip, key, &bash_profile).await?;
 
@@ -116,7 +112,6 @@ chown {user}:{user} {home}/.bash_profile && chmod 644 {home}/.bash_profile"#,
 SUDOEOF
 chmod 440 /etc/sudoers.d/{user} && chown root:root /etc/sudoers.d/{user}
 visudo -cf /etc/sudoers.d/{user}"#,
-        user = user,
     );
     ssh_root_async(ip, key, &sudoers)
         .await
@@ -126,15 +121,13 @@ visudo -cf /etc/sudoers.d/{user}"#,
         })?;
 
     // Setup .ssh/authorized_keys with deploy key
+    let pubkey = public_key_openssh;
     let ssh_setup = format!(
         r#"mkdir -p {home}/.ssh && \
 chmod 700 {home}/.ssh && \
 echo '{pubkey}' > {home}/.ssh/authorized_keys && \
 chmod 600 {home}/.ssh/authorized_keys && \
 chown -R {user}:{user} {home}/.ssh"#,
-        home = home,
-        user = user,
-        pubkey = public_key_openssh,
     );
     ssh_root_async(ip, key, &ssh_setup).await?;
 
@@ -147,7 +140,6 @@ chown -R {user}:{user} {home}/.ssh"#,
 mkdir -p /run/user/$OPENCLAW_UID && \
 chown {user}:{user} /run/user/$OPENCLAW_UID && \
 chmod 700 /run/user/$OPENCLAW_UID"#,
-        user = user,
     );
     ssh_root_async(ip, key, &runtime_dir).await?;
 
@@ -160,7 +152,6 @@ for i in $(seq 1 20); do \
   sleep 1; \
 done; \
 exit 0"#,
-        user = user,
     );
     ssh_root_async(ip, key, &user_manager).await?;
 
@@ -173,8 +164,6 @@ chown -R {user}:{user} {home}/.openclaw && \
 chmod 700 {home}/.openclaw && \
 rm -rf /root/.openclaw; \
 fi"#,
-        home = home,
-        user = user,
     );
     ssh_root_async(ip, key, &restore_backup).await?;
 

@@ -15,8 +15,6 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
     let mkdirs = format!(
         "mkdir -p {home}/.local/share/pnpm/store {home}/.local/bin && \
          chown -R {user}:{user} {home}/.local",
-        home = home,
-        user = user,
     );
     ssh_root_async(ip, key, &mkdirs).await?;
 
@@ -24,7 +22,6 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
     let pnpm_cfg = format!(
         "pnpm config set global-dir {home}/.local/share/pnpm && \
          pnpm config set global-bin-dir {home}/.local/bin",
-        home = home,
     );
     ssh_as_openclaw_async(ip, key, &pnpm_cfg)
         .await
@@ -39,7 +36,6 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
          PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
          pnpm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli",
-        home = home,
     );
     ssh_as_openclaw_async(ip, key, &cli_install)
         .await
@@ -57,7 +53,6 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
          claude --version && \
          (codex --version 2>/dev/null || echo 'codex: skipped') && \
          (gemini --version 2>/dev/null || echo 'gemini: skipped')",
-        home = home,
     );
     ssh_as_openclaw_async(ip, key, &cli_verify)
         .await
@@ -75,7 +70,6 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
              ln -sf \"$src\" /usr/local/bin/$bin; \
            fi; \
          done",
-        home = home,
     );
     ssh_root_async(ip, key, &symlink_cmd)
         .await

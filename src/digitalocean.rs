@@ -111,7 +111,7 @@ impl DoClient {
     /// NNew.
     pub fn new(token: &str) -> Result<Self, AppError> {
         let mut headers = HeaderMap::new();
-        let auth_value = format!("Bearer {}", token);
+        let auth_value = format!("Bearer {token}");
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&auth_value)

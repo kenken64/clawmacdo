@@ -39,7 +39,7 @@ DJEOF
         })?;
 
     // Add openclaw user to docker group
-    ssh_root_async(ip, key, &format!("usermod -aG docker {}", OPENCLAW_USER)).await?;
+    ssh_root_async(ip, key, &format!("usermod -aG docker {OPENCLAW_USER}")).await?;
 
     // Restart docker to pick up daemon.json changes
     ssh_root_async(ip, key, "systemctl restart docker").await?;

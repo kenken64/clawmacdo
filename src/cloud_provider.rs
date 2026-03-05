@@ -16,6 +16,7 @@ pub struct InstanceInfo {
     pub public_ip: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CreateInstanceParams {
     pub name: String,
@@ -27,12 +28,18 @@ pub struct CreateInstanceParams {
     pub tags: Vec<String>,
 }
 
+#[allow(dead_code)]
 #[async_trait]
 pub trait CloudProvider: Send + Sync {
     async fn upload_ssh_key(&self, name: &str, public_key: &str) -> Result<KeyInfo, AppError>;
     async fn delete_ssh_key(&self, key_id: &str) -> Result<(), AppError>;
-    async fn create_instance(&self, params: CreateInstanceParams) -> Result<InstanceInfo, AppError>;
-    async fn wait_for_active(&self, instance_id: &str, timeout_secs: u64) -> Result<InstanceInfo, AppError>;
+    async fn create_instance(&self, params: CreateInstanceParams)
+        -> Result<InstanceInfo, AppError>;
+    async fn wait_for_active(
+        &self,
+        instance_id: &str,
+        timeout_secs: u64,
+    ) -> Result<InstanceInfo, AppError>;
     async fn delete_instance(&self, instance_id: &str) -> Result<(), AppError>;
     async fn list_instances(&self, tag: &str) -> Result<Vec<InstanceInfo>, AppError>;
 }

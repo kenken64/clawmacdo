@@ -17,10 +17,10 @@ pub async fn run(params: DestroyParams) -> Result<()> {
     match params.provider.as_str() {
         "digitalocean" => run_do(params).await,
         "tencent" => run_tencent(params).await,
-        _ => bail!(
-            "Unknown provider '{}'. Use 'digitalocean' or 'tencent'.",
-            params.provider
-        ),
+        _ => {
+            let provider = &params.provider;
+            bail!("Unknown provider '{provider}'. Use 'digitalocean' or 'tencent'.")
+        }
     }
 }
 
@@ -73,7 +73,7 @@ async fn run_do(params: DestroyParams) -> Result<()> {
         client.delete_ssh_key(key.id).await?;
         println!("SSH key deleted.");
     } else {
-        println!("SSH key '{}' not found; skipping.", expected_key_name);
+        println!("SSH key '{expected_key_name}' not found; skipping.");
     }
 
     let local_key = config::keys_dir()?.join(format!("clawmacdo_{hostname_suffix}"));
@@ -143,12 +143,15 @@ async fn run_tencent(params: DestroyParams) -> Result<()> {
         .unwrap_or(&instance.name);
     let expected_key_name = format!("clawmacdo-{hostname_suffix}");
     let keys = client.list_key_pairs().await?;
-    if let Some((key_id, _)) = keys.into_iter().find(|(_, name)| name == &expected_key_name) {
+    if let Some((key_id, _)) = keys
+        .into_iter()
+        .find(|(_, name)| name == &expected_key_name)
+    {
         println!("Deleting SSH key pair '{expected_key_name}' (ID {key_id})...");
         client.delete_key_pair(&key_id).await?;
         println!("SSH key pair deleted.");
     } else {
-        println!("SSH key pair '{}' not found; skipping.", expected_key_name);
+        println!("SSH key pair '{expected_key_name}' not found; skipping.");
     }
 
     // Clean up local key

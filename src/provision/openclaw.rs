@@ -6,6 +6,7 @@ use std::path::Path;
 /// Create directory structure, write .env, install OpenClaw via pnpm.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/openclaw.yml + openclaw-release.yml.
 /// PProvision.
+#[allow(clippy::too_many_arguments)]
 pub async fn provision(
     ip: &str,
     key: &Path,
@@ -21,12 +22,11 @@ pub async fn provision(
     let config_dir = format!("{home}/.openclaw");
 
     // Create directory structure with proper permissions
+    let cd = &config_dir;
     let mkdirs = format!(
         r#"mkdir -p {cd}/sessions {cd}/credentials {cd}/data {cd}/logs {cd}/agents/main/agent {cd}/workspace && \
 chmod 700 {cd} {cd}/credentials {cd}/agents/main/agent && \
 chown -R {user}:{user} {cd}"#,
-        cd = config_dir,
-        user = user,
     );
     ssh_root_async(ip, key, &mkdirs).await?;
 
@@ -41,14 +41,6 @@ WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}
 TELEGRAM_BOT_TOKEN={telegram_bot_token}
 ENVEOF
 chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
-        cd = config_dir,
-        user = user,
-        anthropic_api_key = anthropic_api_key,
-        anthropic_setup_token = anthropic_setup_token,
-        openai_key = openai_key,
-        gemini_key = gemini_key,
-        whatsapp_phone_number = whatsapp_phone_number,
-        telegram_bot_token = telegram_bot_token,
     );
     ssh_root_async(ip, key, &write_env).await?;
 
@@ -73,8 +65,6 @@ cat > {home}/.claude/settings.json << 'CCSETTINGSEOF'
 CCSETTINGSEOF
 chmod 600 {home}/.claude/settings.json && \
 chown -R {user}:{user} {home}/.claude"#,
-        home = home,
-        user = user,
     );
     ssh_root_async(ip, key, &claude_cfg).await?;
 
@@ -85,8 +75,6 @@ find {cd}/extensions -type f -links +1 -exec sh -c 'for f do cp -p "$f" "$f.__cl
 fi && \
 chown -R {user}:{user} {cd} && \
 chmod 700 {cd}"#,
-        cd = config_dir,
-        user = user,
     );
     ssh_root_async(ip, key, &normalize_extensions).await?;
 
@@ -98,7 +86,6 @@ chmod 700 {cd}"#,
          PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
          pnpm install -g openclaw@latest 2>&1 || true",
-        home = home,
     );
     ssh_as_openclaw_async(ip, key, &install_cmd)
         .await
@@ -112,17 +99,22 @@ chmod 700 {cd}"#,
         "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
          openclaw --version 2>/dev/null || echo OPENCLAW_NOT_FOUND",
-        home = home,
     );
-    let pnpm_result = ssh_as_openclaw_async(ip, key, &verify_pnpm).await.unwrap_or_default();
+    let pnpm_result = ssh_as_openclaw_async(ip, key, &verify_pnpm)
+        .await
+        .unwrap_or_default();
     if pnpm_result.contains("OPENCLAW_NOT_FOUND") {
         // Fallback: install as root via npm (installs to /usr/lib/node_modules, binary at /usr/bin/openclaw)
-        ssh_root_async(ip, key, "npm install -g openclaw@latest 2>&1 || pnpm install -g openclaw@latest 2>&1")
-            .await
-            .map_err(|e| AppError::Provision {
-                phase: "openclaw install (npm fallback)".into(),
-                message: e.to_string(),
-            })?;
+        ssh_root_async(
+            ip,
+            key,
+            "npm install -g openclaw@latest 2>&1 || pnpm install -g openclaw@latest 2>&1",
+        )
+        .await
+        .map_err(|e| AppError::Provision {
+            phase: "openclaw install (npm fallback)".into(),
+            message: e.to_string(),
+        })?;
     }
 
     // Verify installation (check both user and system paths)
@@ -130,7 +122,6 @@ chmod 700 {cd}"#,
         "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
          openclaw --version",
-        home = home,
     );
     let version = ssh_as_openclaw_async(ip, key, &verify_cmd).await?;
     println!("  OpenClaw version: {}", version.trim());
@@ -142,7 +133,6 @@ chmod 700 {cd}"#,
             "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
              HOME={home} \
              timeout 240s claude -p \"health check\" --output-format text --max-turns 1 >/dev/null 2>&1 || true",
-            home = home,
         );
         if let Err(e) = ssh_as_openclaw_async(ip, key, &claude_bootstrap).await {
             eprintln!("  Warning: Claude bootstrap failed; continuing: {e}");
