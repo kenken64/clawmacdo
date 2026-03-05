@@ -214,6 +214,10 @@ enum Commands {
         /// Instance name
         #[arg(long)]
         name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, alias = "force")]
+        yes: bool,
     },
 
     /// Show local backup archives with sizes and dates
@@ -355,6 +359,7 @@ async fn main() -> anyhow::Result<()> {
             tencent_secret_id,
             tencent_secret_key,
             name,
+            yes,
         } => {
             let params = DestroyParams {
                 provider,
@@ -362,6 +367,7 @@ async fn main() -> anyhow::Result<()> {
                 tencent_secret_id,
                 tencent_secret_key,
                 name,
+                yes,
             };
             commands::destroy::run(params).await?;
         }
