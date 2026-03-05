@@ -187,6 +187,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
             key_info.id,
             &user_data,
             params.enable_backups,
+            &params.customer_email,
         )
         .await
         .context("Failed to create droplet")?;
@@ -322,6 +323,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
             config::DEFAULT_TENCENT_IMAGE_ID,
             &key_info.id,
             &user_data_b64,
+            &params.customer_email,
         )
         .await
         .context("Failed to create CVM instance")?;

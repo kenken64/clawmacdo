@@ -26,6 +26,7 @@ pub struct CreateInstanceParams {
     pub ssh_key_id: String,
     pub user_data: String,
     pub tags: Vec<String>,
+    pub customer_email: String,
 }
 
 #[allow(dead_code)]

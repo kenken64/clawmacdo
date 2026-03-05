@@ -163,7 +163,9 @@ impl DoClient {
         ssh_key_id: u64,
         user_data: &str,
         enable_backups: bool,
+        customer_email: &str,
     ) -> Result<DropletInfo, AppError> {
+        let email_tag = format!("email:{customer_email}");
         let body = CreateDropletRequest {
             name,
             region,
@@ -171,7 +173,7 @@ impl DoClient {
             image: "ubuntu-24-04-x64",
             ssh_keys: vec![ssh_key_id],
             user_data,
-            tags: vec![crate::config::DROPLET_TAG],
+            tags: vec![crate::config::DROPLET_TAG, &email_tag],
             backups: enable_backups,
         };
 

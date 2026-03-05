@@ -197,6 +197,7 @@ impl TencentClient {
         image_id: &str,
         key_id: &str,
         user_data_base64: &str,
+        customer_email: &str,
     ) -> Result<String, AppError> {
         // Try multiple zones in order — availability varies across zones.
         // This does not affect DigitalOcean path (DO uses its own create_droplet).
@@ -236,6 +237,9 @@ impl TencentClient {
                     "Tags": [{
                         "Key": "app",
                         "Value": "openclaw"
+                    }, {
+                        "Key": "customer_email",
+                        "Value": customer_email
                     }]
                 }],
                 "EnhancedService": {
@@ -534,6 +538,7 @@ impl CloudProvider for TencentClient {
             &params.image,
             &params.ssh_key_id,
             &user_data_b64,
+            &params.customer_email,
         )
         .await?;
 
