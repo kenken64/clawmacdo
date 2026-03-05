@@ -6,7 +6,10 @@ use std::path::PathBuf;
 
 /// Parameters for a DO → DO migration.
 pub struct MigrateParams {
+    pub provider: String,
     pub do_token: String,
+    pub tencent_secret_id: String,
+    pub tencent_secret_key: String,
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
@@ -69,7 +72,10 @@ pub async fn run(params: MigrateParams) -> Result<()> {
     // ── Step 4: Run full deploy with the downloaded backup ──────────────
     println!("[Migrate 4/5] Starting deploy to new droplet...");
     let deploy_params = DeployParams {
+        provider: params.provider,
         do_token: params.do_token,
+        tencent_secret_id: params.tencent_secret_id,
+        tencent_secret_key: params.tencent_secret_key,
         anthropic_key: params.anthropic_key,
         openai_key: params.openai_key,
         gemini_key: params.gemini_key,

@@ -30,6 +30,8 @@ runcmd:
   - ufw default deny incoming
   - ufw default allow outgoing
   - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
   - ufw allow 18789/tcp
   - ufw --force enable
 
@@ -42,6 +44,14 @@ runcmd:
 
   # --- Enable Docker ---
   - systemctl enable --now docker
+
+  # --- Enable root SSH login (needed for Tencent Cloud which defaults to ubuntu user) ---
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+  - mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  - cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
+  - chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
+  - systemctl restart sshd || systemctl restart ssh
 
   # --- Sentinel file: signals completion to the CLI ---
   - touch {sentinel}

@@ -1,4 +1,5 @@
 mod cloud_init;
+mod cloud_provider;
 mod commands;
 mod config;
 mod digitalocean;
@@ -6,6 +7,7 @@ mod error;
 mod progress;
 pub mod provision;
 mod ssh;
+mod tencent;
 mod ui;
 
 use clap::{Parser, Subcommand};
@@ -30,11 +32,23 @@ enum Commands {
     /// Archive ~/.openclaw/ and LaunchAgent plist into a timestamped .tar.gz
     Backup,
 
-    /// Full 1-click deploy: SSH keys → DO droplet → install OpenClaw + Claude Code + Codex → restore config
+    /// Full 1-click deploy: SSH keys → cloud instance → install OpenClaw + Claude Code + Codex → restore config
     Deploy {
-        /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
+        /// DigitalOcean API token (required for digitalocean provider)
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
         do_token: String,
+
+        /// Tencent Cloud SecretId (required for tencent provider)
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey (required for tencent provider)
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
 
         /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
@@ -89,11 +103,23 @@ enum Commands {
         tailscale_auth_key: Option<String>,
     },
 
-    /// DO → DO migration: backup source droplet, deploy new, restore config
+    /// Cloud-to-cloud migration: backup source instance, deploy new, restore config
     Migrate {
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
         do_token: String,
+
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
 
         /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
@@ -148,22 +174,50 @@ enum Commands {
         tailscale_auth_key: Option<String>,
     },
 
-    /// List deployed openclaw-tagged droplets
+    /// List deployed openclaw-tagged instances
     Status {
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
         do_token: String,
+
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
     },
 
-    /// Destroy an openclaw-tagged droplet by name and clean up SSH keys
+    /// Destroy an openclaw-tagged instance by name and clean up SSH keys
     Destroy {
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
         do_token: String,
 
-        /// Droplet name
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
+
+        /// Instance name
         #[arg(long)]
         name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, alias = "force")]
+        yes: bool,
     },
 
     /// Show local backup archives with sizes and dates
@@ -209,7 +263,10 @@ async fn main() -> anyhow::Result<()> {
             commands::backup::run()?;
         }
         Commands::Deploy {
+            provider,
             do_token,
+            tencent_secret_id,
+            tencent_secret_key,
             anthropic_key,
             openai_key,
             gemini_key,
@@ -225,7 +282,10 @@ async fn main() -> anyhow::Result<()> {
             tailscale_auth_key,
         } => {
             let params = DeployParams {
+                provider,
                 do_token,
+                tencent_secret_id,
+                tencent_secret_key,
                 anthropic_key,
                 openai_key,
                 gemini_key,
@@ -245,7 +305,10 @@ async fn main() -> anyhow::Result<()> {
             commands::deploy::run(params).await?;
         }
         Commands::Migrate {
+            provider,
             do_token,
+            tencent_secret_id,
+            tencent_secret_key,
             anthropic_key,
             openai_key,
             gemini_key,
@@ -261,7 +324,10 @@ async fn main() -> anyhow::Result<()> {
             tailscale_auth_key,
         } => {
             let params = MigrateParams {
+                provider,
                 do_token,
+                tencent_secret_id,
+                tencent_secret_key,
                 anthropic_key,
                 openai_key,
                 gemini_key,
@@ -278,11 +344,31 @@ async fn main() -> anyhow::Result<()> {
             };
             commands::migrate::run(params).await?;
         }
-        Commands::Status { do_token } => {
-            commands::status::run(&do_token).await?;
+        Commands::Status {
+            provider,
+            do_token,
+            tencent_secret_id,
+            tencent_secret_key,
+        } => {
+            commands::status::run(&provider, &do_token, &tencent_secret_id, &tencent_secret_key)
+                .await?;
         }
-        Commands::Destroy { do_token, name } => {
-            let params = DestroyParams { do_token, name };
+        Commands::Destroy {
+            provider,
+            do_token,
+            tencent_secret_id,
+            tencent_secret_key,
+            name,
+            yes,
+        } => {
+            let params = DestroyParams {
+                provider,
+                do_token,
+                tencent_secret_id,
+                tencent_secret_key,
+                name,
+                yes,
+            };
             commands::destroy::run(params).await?;
         }
         Commands::ListBackups => {

@@ -38,7 +38,13 @@ enum JobStatus {
 
 #[derive(Deserialize)]
 struct DeployRequest {
+    #[serde(default = "default_provider")]
+    provider: String,
     do_token: String,
+    #[serde(default)]
+    tencent_secret_id: String,
+    #[serde(default)]
+    tencent_secret_key: String,
     anthropic_key: String,
     #[serde(default)]
     openai_key: String,
@@ -64,6 +70,10 @@ struct DeployRequest {
     tailscale: bool,
     #[serde(default)]
     tailscale_auth_key: String,
+}
+
+fn default_provider() -> String {
+    "digitalocean".to_string()
 }
 
 #[derive(Serialize)]
@@ -226,7 +236,10 @@ async fn start_deploy_handler(
 
     tokio::spawn(async move {
         let params = DeployParams {
+            provider: req.provider,
             do_token: req.do_token,
+            tencent_secret_id: req.tencent_secret_id,
+            tencent_secret_key: req.tencent_secret_key,
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
@@ -767,8 +780,24 @@ function addDeployCard(initialState) {
     </div>
     <form class="space-y-6" onsubmit="startDeploy(event, ${n})">
       <fieldset class="space-y-4">
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Cloud Provider</legend>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Provider</label>
+          <select name="provider" onchange="toggleProvider(this, ${n})" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            <option value="digitalocean" selected>DigitalOcean</option>
+            <option value="tencent">Tencent Cloud</option>
+          </select>
+        </div>
+        <div id="do-creds-${n}">
+          ${passwordField('do_token', 'DigitalOcean Token', 'dop_v1_...', true)}
+        </div>
+        <div id="tc-creds-${n}" style="display:none" class="space-y-4">
+          ${passwordField('tencent_secret_id', 'Tencent SecretId', 'AKIDxxxxxxxx', true)}
+          ${passwordField('tencent_secret_key', 'Tencent SecretKey', 'xxxxxxxx', true)}
+        </div>
+      </fieldset>
+      <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Credentials</legend>
-        ${passwordField('do_token', 'DigitalOcean Token', 'dop_v1_...', true)}
         ${passwordField('anthropic_key', 'Anthropic Key / Setup Token', 'sk-ant-api-... or sk-ant-oat-...', true)}
         ${passwordField('openai_key', 'OpenAI API Key', 'sk-...', false)}
         ${passwordField('gemini_key', 'Gemini API Key', 'AI...', false)}
@@ -786,7 +815,7 @@ function addDeployCard(initialState) {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1">Region</label>
-            <select name="region" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            <select name="region" id="region-${n}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
               <option value="sgp1" selected>sgp1 (Singapore 1)</option>
               <option value="nyc1">nyc1 (New York 1)</option>
               <option value="nyc3">nyc3 (New York 3)</option>
@@ -800,8 +829,8 @@ function addDeployCard(initialState) {
             </select>
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1">Droplet Size</label>
-            <select name="size" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            <label class="block text-sm font-medium text-slate-300 mb-1">Instance Size</label>
+            <select name="size" id="size-${n}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
               <option value="s-1vcpu-1gb">s-1vcpu-1gb (1 vCPU, 1 GB - $6/mo)</option>
               <option value="s-1vcpu-2gb">s-1vcpu-2gb (1 vCPU, 2 GB - $12/mo)</option>
               <option value="s-2vcpu-4gb" selected>s-2vcpu-4gb (2 vCPUs, 4 GB - $24/mo)</option>
@@ -906,6 +935,69 @@ function syncTailscaleKeyRequirement(form) {
       indicator.className = 'field-required-indicator text-slate-500';
       indicator.textContent = '(optional)';
     }
+  }
+}
+
+function toggleProvider(select, n) {
+  const provider = select.value;
+  const doCreds = document.getElementById('do-creds-' + n);
+  const tcCreds = document.getElementById('tc-creds-' + n);
+  const regionSel = document.getElementById('region-' + n);
+  const sizeSel = document.getElementById('size-' + n);
+
+  if (provider === 'tencent') {
+    doCreds.style.display = 'none';
+    tcCreds.style.display = 'block';
+    // Swap to Tencent regions
+    regionSel.innerHTML = `
+      <option value="ap-singapore" selected>ap-singapore (Singapore)</option>
+      <option value="ap-hongkong">ap-hongkong (Hong Kong)</option>
+      <option value="ap-guangzhou">ap-guangzhou (Guangzhou)</option>
+      <option value="ap-shanghai">ap-shanghai (Shanghai)</option>
+      <option value="ap-beijing">ap-beijing (Beijing)</option>
+      <option value="ap-tokyo">ap-tokyo (Tokyo)</option>
+      <option value="ap-seoul">ap-seoul (Seoul)</option>
+      <option value="ap-mumbai">ap-mumbai (Mumbai)</option>
+      <option value="eu-frankfurt">eu-frankfurt (Frankfurt)</option>
+      <option value="na-siliconvalley">na-siliconvalley (Silicon Valley)</option>
+    `;
+    // Swap to Tencent instance types (SA5/S8 have better availability than S5)
+    sizeSel.innerHTML = `
+      <option value="SA5.MEDIUM2">SA5.MEDIUM2 (2 vCPU, 2 GB)</option>
+      <option value="SA5.MEDIUM4" selected>SA5.MEDIUM4 (2 vCPU, 4 GB)</option>
+      <option value="S8.MEDIUM4">S8.MEDIUM4 (2 vCPU, 4 GB)</option>
+      <option value="SA5.MEDIUM8">SA5.MEDIUM8 (2 vCPU, 8 GB)</option>
+      <option value="S8.LARGE8">S8.LARGE8 (4 vCPU, 8 GB)</option>
+      <option value="SA5.LARGE16">SA5.LARGE16 (4 vCPU, 16 GB)</option>
+    `;
+    // Disable DO-specific options
+    doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+    tcCreds.querySelectorAll('input').forEach(i => i.required = true);
+  } else {
+    doCreds.style.display = 'block';
+    tcCreds.style.display = 'none';
+    // Swap back to DO regions
+    regionSel.innerHTML = `
+      <option value="sgp1" selected>sgp1 (Singapore 1)</option>
+      <option value="nyc1">nyc1 (New York 1)</option>
+      <option value="nyc3">nyc3 (New York 3)</option>
+      <option value="sfo3">sfo3 (San Francisco 3)</option>
+      <option value="ams3">ams3 (Amsterdam 3)</option>
+      <option value="lon1">lon1 (London 1)</option>
+      <option value="fra1">fra1 (Frankfurt 1)</option>
+      <option value="tor1">tor1 (Toronto 1)</option>
+      <option value="blr1">blr1 (Bangalore 1)</option>
+      <option value="syd1">syd1 (Sydney 1)</option>
+    `;
+    sizeSel.innerHTML = `
+      <option value="s-1vcpu-1gb">s-1vcpu-1gb (1 vCPU, 1 GB - $6/mo)</option>
+      <option value="s-1vcpu-2gb">s-1vcpu-2gb (1 vCPU, 2 GB - $12/mo)</option>
+      <option value="s-2vcpu-4gb" selected>s-2vcpu-4gb (2 vCPUs, 4 GB - $24/mo)</option>
+      <option value="s-4vcpu-8gb">s-4vcpu-8gb (4 vCPUs, 8 GB - $48/mo)</option>
+      <option value="s-8vcpu-16gb">s-8vcpu-16gb (8 vCPUs, 16 GB - $96/mo)</option>
+    `;
+    doCreds.querySelectorAll('input').forEach(i => i.required = true);
+    tcCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   }
 }
 
@@ -1177,7 +1269,10 @@ async function startDeploy(e, cardNum) {
 
   const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
   const body = {
+    provider: val('provider'),
     do_token: val('do_token'),
+    tencent_secret_id: val('tencent_secret_id'),
+    tencent_secret_key: val('tencent_secret_key'),
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),
