@@ -10,6 +10,7 @@ pub struct DestroyParams {
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
     pub name: String,
+    pub yes: bool,
 }
 
 pub async fn run(params: DestroyParams) -> Result<()> {
@@ -40,13 +41,15 @@ async fn run_do(params: DestroyParams) -> Result<()> {
     println!("  IP:     {ip}");
     println!("  Region: {}", droplet.region.slug);
 
-    let confirmed = Confirm::new()
-        .with_prompt("Permanently destroy this droplet?")
-        .default(false)
-        .interact()?;
-    if !confirmed {
-        println!("Cancelled.");
-        return Ok(());
+    if !params.yes {
+        let confirmed = Confirm::new()
+            .with_prompt("Permanently destroy this droplet?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
     }
 
     println!(
@@ -115,13 +118,15 @@ async fn run_tencent(params: DestroyParams) -> Result<()> {
     println!("  IP:     {ip}");
     println!("  Status: {}", instance.status);
 
-    let confirmed = Confirm::new()
-        .with_prompt("Permanently destroy this instance?")
-        .default(false)
-        .interact()?;
-    if !confirmed {
-        println!("Cancelled.");
-        return Ok(());
+    if !params.yes {
+        let confirmed = Confirm::new()
+            .with_prompt("Permanently destroy this instance?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
     }
 
     println!(
