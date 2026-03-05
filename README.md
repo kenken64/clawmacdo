@@ -61,14 +61,14 @@ clawmacdo <COMMAND>
 
 Commands:
   backup        Archive ~/.openclaw/ and LaunchAgent plist into a .tar.gz
-  deploy        Full 1-click deploy to DigitalOcean
-  destroy       Destroy a droplet by name and clean up SSH keys
-  migrate       DO → DO migration: backup source, deploy new, restore
-  status        List deployed openclaw-tagged droplets
+  deploy        Full 1-click deploy to DigitalOcean or Tencent Cloud
+  destroy       Destroy an instance by name and clean up SSH keys
+  migrate       Cloud-to-cloud migration: backup source, deploy new, restore
+  status        List deployed openclaw-tagged instances
   list-backups  Show local backup archives
   serve         Start the local web UI
-  whatsapp-repair  Repair WhatsApp channel support on an existing droplet
-  docker-fix    Repair agent Docker access on an existing droplet
+  whatsapp-repair  Repair WhatsApp channel support on an existing instance
+  docker-fix    Repair agent Docker access on an existing instance
   help          Print help
 ```
 
@@ -92,7 +92,7 @@ clawmacdo backup
 
 Creates `~/.clawmacdo/backups/openclaw_backup_<timestamp>.tar.gz`.
 
-### Deploy
+### Deploy (DigitalOcean)
 
 ```bash
 clawmacdo deploy \
@@ -106,6 +106,28 @@ clawmacdo deploy \
 
 Optional flags: `--region` (default: `sgp1`), `--size` (default: `s-2vcpu-4gb`), `--hostname`, `--backup <path>`, `--enable-backups`, `--tailscale`, `--tailscale-auth-key`, `--enable-sandbox`.
 
+### Deploy (Tencent Cloud)
+
+```bash
+clawmacdo deploy \
+  --provider=tencent \
+  --tencent-secret-id=AKIDxxxxxxxx \
+  --tencent-secret-key=xxxxxxxx \
+  --anthropic-key=sk-ant-api-xxx \
+  --openai-key=sk-xxx \
+  --gemini-key=AIzaSy... \
+  --telegram-bot-token=123456789:AA...
+```
+
+Optional flags: `--region` (default: `ap-singapore`), `--size` (default: `SA5.MEDIUM4`), `--hostname`.
+
+**Tencent Cloud specifics:**
+- Uses TC3-HMAC-SHA256 API signing (no SDK required)
+- Auto-tries availability zones 3→2→4→1 on stock-out
+- Cloud-init enables root SSH (Tencent Ubuntu defaults to `ubuntu` user)
+- Instance type `SA5.MEDIUM4` (2 vCPU, 4 GB) is the default; `S8.MEDIUM4` is also available
+- Default image: Ubuntu 24.04 LTS (`img-487zeit5`)
+
 Missing values trigger interactive prompts.
 
 #### Deploy flow (16 steps)
@@ -113,9 +135,9 @@ Missing values trigger interactive prompts.
 ```
   1. Resolve parameters (interactive prompts for missing values)
   2. Generate SSH key pair → ~/.clawmacdo/keys/
-  3. Upload public key to DigitalOcean
-  4. Create droplet with cloud-init (tagged "openclaw")
-  5. Poll until droplet is active
+  3. Upload public key to cloud provider
+  4. Create instance with cloud-init (tagged "openclaw")
+  5. Poll until instance is active
   6. Wait for SSH to accept connections
   7. Wait for cloud-init to complete
   8. SCP backup archive to server (if selected)
@@ -170,20 +192,34 @@ After the gateway is started, deploy/migrate automatically configures model rout
 ### Destroy
 
 ```bash
-clawmacdo destroy \
-  --do-token=dop_v1_xxx \
-  --name=openclaw-8d533bfd
+# DigitalOcean
+clawmacdo destroy --do-token=dop_v1_xxx --name=openclaw-8d533bfd
+
+# Tencent Cloud
+clawmacdo destroy --provider=tencent \
+  --tencent-secret-id=AKIDxxxxxxxx \
+  --tencent-secret-key=xxxxxxxx \
+  --name=openclaw-afc97f12
+
+# Skip confirmation prompt
+clawmacdo destroy --provider=tencent --name=openclaw-xxx --yes
 ```
 
-Finds the named droplet among `openclaw`-tagged droplets, shows its details (name, IP, region), and asks for confirmation before destroying. Also cleans up:
+Finds the named instance, shows its details (name, IP, status), and asks for confirmation before destroying. Use `--yes` or `--force` to skip the confirmation prompt (useful for scripts/CI). Also cleans up:
 
-- The associated SSH key from your DigitalOcean account (`clawmacdo-<hostname_suffix>`)
+- The associated SSH key from the cloud provider
 - The local key file from `~/.clawmacdo/keys/`
 
 ### Status
 
 ```bash
+# DigitalOcean
 clawmacdo status --do-token=dop_v1_xxx
+
+# Tencent Cloud
+clawmacdo status --provider=tencent \
+  --tencent-secret-id=AKIDxxxxxxxx \
+  --tencent-secret-key=xxxxxxxx
 ```
 
 ### List Backups
@@ -264,7 +300,9 @@ Credentials and messaging settings can be passed as flags or environment variabl
 
 | Flag | Env var | Required |
 |---|---|---|
-| `--do-token` | `DO_TOKEN` | ✅ Yes |
+| `--do-token` | `DO_TOKEN` | ✅ Yes (DigitalOcean) |
+| `--tencent-secret-id` | `TENCENT_SECRET_ID` | ✅ Yes (Tencent Cloud) |
+| `--tencent-secret-key` | `TENCENT_SECRET_KEY` | ✅ Yes (Tencent Cloud) |
 | `--anthropic-key` | `ANTHROPIC_API_KEY` | ✅ Yes |
 | `--openai-key` | `OPENAI_API_KEY` | Optional |
 | `--gemini-key` | `GEMINI_API_KEY` | Optional |
@@ -288,17 +326,31 @@ src/
 ├── commands/
 │   ├── mod.rs
 │   ├── backup.rs        # Scan + tar.gz ~/.openclaw/
-│   ├── deploy.rs        # 16-step deploy orchestrator
-│   ├── migrate.rs       # DO→DO: remote backup + deploy
-│   ├── destroy.rs       # Destroy droplet + clean up SSH keys
-│   ├── status.rs        # DO API → list tagged droplets
+│   ├── deploy.rs        # 16-step deploy orchestrator (DO + Tencent)
+│   ├── migrate.rs       # Cloud-to-cloud migration
+│   ├── destroy.rs       # Destroy instance + clean up SSH keys (--yes flag)
+│   ├── status.rs        # List tagged instances (DO + Tencent)
+│   ├── serve.rs         # Web UI with provider dropdown
 │   ├── list_backups.rs  # List local backup files
 │   ├── whatsapp.rs      # Post-deploy WhatsApp support repair
 │   └── docker_fix.rs    # Post-deploy Docker access repair
-├── config.rs            # App paths, constants, DeployRecord
-├── digitalocean.rs      # DO API client
-├── ssh.rs               # Ed25519 keygen, SSH exec, SCP
-├── cloud_init.rs        # Cloud-init YAML template (includes healthcheck + linger)
+├── config.rs            # App paths, constants, DeployRecord, CloudProviderType
+├── cloud_provider.rs    # CloudProvider trait (KeyInfo, InstanceInfo)
+├── digitalocean.rs      # DigitalOcean API client
+├── tencent.rs           # Tencent Cloud API client (TC3-HMAC-SHA256 signing)
+├── ssh.rs               # Ed25519 keygen, SSH exec/exec_as, SCP
+├── cloud_init.rs        # Cloud-init YAML template (UFW, Docker, root SSH)
+├── provision/           # SSH-based provisioning modules (steps 9-14)
+│   ├── mod.rs           # Provision orchestrator
+│   ├── commands.rs      # SSH command helpers
+│   ├── user.rs          # Create openclaw user + lingering + systemd
+│   ├── firewall.rs      # UFW + fail2ban + DOCKER-USER
+│   ├── docker.rs        # Docker daemon config
+│   ├── nodejs.rs        # pnpm + AI CLI install (claude/codex/gemini)
+│   ├── openclaw.rs      # OpenClaw install (pnpm first, npm fallback)
+│   ├── system_tools.rs  # vim, git config
+│   └── tailscale.rs     # Optional Tailscale VPN
+├── progress.rs          # SSE progress streaming
 ├── ui.rs                # Interactive prompts, spinners, summary
 └── error.rs             # Typed errors (thiserror)
 ```
