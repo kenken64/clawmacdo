@@ -8,7 +8,7 @@ pub const DEFAULT_SIZE: &str = "s-2vcpu-4gb";
 
 // Tencent Cloud defaults
 pub const DEFAULT_TENCENT_REGION: &str = "ap-singapore";
-pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "S5.MEDIUM4";
+pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "SA5.MEDIUM4";
 pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

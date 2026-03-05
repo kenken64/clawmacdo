@@ -14,7 +14,7 @@ const VPC_HOST: &str = "vpc.tencentcloudapi.com";
 const VPC_ENDPOINT: &str = "https://vpc.tencentcloudapi.com";
 
 pub const DEFAULT_TENCENT_REGION: &str = "ap-singapore";
-pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "S5.MEDIUM4";
+pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "SA5.MEDIUM4";
 pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
 
 pub struct TencentClient {
@@ -160,7 +160,8 @@ impl TencentClient {
     ) -> Result<KeyInfo, AppError> {
         let payload = serde_json::json!({
             "KeyName": name,
-            "PublicKey": public_key
+            "PublicKey": public_key,
+            "ProjectId": 0
         });
         let resp = self
             .cvm_request("ImportKeyPair", &payload.to_string())
@@ -213,7 +214,7 @@ impl TencentClient {
                 "KeyIds": [key_id]
             },
             "Placement": {
-                "Zone": format!("{}-1", self.region)
+                "Zone": format!("{}-3", self.region)
             },
             "InstanceChargeType": "POSTPAID_BY_HOUR",
             "InstanceCount": 1,
