@@ -33,3 +33,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 axum = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+dotenvy = "0.15"
