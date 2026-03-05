@@ -350,8 +350,13 @@ async fn main() -> anyhow::Result<()> {
             tencent_secret_id,
             tencent_secret_key,
         } => {
-            commands::status::run(&provider, &do_token, &tencent_secret_id, &tencent_secret_key)
-                .await?;
+            commands::status::run(
+                &provider,
+                &do_token,
+                &tencent_secret_id,
+                &tencent_secret_key,
+            )
+            .await?;
         }
         Commands::Destroy {
             provider,

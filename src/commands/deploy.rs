@@ -1,8 +1,8 @@
 use crate::config::{self, CloudProviderType, DeployRecord};
 use crate::digitalocean::DoClient;
-use crate::tencent::TencentClient;
 use crate::progress;
 use crate::provision::{self, ProvisionOpts};
+use crate::tencent::TencentClient;
 use crate::{cloud_init, ssh, ui};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -61,7 +61,9 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
         cmd.push_str(" openclaw models fallbacks add openai/gpt-5-mini >/dev/null 2>&1 || true;");
     }
     if gemini_enabled {
-        cmd.push_str(" openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;");
+        cmd.push_str(
+            " openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;",
+        );
     }
     cmd.push_str(" echo ok");
     Some(cmd)
@@ -72,7 +74,7 @@ fn resolve_provider(provider: &str) -> Result<CloudProviderType> {
     match provider {
         "digitalocean" | "do" => Ok(CloudProviderType::DigitalOcean),
         "tencent" | "tc" => Ok(CloudProviderType::Tencent),
-        _ => bail!("Unknown provider '{}'. Use 'digitalocean' or 'tencent'.", provider),
+        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean' or 'tencent'."),
     }
 }
 
@@ -97,35 +99,77 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
     // Step 1: Resolve parameters
     progress::emit(tx, "\n[Step 1/16] Resolving parameters...");
     let region = params.region.unwrap_or_else(|| {
-        if params.non_interactive { config::DEFAULT_REGION.to_string() } else { ui::prompt_region().unwrap_or_else(|_| config::DEFAULT_REGION.to_string()) }
+        if params.non_interactive {
+            config::DEFAULT_REGION.to_string()
+        } else {
+            ui::prompt_region().unwrap_or_else(|_| config::DEFAULT_REGION.to_string())
+        }
     });
     let size = params.size.unwrap_or_else(|| {
-        if params.non_interactive { config::DEFAULT_SIZE.to_string() } else { ui::prompt_size().unwrap_or_else(|_| config::DEFAULT_SIZE.to_string()) }
+        if params.non_interactive {
+            config::DEFAULT_SIZE.to_string()
+        } else {
+            ui::prompt_size().unwrap_or_else(|_| config::DEFAULT_SIZE.to_string())
+        }
     });
     let hostname = params.hostname.unwrap_or_else(|| {
-        if params.non_interactive { format!("openclaw-{}", &deploy_id[..8]) } else { ui::prompt_hostname(&deploy_id).unwrap_or_else(|_| format!("openclaw-{}", &deploy_id[..8])) }
+        if params.non_interactive {
+            format!("openclaw-{}", &deploy_id[..8])
+        } else {
+            ui::prompt_hostname(&deploy_id)
+                .unwrap_or_else(|_| format!("openclaw-{}", &deploy_id[..8]))
+        }
     });
-    let backup_path = if params.non_interactive { params.backup } else { params.backup.or_else(|| ui::prompt_backup().ok().flatten()) };
+    let backup_path = if params.non_interactive {
+        params.backup
+    } else {
+        params.backup.or_else(|| ui::prompt_backup().ok().flatten())
+    };
 
-    progress::emit(tx, &format!("  Provider: DigitalOcean"));
+    progress::emit(tx, "  Provider: DigitalOcean");
     progress::emit(tx, &format!("  Region:   {region}"));
     progress::emit(tx, &format!("  Size:     {size}"));
     progress::emit(tx, &format!("  Hostname: {hostname}"));
-    progress::emit(tx, &format!("  Backup:   {}", backup_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".into())));
+    progress::emit(
+        tx,
+        &format!(
+            "  Backup:   {}",
+            backup_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".into())
+        ),
+    );
 
-    let (anthropic_api_key, anthropic_setup_token) = split_anthropic_credential(&params.anthropic_key);
+    let (anthropic_api_key, anthropic_setup_token) =
+        split_anthropic_credential(&params.anthropic_key);
 
     // Step 2: Generate SSH key pair
     progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
     let keypair = ssh::generate_keypair(&deploy_id)?;
-    progress::emit(tx, &format!("  Key saved: {}", keypair.private_key_path.display()));
+    progress::emit(
+        tx,
+        &format!("  Key saved: {}", keypair.private_key_path.display()),
+    );
 
     // Step 3: Upload public key to DO
-    progress::emit(tx, "\n[Step 3/16] Uploading SSH public key to DigitalOcean...");
+    progress::emit(
+        tx,
+        "\n[Step 3/16] Uploading SSH public key to DigitalOcean...",
+    );
     let do_client = DoClient::new(&params.do_token)?;
     let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
-    let key_info = do_client.upload_ssh_key(&key_name, &keypair.public_key_openssh).await.context("Failed to upload SSH key to DigitalOcean")?;
-    progress::emit(tx, &format!("  Key ID: {}, Fingerprint: {}", key_info.id, key_info.fingerprint));
+    let key_info = do_client
+        .upload_ssh_key(&key_name, &keypair.public_key_openssh)
+        .await
+        .context("Failed to upload SSH key to DigitalOcean")?;
+    progress::emit(
+        tx,
+        &format!(
+            "  Key ID: {}, Fingerprint: {}",
+            key_info.id, key_info.fingerprint
+        ),
+    );
 
     // Step 4: Create droplet
     progress::emit(tx, "\n[Step 4/16] Creating droplet with cloud-init...");
@@ -133,26 +177,60 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         progress::emit(tx, "  Detected Anthropic setup token (sk-ant-oat...).");
     }
     let user_data = cloud_init::generate();
-    let droplet = do_client.create_droplet(&hostname, &region, &size, key_info.id, &user_data, params.enable_backups).await.context("Failed to create droplet")?;
+    let droplet = do_client
+        .create_droplet(
+            &hostname,
+            &region,
+            &size,
+            key_info.id,
+            &user_data,
+            params.enable_backups,
+        )
+        .await
+        .context("Failed to create droplet")?;
     let droplet_id = droplet.id;
     progress::emit(tx, &format!("  Droplet created: ID {droplet_id}"));
 
     let result = deploy_steps_5_through_16(
-        &do_client, droplet_id, &keypair.private_key_path, &keypair.public_key_openssh,
-        &key_info.fingerprint, backup_path.as_deref(), &deploy_id, &hostname, &region, &size,
-        &anthropic_api_key, &anthropic_setup_token, &params.openai_key, &params.gemini_key,
-        &params.whatsapp_phone_number, &params.telegram_bot_token, params.enable_sandbox,
-        params.tailscale, params.tailscale_auth_key.as_deref(), &params.progress_tx,
-    ).await;
+        &do_client,
+        droplet_id,
+        &keypair.private_key_path,
+        &keypair.public_key_openssh,
+        &key_info.fingerprint,
+        backup_path.as_deref(),
+        &deploy_id,
+        &hostname,
+        &region,
+        &size,
+        &anthropic_api_key,
+        &anthropic_setup_token,
+        &params.openai_key,
+        &params.gemini_key,
+        &params.whatsapp_phone_number,
+        &params.telegram_bot_token,
+        params.enable_sandbox,
+        params.tailscale,
+        params.tailscale_auth_key.as_deref(),
+        &params.progress_tx,
+    )
+    .await;
 
     match result {
         Ok(record) => Ok(record),
         Err(e) => {
-            let ip = do_client.get_droplet(droplet_id).await.ok().and_then(|d| d.public_ip()).unwrap_or_else(|| "unknown".into());
+            let ip = do_client
+                .get_droplet(droplet_id)
+                .await
+                .ok()
+                .and_then(|d| d.public_ip())
+                .unwrap_or_else(|| "unknown".into());
             eprintln!("\nDeploy failed: {e:#}");
             eprintln!("  Droplet ID: {droplet_id}");
             eprintln!("  IP Address: {ip}");
-            eprintln!("  SSH: ssh -i {} root@{ip}", keypair.private_key_path.display());
+            eprintln!(
+                "  SSH: ssh -i {} root@{ip}",
+                keypair.private_key_path.display()
+            );
             bail!("Deploy failed at a post-creation step: {e:#}");
         }
     }
@@ -169,29 +247,62 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
 
     // Step 1: Resolve parameters
     progress::emit(tx, "\n[Step 1/16] Resolving parameters...");
-    let region = params.region.unwrap_or_else(|| config::DEFAULT_TENCENT_REGION.to_string());
-    let size = params.size.unwrap_or_else(|| config::DEFAULT_TENCENT_INSTANCE_TYPE.to_string());
-    let hostname = params.hostname.unwrap_or_else(|| format!("openclaw-{}", &deploy_id[..8]));
-    let backup_path = if params.non_interactive { params.backup } else { params.backup.or_else(|| ui::prompt_backup().ok().flatten()) };
+    let region = params
+        .region
+        .unwrap_or_else(|| config::DEFAULT_TENCENT_REGION.to_string());
+    let size = params
+        .size
+        .unwrap_or_else(|| config::DEFAULT_TENCENT_INSTANCE_TYPE.to_string());
+    let hostname = params
+        .hostname
+        .unwrap_or_else(|| format!("openclaw-{}", &deploy_id[..8]));
+    let backup_path = if params.non_interactive {
+        params.backup
+    } else {
+        params.backup.or_else(|| ui::prompt_backup().ok().flatten())
+    };
 
-    progress::emit(tx, &format!("  Provider: Tencent Cloud"));
+    progress::emit(tx, "  Provider: Tencent Cloud");
     progress::emit(tx, &format!("  Region:   {region}"));
     progress::emit(tx, &format!("  Size:     {size}"));
     progress::emit(tx, &format!("  Hostname: {hostname}"));
-    progress::emit(tx, &format!("  Backup:   {}", backup_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "None".into())));
+    progress::emit(
+        tx,
+        &format!(
+            "  Backup:   {}",
+            backup_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".into())
+        ),
+    );
 
-    let (anthropic_api_key, anthropic_setup_token) = split_anthropic_credential(&params.anthropic_key);
+    let (anthropic_api_key, anthropic_setup_token) =
+        split_anthropic_credential(&params.anthropic_key);
 
     // Step 2: Generate SSH key pair
     progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
     let keypair = ssh::generate_keypair(&deploy_id)?;
-    progress::emit(tx, &format!("  Key saved: {}", keypair.private_key_path.display()));
+    progress::emit(
+        tx,
+        &format!("  Key saved: {}", keypair.private_key_path.display()),
+    );
 
     // Step 3: Upload public key to Tencent Cloud
-    progress::emit(tx, "\n[Step 3/16] Uploading SSH public key to Tencent Cloud...");
-    let tc_client = TencentClient::new(&params.tencent_secret_id, &params.tencent_secret_key, &region)?;
+    progress::emit(
+        tx,
+        "\n[Step 3/16] Uploading SSH public key to Tencent Cloud...",
+    );
+    let tc_client = TencentClient::new(
+        &params.tencent_secret_id,
+        &params.tencent_secret_key,
+        &region,
+    )?;
     let key_name = format!("clawmacdo_{}", &deploy_id[..8]);
-    let key_info = tc_client.import_key_pair(&key_name, &keypair.public_key_openssh).await.context("Failed to upload SSH key to Tencent Cloud")?;
+    let key_info = tc_client
+        .import_key_pair(&key_name, &keypair.public_key_openssh)
+        .await
+        .context("Failed to upload SSH key to Tencent Cloud")?;
     progress::emit(tx, &format!("  Key ID: {}", key_info.id));
 
     // Step 4: Create CVM instance
@@ -200,16 +311,27 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         progress::emit(tx, "  Detected Anthropic setup token (sk-ant-oat...).");
     }
     let user_data = cloud_init::generate();
-    let user_data_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &user_data);
-    let instance_id = tc_client.create_instance(
-        &hostname, &size, config::DEFAULT_TENCENT_IMAGE_ID, &key_info.id, &user_data_b64,
-    ).await.context("Failed to create CVM instance")?;
+    let user_data_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &user_data);
+    let instance_id = tc_client
+        .create_instance(
+            &hostname,
+            &size,
+            config::DEFAULT_TENCENT_IMAGE_ID,
+            &key_info.id,
+            &user_data_b64,
+        )
+        .await
+        .context("Failed to create CVM instance")?;
     progress::emit(tx, &format!("  Instance created: {instance_id}"));
 
     // Step 5: Wait for instance to be RUNNING
     progress::emit(tx, "\n[Step 5/16] Waiting for instance to become active...");
     let sp = ui::spinner("[Step 5/16] Waiting for instance to become active...");
-    let instance = tc_client.wait_for_running(&instance_id, std::time::Duration::from_secs(300)).await.context("Instance did not become RUNNING within 5 minutes")?;
+    let instance = tc_client
+        .wait_for_running(&instance_id, std::time::Duration::from_secs(300))
+        .await
+        .context("Instance did not become RUNNING within 5 minutes")?;
     let ip = instance.public_ip.unwrap();
     let msg = format!("[Step 5/16] Instance active at {ip}");
     sp.finish_with_message(msg.clone());
@@ -218,14 +340,26 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     // Step 6: Wait for SSH
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
-    ssh::wait_for_ssh(&ip, &keypair.private_key_path, std::time::Duration::from_secs(300)).await.context("SSH did not become available within 5 minutes")?;
+    ssh::wait_for_ssh(
+        &ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(300),
+    )
+    .await
+    .context("SSH did not become available within 5 minutes")?;
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
 
     // Step 7: Wait for cloud-init
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
-    ssh::wait_for_cloud_init(&ip, &keypair.private_key_path, std::time::Duration::from_secs(1800)).await.context("Cloud-init did not complete within 30 minutes")?;
+    ssh::wait_for_cloud_init(
+        &ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(1800),
+    )
+    .await
+    .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
 
@@ -238,7 +372,8 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
         let bp_c = bp.to_path_buf();
-        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive)).await??;
+        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
+            .await??;
         let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
@@ -265,19 +400,36 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         hostname: &hostname,
         progress_tx: tx.clone(),
     };
-    provision::run(&ip, &keypair.private_key_path, &provision_opts).await.context("Provision failed")?;
+    provision::run(&ip, &keypair.private_key_path, &provision_opts)
+        .await
+        .context("Provision failed")?;
 
     // Step 15: Start gateway (Tencent path)
     // Key differences from DO: openclaw may be at /usr/bin/openclaw (npm global) or
     // ~/.local/bin/openclaw (pnpm global). We detect and use whichever exists.
     // We also avoid the `sg docker -c` wrapper in ExecStart which causes exit 127/203
     // on some Ubuntu images where sg is not in the systemd service PATH.
-    progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway (user service)...");
+    progress::emit(
+        tx,
+        "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
+    );
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(&anthropic_api_key) { " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"" } else { "" };
-    let openai_onboard_arg = if has_value(&params.openai_key) { " --openai-api-key \"$OPENAI_API_KEY\"" } else { "" };
-    let gemini_onboard_arg = if has_value(&params.gemini_key) { " --gemini-api-key \"$GEMINI_API_KEY\"" } else { "" };
+    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
+        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
+    } else {
+        ""
+    };
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -286,7 +438,9 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
              docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
-    } else { "true".to_string() };
+    } else {
+        "true".to_string()
+    };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
@@ -336,7 +490,10 @@ SVCEOF\n\
     );
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    let start_result = tokio::task::spawn_blocking(move || provision::commands::ssh_as_openclaw(&ip_c, &key_c, &start_cmd)).await?;
+    let start_result = tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &start_cmd)
+    })
+    .await?;
     if let Err(e) = start_result {
         bail!("OpenClaw gateway start failed on Tencent instance: {e}");
     }
@@ -350,7 +507,10 @@ SVCEOF\n\
         progress::emit(tx, "[Step 15/16] Configuring model failover chain...");
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)).await??;
+        tokio::task::spawn_blocking(move || {
+            provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)
+        })
+        .await??;
     }
 
     // Step 16: Save DeployRecord
@@ -381,6 +541,7 @@ SVCEOF\n\
 // DO Steps 5-16 (kept from original for backward compat)
 // ══════════════════════════════════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 async fn deploy_steps_5_through_16(
     do_client: &DoClient,
     droplet_id: u64,
@@ -408,7 +569,10 @@ async fn deploy_steps_5_through_16(
     // Step 5: Poll until droplet is active
     progress::emit(tx, "\n[Step 5/16] Waiting for droplet to become active...");
     let sp = ui::spinner("[Step 5/16] Waiting for droplet to become active...");
-    let droplet = do_client.wait_for_active(droplet_id, std::time::Duration::from_secs(300)).await.context("Droplet did not become active within 5 minutes")?;
+    let droplet = do_client
+        .wait_for_active(droplet_id, std::time::Duration::from_secs(300))
+        .await
+        .context("Droplet did not become active within 5 minutes")?;
     let ip = droplet.public_ip().unwrap();
     let msg = format!("[Step 5/16] Droplet active at {ip}");
     sp.finish_with_message(msg.clone());
@@ -417,14 +581,18 @@ async fn deploy_steps_5_through_16(
     // Step 6: Wait for SSH
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
-    ssh::wait_for_ssh(&ip, private_key_path, std::time::Duration::from_secs(300)).await.context("SSH did not become available within 5 minutes")?;
+    ssh::wait_for_ssh(&ip, private_key_path, std::time::Duration::from_secs(300))
+        .await
+        .context("SSH did not become available within 5 minutes")?;
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
 
     // Step 7: Wait for cloud-init
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
-    ssh::wait_for_cloud_init(&ip, private_key_path, std::time::Duration::from_secs(1800)).await.context("Cloud-init did not complete within 30 minutes")?;
+    ssh::wait_for_cloud_init(&ip, private_key_path, std::time::Duration::from_secs(1800))
+        .await
+        .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
 
@@ -437,7 +605,8 @@ async fn deploy_steps_5_through_16(
         let ip_c = ip.clone();
         let key_c = private_key_path.to_path_buf();
         let bp_c = bp.to_path_buf();
-        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive)).await??;
+        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
+            .await??;
         let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
         let ip_c = ip.clone();
         let key_c = private_key_path.to_path_buf();
@@ -464,15 +633,29 @@ async fn deploy_steps_5_through_16(
         hostname,
         progress_tx: tx.clone(),
     };
-    provision::run(&ip, private_key_path, &provision_opts).await.context("Provision failed")?;
+    provision::run(&ip, private_key_path, &provision_opts)
+        .await
+        .context("Provision failed")?;
 
     // Step 15: Start gateway
     progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway...");
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(anthropic_api_key) { " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\"" } else { "" };
-    let openai_onboard_arg = if has_value(openai_key) { " --openai-api-key \"$OPENAI_API_KEY\"" } else { "" };
-    let gemini_onboard_arg = if has_value(gemini_key) { " --gemini-api-key \"$GEMINI_API_KEY\"" } else { "" };
+    let anthropic_onboard_arg = if has_value(anthropic_api_key) {
+        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
+    } else {
+        ""
+    };
+    let openai_onboard_arg = if has_value(openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let sandbox_setup_cmd = if enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -481,7 +664,9 @@ async fn deploy_steps_5_through_16(
              /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
         )
-    } else { "true".to_string() };
+    } else {
+        "true".to_string()
+    };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
@@ -513,7 +698,10 @@ async fn deploy_steps_5_through_16(
     );
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
-    let start_result = tokio::task::spawn_blocking(move || provision::commands::ssh_as_openclaw(&ip_c, &key_c, &start_cmd)).await?;
+    let start_result = tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &start_cmd)
+    })
+    .await?;
     if let Err(e) = start_result {
         bail!("OpenClaw gateway start failed: {e}");
     }
@@ -527,7 +715,10 @@ async fn deploy_steps_5_through_16(
         progress::emit(tx, "[Step 15/16] Configuring model failover chain...");
         let ip_c = ip.clone();
         let key_c = private_key_path.to_path_buf();
-        tokio::task::spawn_blocking(move || provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)).await??;
+        tokio::task::spawn_blocking(move || {
+            provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)
+        })
+        .await??;
     }
 
     // Step 16: Save DeployRecord

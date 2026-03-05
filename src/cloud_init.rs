@@ -10,6 +10,7 @@ use crate::config::CLOUD_INIT_SENTINEL;
 /// cloud-init completes.
 /// GGenerate.
 pub fn generate() -> String {
+    let sentinel = CLOUD_INIT_SENTINEL;
     format!(
         r##"#cloud-config
 package_update: true
@@ -56,6 +57,5 @@ runcmd:
   # --- Sentinel file: signals completion to the CLI ---
   - touch {sentinel}
 "##,
-        sentinel = CLOUD_INIT_SENTINEL,
     )
 }

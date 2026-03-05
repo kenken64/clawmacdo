@@ -3,18 +3,23 @@ use crate::error::AppError;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+
 use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const CVM_HOST: &str = "cvm.tencentcloudapi.com";
 const CVM_ENDPOINT: &str = "https://cvm.tencentcloudapi.com";
+#[allow(dead_code)]
 const VPC_HOST: &str = "vpc.tencentcloudapi.com";
+#[allow(dead_code)]
 const VPC_ENDPOINT: &str = "https://vpc.tencentcloudapi.com";
 
+#[allow(dead_code)]
 pub const DEFAULT_TENCENT_REGION: &str = "ap-singapore";
+#[allow(dead_code)]
 pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "SA5.MEDIUM4";
+#[allow(dead_code)]
 pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
 
 pub struct TencentClient {
@@ -72,9 +77,8 @@ impl TencentClient {
         // Step 2: String to sign
         let credential_scope = format!("{date}/{service}/tc3_request");
         let hashed_canonical = sha256_hex(canonical_request.as_bytes());
-        let string_to_sign = format!(
-            "TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{hashed_canonical}"
-        );
+        let string_to_sign =
+            format!("TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{hashed_canonical}");
 
         // Step 3: Signing key
         let secret_date = hmac_sha256(
@@ -143,6 +147,7 @@ impl TencentClient {
             .await
     }
 
+    #[allow(dead_code)]
     async fn vpc_request(
         &self,
         action: &str,
@@ -153,11 +158,7 @@ impl TencentClient {
     }
 
     /// Import an SSH key pair into Tencent Cloud.
-    pub async fn import_key_pair(
-        &self,
-        name: &str,
-        public_key: &str,
-    ) -> Result<KeyInfo, AppError> {
+    pub async fn import_key_pair(&self, name: &str, public_key: &str) -> Result<KeyInfo, AppError> {
         let payload = serde_json::json!({
             "KeyName": name,
             "PublicKey": public_key,
@@ -243,9 +244,7 @@ impl TencentClient {
                 }
             });
 
-            let resp = self
-                .cvm_request("RunInstances", &payload.to_string())
-                .await;
+            let resp = self.cvm_request("RunInstances", &payload.to_string()).await;
 
             match resp {
                 Ok(resp) => {
@@ -253,7 +252,9 @@ impl TencentClient {
                         .as_array()
                         .and_then(|arr| arr.first())
                         .and_then(|v| v.as_str())
-                        .ok_or_else(|| AppError::TencentCloud("Missing InstanceId in response".into()))?
+                        .ok_or_else(|| {
+                            AppError::TencentCloud("Missing InstanceId in response".into())
+                        })?
                         .to_string();
                     return Ok(instance_id);
                 }
@@ -271,9 +272,11 @@ impl TencentClient {
         }
 
         // All zones exhausted
-        Err(last_err.unwrap_or_else(|| AppError::TencentCloud(
-            "All availability zones exhausted — instance type not available".into()
-        )))
+        Err(last_err.unwrap_or_else(|| {
+            AppError::TencentCloud(
+                "All availability zones exhausted — instance type not available".into(),
+            )
+        }))
     }
 
     /// Get instance details by ID.
@@ -289,14 +292,9 @@ impl TencentClient {
         let instance = resp["Response"]["InstanceSet"]
             .as_array()
             .and_then(|arr| arr.first())
-            .ok_or_else(|| {
-                AppError::TencentCloud(format!("Instance {instance_id} not found"))
-            })?;
+            .ok_or_else(|| AppError::TencentCloud(format!("Instance {instance_id} not found")))?;
 
-        let name = instance["InstanceName"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let name = instance["InstanceName"].as_str().unwrap_or("").to_string();
         let status = instance["InstanceState"]
             .as_str()
             .unwrap_or("UNKNOWN")
@@ -339,7 +337,10 @@ impl TencentClient {
             .map(|inst| {
                 let id = inst["InstanceId"].as_str().unwrap_or("").to_string();
                 let name = inst["InstanceName"].as_str().unwrap_or("").to_string();
-                let status = inst["InstanceState"].as_str().unwrap_or("UNKNOWN").to_string();
+                let status = inst["InstanceState"]
+                    .as_str()
+                    .unwrap_or("UNKNOWN")
+                    .to_string();
                 let public_ip = inst["PublicIpAddresses"]
                     .as_array()
                     .and_then(|arr| arr.first())
@@ -393,13 +394,21 @@ impl TencentClient {
 
     /// Create a security group with SSH (22) and HTTP (80/443) ingress.
     /// Returns the security group ID.
+    #[allow(dead_code)]
     pub async fn create_security_group(&self, name: &str) -> Result<String, AppError> {
         let payload = serde_json::json!({
             "GroupName": name,
             "GroupDescription": "OpenClaw security group - SSH + HTTP/HTTPS"
         });
         let resp = self
-            .signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "CreateSecurityGroup", "2017-03-12", &payload.to_string())
+            .signed_request(
+                "vpc",
+                VPC_HOST,
+                VPC_ENDPOINT,
+                "CreateSecurityGroup",
+                "2017-03-12",
+                &payload.to_string(),
+            )
             .await?;
 
         let sg_id = resp["Response"]["SecurityGroup"]["SecurityGroupId"]
@@ -445,15 +454,32 @@ impl TencentClient {
                 ]
             }
         });
-        self.signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "CreateSecurityGroupPolicies", "2017-03-12", &rules_payload.to_string()).await?;
+        self.signed_request(
+            "vpc",
+            VPC_HOST,
+            VPC_ENDPOINT,
+            "CreateSecurityGroupPolicies",
+            "2017-03-12",
+            &rules_payload.to_string(),
+        )
+        .await?;
 
         Ok(sg_id)
     }
 
     /// Delete a security group.
+    #[allow(dead_code)]
     pub async fn delete_security_group(&self, sg_id: &str) -> Result<(), AppError> {
         let payload = serde_json::json!({ "SecurityGroupId": sg_id });
-        self.signed_request("vpc", VPC_HOST, VPC_ENDPOINT, "DeleteSecurityGroup", "2017-03-12", &payload.to_string()).await?;
+        self.signed_request(
+            "vpc",
+            VPC_HOST,
+            VPC_ENDPOINT,
+            "DeleteSecurityGroup",
+            "2017-03-12",
+            &payload.to_string(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -496,8 +522,10 @@ impl CloudProvider for TencentClient {
         &self,
         params: CreateInstanceParams,
     ) -> Result<InstanceInfo, AppError> {
-        let user_data_b64 =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &params.user_data);
+        let user_data_b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &params.user_data,
+        );
 
         let instance_id = TencentClient::create_instance(
             self,

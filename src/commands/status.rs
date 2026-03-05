@@ -13,7 +13,7 @@ pub async fn run(
     match provider {
         "digitalocean" => run_do(do_token).await,
         "tencent" => run_tencent(tencent_secret_id, tencent_secret_key).await,
-        _ => bail!("Unknown provider '{}'. Use 'digitalocean' or 'tencent'.", provider),
+        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean' or 'tencent'."),
     }
 }
 
@@ -52,11 +52,7 @@ async fn run_do(do_token: &str) -> Result<()> {
 }
 
 async fn run_tencent(secret_id: &str, secret_key: &str) -> Result<()> {
-    let client = TencentClient::new(
-        secret_id,
-        secret_key,
-        crate::config::DEFAULT_TENCENT_REGION,
-    )?;
+    let client = TencentClient::new(secret_id, secret_key, crate::config::DEFAULT_TENCENT_REGION)?;
 
     println!("Fetching openclaw instances (Tencent Cloud)...\n");
     let instances = client.list_openclaw_instances().await?;

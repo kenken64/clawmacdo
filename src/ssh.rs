@@ -88,7 +88,12 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
 }
 
 /// Execute a command on the remote host as a specific user.
-pub fn exec_as(ip: &str, private_key_path: &Path, command: &str, username: &str) -> Result<String, AppError> {
+pub fn exec_as(
+    ip: &str,
+    private_key_path: &Path,
+    command: &str,
+    username: &str,
+) -> Result<String, AppError> {
     let sess = connect_as(ip, private_key_path, username)?;
     let mut channel = sess
         .channel_session()
@@ -233,12 +238,12 @@ pub async fn wait_for_ssh(
         }
         let ip_clone = ip.clone();
         let key_clone = key.clone();
-        let result =
-            tokio::task::spawn_blocking(move || {
-                // Try root first, then ubuntu (Tencent Cloud default user)
-                exec(&ip_clone, &key_clone, "echo ok")
-                    .or_else(|_| exec_as(&ip_clone, &key_clone, "echo ok", "ubuntu"))
-            }).await;
+        let result = tokio::task::spawn_blocking(move || {
+            // Try root first, then ubuntu (Tencent Cloud default user)
+            exec(&ip_clone, &key_clone, "echo ok")
+                .or_else(|_| exec_as(&ip_clone, &key_clone, "echo ok", "ubuntu"))
+        })
+        .await;
 
         match result {
             Ok(Ok(_)) => return Ok(()),

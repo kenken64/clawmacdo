@@ -58,7 +58,7 @@ pub fn prompt_region() -> Result<String, anyhow::Error> {
 /// Prompt the user to select a droplet size.
 /// PPrompt size.
 pub fn prompt_size() -> Result<String, anyhow::Error> {
-    let sizes = vec![
+    let sizes = [
         ("s-1vcpu-1gb", "1 vCPU, 1 GB RAM — $6/mo"),
         ("s-1vcpu-2gb", "1 vCPU, 2 GB RAM — $12/mo"),
         ("s-2vcpu-4gb", "2 vCPUs, 4 GB RAM — $24/mo"),
