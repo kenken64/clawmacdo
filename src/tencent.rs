@@ -197,53 +197,83 @@ impl TencentClient {
         key_id: &str,
         user_data_base64: &str,
     ) -> Result<String, AppError> {
-        let payload = serde_json::json!({
-            "InstanceName": name,
-            "InstanceType": instance_type,
-            "ImageId": image_id,
-            "SystemDisk": {
-                "DiskType": "CLOUD_BSSD",
-                "DiskSize": 50
-            },
-            "InternetAccessible": {
-                "InternetChargeType": "TRAFFIC_POSTPAID_BY_HOUR",
-                "InternetMaxBandwidthOut": 100,
-                "PublicIpAssigned": true
-            },
-            "LoginSettings": {
-                "KeyIds": [key_id]
-            },
-            "Placement": {
-                "Zone": format!("{}-3", self.region)
-            },
-            "InstanceChargeType": "POSTPAID_BY_HOUR",
-            "InstanceCount": 1,
-            "UserData": user_data_base64,
-            "TagSpecification": [{
-                "ResourceType": "instance",
-                "Tags": [{
-                    "Key": "app",
-                    "Value": "openclaw"
-                }]
-            }],
-            "EnhancedService": {
-                "SecurityService": { "Enabled": true },
-                "MonitorService": { "Enabled": true }
+        // Try multiple zones in order — availability varies across zones.
+        // This does not affect DigitalOcean path (DO uses its own create_droplet).
+        let zones_to_try = vec![
+            format!("{}-3", self.region),
+            format!("{}-2", self.region),
+            format!("{}-4", self.region),
+            format!("{}-1", self.region),
+        ];
+
+        let mut last_err = None;
+        for zone in &zones_to_try {
+            let payload = serde_json::json!({
+                "InstanceName": name,
+                "InstanceType": instance_type,
+                "ImageId": image_id,
+                "SystemDisk": {
+                    "DiskType": "CLOUD_BSSD",
+                    "DiskSize": 50
+                },
+                "InternetAccessible": {
+                    "InternetChargeType": "TRAFFIC_POSTPAID_BY_HOUR",
+                    "InternetMaxBandwidthOut": 100,
+                    "PublicIpAssigned": true
+                },
+                "LoginSettings": {
+                    "KeyIds": [key_id]
+                },
+                "Placement": {
+                    "Zone": zone
+                },
+                "InstanceChargeType": "POSTPAID_BY_HOUR",
+                "InstanceCount": 1,
+                "UserData": user_data_base64,
+                "TagSpecification": [{
+                    "ResourceType": "instance",
+                    "Tags": [{
+                        "Key": "app",
+                        "Value": "openclaw"
+                    }]
+                }],
+                "EnhancedService": {
+                    "SecurityService": { "Enabled": true },
+                    "MonitorService": { "Enabled": true }
+                }
+            });
+
+            let resp = self
+                .cvm_request("RunInstances", &payload.to_string())
+                .await;
+
+            match resp {
+                Ok(resp) => {
+                    let instance_id = resp["Response"]["InstanceIdSet"]
+                        .as_array()
+                        .and_then(|arr| arr.first())
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| AppError::TencentCloud("Missing InstanceId in response".into()))?
+                        .to_string();
+                    return Ok(instance_id);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    // ResourceInsufficient = out of stock in this zone, try next
+                    if err_str.contains("ResourceInsufficient") {
+                        last_err = Some(e);
+                        continue;
+                    }
+                    // Any other error is fatal — don't retry
+                    return Err(e);
+                }
             }
-        });
+        }
 
-        let resp = self
-            .cvm_request("RunInstances", &payload.to_string())
-            .await?;
-
-        let instance_id = resp["Response"]["InstanceIdSet"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::TencentCloud("Missing InstanceId in response".into()))?
-            .to_string();
-
-        Ok(instance_id)
+        // All zones exhausted
+        Err(last_err.unwrap_or_else(|| AppError::TencentCloud(
+            "All availability zones exhausted — instance type not available".into()
+        )))
     }
 
     /// Get instance details by ID.

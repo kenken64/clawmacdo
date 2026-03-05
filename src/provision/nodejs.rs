@@ -48,11 +48,15 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
             message: e.to_string(),
         })?;
 
-    // Verify CLI binaries are available to the openclaw user
+    // Verify CLI binaries are available to the openclaw user.
+    // Use ; instead of && so one missing CLI does not block the whole deploy.
+    // claude is required; codex and gemini are optional.
     let cli_verify = format!(
         "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
-         claude --version && codex --version && gemini --version",
+         claude --version && \
+         (codex --version 2>/dev/null || echo 'codex: skipped') && \
+         (gemini --version 2>/dev/null || echo 'gemini: skipped')",
         home = home,
     );
     ssh_as_openclaw_async(ip, key, &cli_verify)
