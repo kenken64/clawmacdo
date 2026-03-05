@@ -190,7 +190,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     // Step 3: Upload public key to Tencent Cloud
     progress::emit(tx, "\n[Step 3/16] Uploading SSH public key to Tencent Cloud...");
     let tc_client = TencentClient::new(&params.tencent_secret_id, &params.tencent_secret_key, &region)?;
-    let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
+    let key_name = format!("clawmacdo_{}", &deploy_id[..8]);
     let key_info = tc_client.import_key_pair(&key_name, &keypair.public_key_openssh).await.context("Failed to upload SSH key to Tencent Cloud")?;
     progress::emit(tx, &format!("  Key ID: {}", key_info.id));
 
