@@ -2,6 +2,7 @@ mod cloud_init;
 mod cloud_provider;
 mod commands;
 mod config;
+mod db;
 mod digitalocean;
 mod error;
 mod progress;
@@ -34,6 +35,14 @@ enum Commands {
 
     /// Full 1-click deploy: SSH keys → cloud instance → install OpenClaw + Claude Code + Codex → restore config
     Deploy {
+        /// Customer name (who is deploying)
+        #[arg(long)]
+        customer_name: String,
+
+        /// Customer email
+        #[arg(long)]
+        customer_email: String,
+
         /// Cloud provider: digitalocean or tencent
         #[arg(long, default_value = "digitalocean")]
         provider: String,
@@ -254,8 +263,8 @@ enum Commands {
 }
 
 #[tokio::main]
-/// MMain.
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     match cli.command {
@@ -263,6 +272,8 @@ async fn main() -> anyhow::Result<()> {
             commands::backup::run()?;
         }
         Commands::Deploy {
+            customer_name,
+            customer_email,
             provider,
             do_token,
             tencent_secret_id,
@@ -282,6 +293,8 @@ async fn main() -> anyhow::Result<()> {
             tailscale_auth_key,
         } => {
             let params = DeployParams {
+                customer_name,
+                customer_email,
                 provider,
                 do_token,
                 tencent_secret_id,

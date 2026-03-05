@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 
 /// Parameters for a deploy operation.
 pub struct DeployParams {
+    pub customer_name: String,
+    pub customer_email: String,
     pub provider: String,
     pub do_token: String,
     pub tencent_secret_id: String,
