@@ -267,7 +267,11 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     };
     provision::run(&ip, &keypair.private_key_path, &provision_opts).await.context("Provision failed")?;
 
-    // Step 15: Start gateway (same as DO — runs over SSH)
+    // Step 15: Start gateway (Tencent path)
+    // Key differences from DO: openclaw may be at /usr/bin/openclaw (npm global) or
+    // ~/.local/bin/openclaw (pnpm global). We detect and use whichever exists.
+    // We also avoid the `sg docker -c` wrapper in ExecStart which causes exit 127/203
+    // on some Ubuntu images where sg is not in the systemd service PATH.
     progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway (user service)...");
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
@@ -279,30 +283,48 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
                node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
-             /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
+             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
     } else { "true".to_string() };
     let start_cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
-         (openclaw daemon install --port 18789 --runtime node --force || true); \
+         OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
-         if [ -f \"$SVC\" ]; then \
-           OC_EXT=$(find {home}/.local/share/pnpm -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-           if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
-           sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
-           sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
-         fi; \
+         mkdir -p {home}/.config/systemd/user; \
+         cat > \"$SVC\" << SVCEOF\n\
+[Unit]\n\
+Description=OpenClaw Gateway\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=simple\n\
+WorkingDirectory={home}/.openclaw\n\
+ExecStart=$OC_BIN gateway run\n\
+Restart=always\n\
+RestartSec=5\n\
+Environment=HOME={home}\n\
+Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
+Environment=OPENCLAW_NO_RESPAWN=1\n\
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
+EnvironmentFile=-{home}/.openclaw/.env\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n\
+SVCEOF\n\
+         mkdir -p /var/tmp/openclaw-compile-cache && \
+         OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
+         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
          ({sandbox_setup_cmd}) && \
-         mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
-         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
