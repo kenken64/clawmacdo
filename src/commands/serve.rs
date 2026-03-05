@@ -961,14 +961,14 @@ function toggleProvider(select, n) {
       <option value="eu-frankfurt">eu-frankfurt (Frankfurt)</option>
       <option value="na-siliconvalley">na-siliconvalley (Silicon Valley)</option>
     `;
-    // Swap to Tencent instance types
+    // Swap to Tencent instance types (SA5/S8 have better availability than S5)
     sizeSel.innerHTML = `
-      <option value="S5.MEDIUM2">S5.MEDIUM2 (2 vCPU, 2 GB)</option>
-      <option value="S5.MEDIUM4" selected>S5.MEDIUM4 (2 vCPU, 4 GB)</option>
-      <option value="S5.MEDIUM8">S5.MEDIUM8 (2 vCPU, 8 GB)</option>
-      <option value="S5.LARGE8">S5.LARGE8 (4 vCPU, 8 GB)</option>
-      <option value="S5.LARGE16">S5.LARGE16 (4 vCPU, 16 GB)</option>
-      <option value="S5.2XLARGE16">S5.2XLARGE16 (8 vCPU, 16 GB)</option>
+      <option value="SA5.MEDIUM2">SA5.MEDIUM2 (2 vCPU, 2 GB)</option>
+      <option value="SA5.MEDIUM4" selected>SA5.MEDIUM4 (2 vCPU, 4 GB)</option>
+      <option value="S8.MEDIUM4">S8.MEDIUM4 (2 vCPU, 4 GB)</option>
+      <option value="SA5.MEDIUM8">SA5.MEDIUM8 (2 vCPU, 8 GB)</option>
+      <option value="S8.LARGE8">S8.LARGE8 (4 vCPU, 8 GB)</option>
+      <option value="SA5.LARGE16">SA5.LARGE16 (4 vCPU, 16 GB)</option>
     `;
     // Disable DO-specific options
     doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
