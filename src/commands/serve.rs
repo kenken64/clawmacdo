@@ -2,25 +2,33 @@ use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
 use crate::commands::whatsapp;
 use crate::config;
+use crate::db;
 use crate::provision::commands::ssh_as_openclaw_async;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
+type Db = Arc<Mutex<rusqlite::Connection>>;
 type Jobs = Arc<RwLock<HashMap<String, DeployJob>>>;
+
+#[derive(Clone)]
+struct AppState {
+    jobs: Jobs,
+    db: Db,
+}
 
 struct DeployJob {
     status: JobStatus,
@@ -38,6 +46,8 @@ enum JobStatus {
 
 #[derive(Deserialize)]
 struct DeployRequest {
+    customer_name: String,
+    customer_email: String,
     #[serde(default = "default_provider")]
     provider: String,
     do_token: String,
@@ -145,11 +155,43 @@ struct DockerFixResponse {
     fix_output: String,
 }
 
+#[derive(Deserialize)]
+struct ListDeploymentsQuery {
+    #[serde(default = "default_page")]
+    page: u32,
+}
+
+fn default_page() -> u32 {
+    1
+}
+
+#[derive(Serialize)]
+struct ListDeploymentsResponse {
+    deployments: Vec<db::DeploymentRow>,
+    total: u32,
+    page: u32,
+    per_page: u32,
+    total_pages: u32,
+}
+
+#[derive(Serialize)]
+struct DeleteResponse {
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct ConfigResponse {
+    dry_run: bool,
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 /// RRun.
 pub async fn run(port: u16) -> anyhow::Result<()> {
+    let conn = db::init_db()?;
+    let db: Db = Arc::new(Mutex::new(conn));
     let jobs: Jobs = Arc::new(RwLock::new(HashMap::new()));
+    let state = AppState { jobs, db };
 
     let app = Router::new()
         .route("/", get(index_handler))
@@ -164,7 +206,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/agent/docker-fix", post(repair_agent_docker_handler))
         .route("/api/whatsapp/repair", post(repair_whatsapp_handler))
         .route("/api/whatsapp/qr", post(fetch_whatsapp_qr_handler))
-        .with_state(jobs);
+        .route("/api/deployments", get(list_deployments_handler))
+        .route("/api/deployments/{id}", delete(delete_deployment_handler))
+        .route("/api/config", get(config_handler))
+        .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
     println!("ClawMacToDO web UI running at http://localhost:{port}");
@@ -202,9 +247,11 @@ async fn list_backups_handler() -> impl IntoResponse {
 
 /// SStart deploy handler.
 async fn start_deploy_handler(
-    State(jobs): State<Jobs>,
+    State(state): State<AppState>,
     Json(req): Json<DeployRequest>,
 ) -> impl IntoResponse {
+    let jobs = state.jobs;
+    let db = state.db;
     if req.tailscale && req.tailscale_auth_key.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -233,9 +280,19 @@ async fn start_deploy_handler(
 
     let id = deploy_id.clone();
     let jobs_clone = jobs.clone();
+    let db_clone = db.clone();
+    let customer_name = req.customer_name.clone();
+    let customer_email = req.customer_email.clone();
 
     tokio::spawn(async move {
+        let provider_str = req.provider.clone();
+        let region_str = req.region.clone();
+        let size_str = req.size.clone();
+        let hostname_str = req.hostname.clone();
+
         let params = DeployParams {
+            customer_name: customer_name.clone(),
+            customer_email: customer_email.clone(),
             provider: req.provider,
             do_token: req.do_token,
             tencent_secret_id: req.tencent_secret_id,
@@ -273,10 +330,73 @@ async fn start_deploy_handler(
             progress_tx: Some(tx.clone()),
         };
 
+        // Insert deployment record into SQLite
+        if let Ok(conn) = db_clone.lock() {
+            let _ = db::insert_deployment(
+                &conn, &id, &customer_name, &customer_email,
+                &provider_str, &region_str, &size_str, &hostname_str,
+            );
+        }
+
+        // Dry-run mode: simulate deploy without real cloud calls
+        if is_dry_run() {
+            let _ = tx.send("[Dry-run] Deploy simulation started".to_string());
+            let steps = [
+                "[Step 1/16] Resolving parameters...",
+                "[Step 2/16] Generating SSH key pair...",
+                "[Step 3/16] Uploading SSH public key (skipped — dry-run)...",
+                "[Step 4/16] Creating instance (skipped — dry-run)...",
+                "[Step 5/16] Waiting for instance (skipped — dry-run)...",
+                "[Step 6/16] Waiting for SSH (skipped — dry-run)...",
+                "[Step 7/16] Cloud-init (skipped — dry-run)...",
+                "[Step 8/16] Backup restore (skipped — dry-run)...",
+                "[Step 9/16] Provision step 1 (skipped — dry-run)...",
+                "[Step 10/16] Provision step 2 (skipped — dry-run)...",
+                "[Step 11/16] Provision step 3 (skipped — dry-run)...",
+                "[Step 12/16] Provision step 4 (skipped — dry-run)...",
+                "[Step 13/16] Provision step 5 (skipped — dry-run)...",
+                "[Step 14/16] Provision step 6 (skipped — dry-run)...",
+                "[Step 15/16] Starting gateway (skipped — dry-run)...",
+                "[Step 16/16] Saving deploy record...",
+            ];
+            for step in &steps {
+                let _ = tx.send(step.to_string());
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let dry_hostname = if hostname_str.is_empty() {
+                format!("openclaw-{}", &id[..8])
+            } else {
+                hostname_str.clone()
+            };
+            if let Ok(conn) = db_clone.lock() {
+                let _ = db::update_deployment_status(
+                    &conn, &id, "dry-run",
+                    Some("0.0.0.0"), Some(&dry_hostname),
+                );
+            }
+            let payload = serde_json::json!({
+                "ip": "0.0.0.0",
+                "ssh_key_path": "(dry-run)",
+                "hostname": dry_hostname
+            })
+            .to_string();
+            let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
+            if let Some(job) = jobs_clone.write().await.get_mut(&id) {
+                job.status = JobStatus::Completed;
+            }
+            return;
+        }
+
         let result = deploy::run(params).await;
 
         let final_status = match &result {
             Ok(record) => {
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(
+                        &conn, &id, "completed",
+                        Some(&record.ip_address), Some(&record.hostname),
+                    );
+                }
                 let payload = serde_json::json!({
                     "ip": record.ip_address,
                     "ssh_key_path": record.ssh_key_path,
@@ -287,6 +407,9 @@ async fn start_deploy_handler(
                 JobStatus::Completed
             }
             Err(e) => {
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(&conn, &id, "failed", None, None);
+                }
                 let _ = tx.send(format!("DEPLOY_ERROR:{e:#}"));
                 JobStatus::Failed
             }
@@ -302,9 +425,10 @@ async fn start_deploy_handler(
 
 /// DDeploy events handler.
 async fn deploy_events_handler(
-    State(jobs): State<Jobs>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let jobs = state.jobs;
     // Take the receiver out of the job (only one SSE listener per deploy)
     let rx = {
         let mut map = jobs.write().await;
@@ -539,6 +663,67 @@ async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl 
     }
 }
 
+// ── Deployments / Config API handlers ────────────────────────────────────────
+
+fn is_dry_run() -> bool {
+    matches!(
+        std::env::var("CLAWMACDO_DRY_RUN").as_deref(),
+        Ok("true") | Ok("1")
+    )
+}
+
+async fn list_deployments_handler(
+    State(state): State<AppState>,
+    Query(q): Query<ListDeploymentsQuery>,
+) -> impl IntoResponse {
+    let page = if q.page == 0 { 1 } else { q.page };
+    let per_page: u32 = 20;
+    let conn = state.db.lock().unwrap();
+    match db::list_deployments_paginated(&conn, page, per_page) {
+        Ok((deployments, total)) => {
+            let total_pages = (total + per_page - 1) / per_page;
+            Json(ListDeploymentsResponse {
+                deployments,
+                total,
+                page,
+                per_page,
+                total_pages,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                message: format!("Failed to list deployments: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn delete_deployment_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::delete_deployment(&conn, &id) {
+        Ok(_) => Json(DeleteResponse { ok: true }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                message: format!("Failed to delete deployment: {e}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn config_handler() -> impl IntoResponse {
+    Json(ConfigResponse {
+        dry_run: is_dry_run(),
+    })
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// NNormalize pairing code.
@@ -630,9 +815,22 @@ tailwind.config = {
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden xs:inline">Deploy OpenClaw to DigitalOcean</span>
   </div>
+  <!-- Tab bar -->
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 flex gap-0">
+    <button id="tab-deploy" onclick="switchTab('deploy')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors">Deploy</button>
+    <button id="tab-deployments" onclick="switchTab('deployments')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Deployments</button>
+  </div>
 </header>
 
 <main class="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
+
+<!-- Dry-run banner (shared) -->
+<div id="dry-run-banner" class="hidden mb-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 rounded-lg px-4 py-2 text-sm font-medium">
+  Dry-run mode — deployments are simulated (no real cloud API calls)
+</div>
+
+<!-- ═══ Deploy view ═══ -->
+<div id="deploy-view">
 
 <!-- Mascot -->
 <div class="flex justify-center mb-6">
@@ -652,6 +850,39 @@ tailwind.config = {
 
 <!-- Deploy cards container -->
 <div id="deploys-container" class="space-y-6"></div>
+
+</div><!-- /deploy-view -->
+
+<!-- ═══ Deployments view ═══ -->
+<div id="deployments-view" class="hidden">
+  <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-4 py-3">Customer</th>
+            <th class="px-4 py-3">Email</th>
+            <th class="px-4 py-3">Provider</th>
+            <th class="px-4 py-3">Hostname</th>
+            <th class="px-4 py-3">IP</th>
+            <th class="px-4 py-3">Region</th>
+            <th class="px-4 py-3">Status</th>
+            <th class="px-4 py-3">Created</th>
+            <th class="px-4 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="deployments-tbody" class="divide-y divide-slate-800"></tbody>
+      </table>
+    </div>
+    <div id="deployments-empty" class="hidden px-4 py-8 text-center text-slate-500 text-sm">No deployments found.</div>
+  </div>
+  <!-- Pagination -->
+  <div id="deployments-pagination" class="flex items-center justify-center gap-4 mt-4 text-sm">
+    <button onclick="deploymentsPage(-1)" id="dep-prev" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed" disabled>Prev</button>
+    <span id="dep-page-info" class="text-slate-400">Page 1 of 1</span>
+    <button onclick="deploymentsPage(1)" id="dep-next" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed" disabled>Next</button>
+  </div>
+</div><!-- /deployments-view -->
 
 </main>
 
@@ -779,6 +1010,19 @@ function addDeployCard(initialState) {
       </button>
     </div>
     <form class="space-y-6" onsubmit="startDeploy(event, ${n})">
+      <fieldset class="space-y-4">
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Customer Information</legend>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Name</label>
+            <input type="text" name="customer_name" required placeholder="Jane Doe" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Email</label>
+            <input type="email" name="customer_email" required placeholder="jane@example.com" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
+          </div>
+        </div>
+      </fieldset>
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Cloud Provider</legend>
         <div>
@@ -1269,6 +1513,8 @@ async function startDeploy(e, cardNum) {
 
   const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
   const body = {
+    customer_name: val('customer_name'),
+    customer_email: val('customer_email'),
     provider: val('provider'),
     do_token: val('do_token'),
     tencent_secret_id: val('tencent_secret_id'),
@@ -1395,6 +1641,116 @@ async function startDeploy(e, cardNum) {
     btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
   }
 }
+
+// ── Tab switching ───────────────────────────────────────────────────────
+function switchTab(tab) {
+  const deployView = document.getElementById('deploy-view');
+  const deploymentsView = document.getElementById('deployments-view');
+  const tabDeploy = document.getElementById('tab-deploy');
+  const tabDeployments = document.getElementById('tab-deployments');
+  if (tab === 'deployments') {
+    deployView.classList.add('hidden');
+    deploymentsView.classList.remove('hidden');
+    tabDeploy.className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
+    tabDeployments.className = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
+    loadDeployments();
+  } else {
+    deployView.classList.remove('hidden');
+    deploymentsView.classList.add('hidden');
+    tabDeploy.className = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
+    tabDeployments.className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
+  }
+}
+
+// ── Deployments table ───────────────────────────────────────────────────
+let depCurrentPage = 1;
+
+function statusBadge(status) {
+  const colors = {
+    'completed': 'bg-green-500/20 text-green-300 border-green-500/30',
+    'running':   'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    'failed':    'bg-red-500/20 text-red-300 border-red-500/30',
+    'dry-run':   'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
+  };
+  const cls = colors[status] || 'bg-slate-500/20 text-slate-300 border-slate-500/30';
+  return '<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-full border ' + cls + '">' + (status || 'unknown') + '</span>';
+}
+
+async function loadDeployments(page) {
+  if (page) depCurrentPage = page;
+  try {
+    const res = await fetch('/api/deployments?page=' + depCurrentPage);
+    const data = await res.json();
+    const tbody = document.getElementById('deployments-tbody');
+    const empty = document.getElementById('deployments-empty');
+    tbody.innerHTML = '';
+    const pagination = document.getElementById('deployments-pagination');
+    if (!data.deployments || data.deployments.length === 0) {
+      empty.classList.remove('hidden');
+      pagination.classList.add('hidden');
+    } else {
+      pagination.classList.remove('hidden');
+      empty.classList.add('hidden');
+      for (const d of data.deployments) {
+        const tr = document.createElement('tr');
+        tr.className = 'hover:bg-slate-800/50';
+        tr.innerHTML =
+          '<td class="px-4 py-3 text-slate-200">' + esc(d.customer_name) + '</td>' +
+          '<td class="px-4 py-3 text-slate-400">' + esc(d.customer_email) + '</td>' +
+          '<td class="px-4 py-3 text-slate-400">' + esc(d.provider || '-') + '</td>' +
+          '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.hostname || '-') + '</td>' +
+          '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.ip_address || '-') + '</td>' +
+          '<td class="px-4 py-3 text-slate-400">' + esc(d.region || '-') + '</td>' +
+          '<td class="px-4 py-3">' + statusBadge(d.status) + '</td>' +
+          '<td class="px-4 py-3 text-slate-500 text-xs">' + esc(d.created_at) + '</td>' +
+          '<td class="px-4 py-3"><button onclick="deleteDeployment(\'' + esc(d.id) + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Delete</button></td>';
+        tbody.appendChild(tr);
+      }
+    }
+    // Pagination
+    const totalPages = data.total_pages || 1;
+    document.getElementById('dep-page-info').textContent = 'Page ' + depCurrentPage + ' of ' + totalPages;
+    document.getElementById('dep-prev').disabled = depCurrentPage <= 1;
+    document.getElementById('dep-next').disabled = depCurrentPage >= totalPages;
+  } catch (e) {
+    console.error('Failed to load deployments:', e);
+  }
+}
+
+function deploymentsPage(delta) {
+  depCurrentPage += delta;
+  if (depCurrentPage < 1) depCurrentPage = 1;
+  loadDeployments();
+}
+
+async function deleteDeployment(id) {
+  if (!confirm('Delete this deployment record?')) return;
+  try {
+    await fetch('/api/deployments/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadDeployments();
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Check dry-run config ────────────────────────────────────────────────
+async function checkDryRun() {
+  try {
+    const res = await fetch('/api/config');
+    const data = await res.json();
+    if (data.dry_run) {
+      document.getElementById('dry-run-banner').classList.remove('hidden');
+    }
+  } catch (_) {}
+}
+checkDryRun();
 
 // Auto-add the first deployment card
 addDeployCard();

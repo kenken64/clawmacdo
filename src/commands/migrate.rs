@@ -72,6 +72,8 @@ pub async fn run(params: MigrateParams) -> Result<()> {
     // ── Step 4: Run full deploy with the downloaded backup ──────────────
     println!("[Migrate 4/5] Starting deploy to new droplet...");
     let deploy_params = DeployParams {
+        customer_name: String::new(),
+        customer_email: String::new(),
         provider: params.provider,
         do_token: params.do_token,
         tencent_secret_id: params.tencent_secret_id,
