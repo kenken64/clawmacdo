@@ -1,15 +1,30 @@
 use crate::config;
 use crate::digitalocean::DoClient;
-use anyhow::Result;
+use crate::tencent::TencentClient;
+use anyhow::{bail, Result};
 use dialoguer::Confirm;
 
 pub struct DestroyParams {
+    pub provider: String,
     pub do_token: String,
+    pub tencent_secret_id: String,
+    pub tencent_secret_key: String,
     pub name: String,
+    pub yes: bool,
 }
 
-/// RRun.
 pub async fn run(params: DestroyParams) -> Result<()> {
+    match params.provider.as_str() {
+        "digitalocean" => run_do(params).await,
+        "tencent" => run_tencent(params).await,
+        _ => bail!(
+            "Unknown provider '{}'. Use 'digitalocean' or 'tencent'.",
+            params.provider
+        ),
+    }
+}
+
+async fn run_do(params: DestroyParams) -> Result<()> {
     let client = DoClient::new(&params.do_token)?;
 
     println!("Fetching openclaw droplets...");
@@ -26,13 +41,15 @@ pub async fn run(params: DestroyParams) -> Result<()> {
     println!("  IP:     {ip}");
     println!("  Region: {}", droplet.region.slug);
 
-    let confirmed = Confirm::new()
-        .with_prompt("Permanently destroy this droplet?")
-        .default(false)
-        .interact()?;
-    if !confirmed {
-        println!("Cancelled.");
-        return Ok(());
+    if !params.yes {
+        let confirmed = Confirm::new()
+            .with_prompt("Permanently destroy this droplet?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
     }
 
     println!(
@@ -71,5 +88,76 @@ pub async fn run(params: DestroyParams) -> Result<()> {
         "\nDestroy complete for '{}' ({ip}, {}).",
         droplet.name, droplet.region.slug
     );
+    Ok(())
+}
+
+async fn run_tencent(params: DestroyParams) -> Result<()> {
+    let client = TencentClient::new(
+        &params.tencent_secret_id,
+        &params.tencent_secret_key,
+        config::DEFAULT_TENCENT_REGION,
+    )?;
+
+    println!("Fetching openclaw instances (Tencent Cloud)...");
+    let instances = client.list_openclaw_instances().await?;
+    let instance = instances
+        .into_iter()
+        .find(|i| i.name == params.name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No openclaw instance found with name '{}' on Tencent Cloud",
+                params.name
+            )
+        })?;
+
+    let ip = instance.public_ip.as_deref().unwrap_or("N/A");
+    println!();
+    println!("Instance to destroy:");
+    println!("  Name:   {}", instance.name);
+    println!("  ID:     {}", instance.id);
+    println!("  IP:     {ip}");
+    println!("  Status: {}", instance.status);
+
+    if !params.yes {
+        let confirmed = Confirm::new()
+            .with_prompt("Permanently destroy this instance?")
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!(
+        "\nTerminating instance '{}' (ID {})...",
+        instance.name, instance.id
+    );
+    client.terminate_instance(&instance.id).await?;
+    println!("Instance terminated.");
+
+    // Clean up SSH key pair
+    let hostname_suffix = instance
+        .name
+        .strip_prefix("openclaw-")
+        .unwrap_or(&instance.name);
+    let expected_key_name = format!("clawmacdo-{hostname_suffix}");
+    let keys = client.list_key_pairs().await?;
+    if let Some((key_id, _)) = keys.into_iter().find(|(_, name)| name == &expected_key_name) {
+        println!("Deleting SSH key pair '{expected_key_name}' (ID {key_id})...");
+        client.delete_key_pair(&key_id).await?;
+        println!("SSH key pair deleted.");
+    } else {
+        println!("SSH key pair '{}' not found; skipping.", expected_key_name);
+    }
+
+    // Clean up local key
+    let local_key = config::keys_dir()?.join(format!("clawmacdo_{hostname_suffix}"));
+    if local_key.exists() {
+        std::fs::remove_file(&local_key)?;
+        println!("Removed local key: {}", local_key.display());
+    }
+
+    println!("\nDestroy complete for '{}' ({ip}).", instance.name);
     Ok(())
 }

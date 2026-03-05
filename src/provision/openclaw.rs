@@ -90,25 +90,44 @@ chmod 700 {cd}"#,
     );
     ssh_root_async(ip, key, &normalize_extensions).await?;
 
-    // Install openclaw globally as openclaw user via pnpm
+    // Install openclaw globally. Try pnpm first (user-scoped), fall back to npm (system-wide as root).
+    // On some Tencent Ubuntu images, npm global install fails with ENOENT due to /bin/sh quirks,
+    // so pnpm is preferred. If pnpm also fails to make it accessible, install via npm as root.
     let install_cmd = format!(
         "PNPM_HOME={home}/.local/share/pnpm \
          PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
-         pnpm install -g openclaw@latest",
+         pnpm install -g openclaw@latest 2>&1 || true",
         home = home,
     );
     ssh_as_openclaw_async(ip, key, &install_cmd)
         .await
         .map_err(|e| AppError::Provision {
-            phase: "openclaw install".into(),
+            phase: "openclaw install (pnpm)".into(),
             message: e.to_string(),
         })?;
 
-    // Verify installation
+    // Verify pnpm install succeeded; if not, fall back to npm global install as root.
+    let verify_pnpm = format!(
+        "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
+         HOME={home} \
+         openclaw --version 2>/dev/null || echo OPENCLAW_NOT_FOUND",
+        home = home,
+    );
+    let pnpm_result = ssh_as_openclaw_async(ip, key, &verify_pnpm).await.unwrap_or_default();
+    if pnpm_result.contains("OPENCLAW_NOT_FOUND") {
+        // Fallback: install as root via npm (installs to /usr/lib/node_modules, binary at /usr/bin/openclaw)
+        ssh_root_async(ip, key, "npm install -g openclaw@latest 2>&1 || pnpm install -g openclaw@latest 2>&1")
+            .await
+            .map_err(|e| AppError::Provision {
+                phase: "openclaw install (npm fallback)".into(),
+                message: e.to_string(),
+            })?;
+    }
+
+    // Verify installation (check both user and system paths)
     let verify_cmd = format!(
-        "PNPM_HOME={home}/.local/share/pnpm \
-         PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
+        "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
          openclaw --version",
         home = home,

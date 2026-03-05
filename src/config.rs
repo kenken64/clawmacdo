@@ -5,6 +5,27 @@ use std::path::PathBuf;
 
 pub const DEFAULT_REGION: &str = "sgp1";
 pub const DEFAULT_SIZE: &str = "s-2vcpu-4gb";
+
+// Tencent Cloud defaults
+pub const DEFAULT_TENCENT_REGION: &str = "ap-singapore";
+pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "SA5.MEDIUM4";
+pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CloudProviderType {
+    DigitalOcean,
+    Tencent,
+}
+
+impl std::fmt::Display for CloudProviderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CloudProviderType::DigitalOcean => write!(f, "digitalocean"),
+            CloudProviderType::Tencent => write!(f, "tencent"),
+        }
+    }
+}
 pub const OPENCLAW_GATEWAY_PORT: u16 = 18789;
 pub const DROPLET_TAG: &str = "openclaw";
 pub const CLOUD_INIT_SENTINEL: &str = "/root/.clawmacdo_cloud_init_done";
@@ -62,13 +83,21 @@ pub fn ensure_dirs() -> Result<(), AppError> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeployRecord {
     pub id: String,
+    #[serde(default)]
+    pub provider: Option<CloudProviderType>,
     pub droplet_id: u64,
+    /// For Tencent, this stores the instance ID string (droplet_id will be 0).
+    #[serde(default)]
+    pub instance_id: Option<String>,
     pub hostname: String,
     pub ip_address: String,
     pub region: String,
     pub size: String,
     pub ssh_key_path: String,
     pub ssh_key_fingerprint: String,
+    /// For Tencent, stores the KeyPair ID for cleanup.
+    #[serde(default)]
+    pub ssh_key_id: Option<String>,
     pub backup_restored: Option<String>,
     pub created_at: DateTime<Utc>,
 }
