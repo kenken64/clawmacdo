@@ -903,7 +903,7 @@ function passwordField(name, label, placeholder, required) {
   const req = required
     ? '<span class="field-required-indicator text-red-400">*</span>'
     : '<span class="field-required-indicator text-slate-500">(optional)</span>';
-  const reqAttr = required ? 'required' : '';
+  const reqAttr = required ? 'data-required' : '';
   return `<div data-field="${name}">
     <label class="block text-sm font-medium text-slate-300 mb-1">${label} ${req}</label>
     <div class="relative">
@@ -1013,13 +1013,13 @@ function addDeployCard(initialState) {
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Customer Information</legend>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Name</label>
-            <input type="text" name="customer_name" required placeholder="Jane Doe" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
+          <div data-field="customer_name">
+            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Name <span class="field-required-indicator text-red-400">*</span></label>
+            <input type="text" name="customer_name" data-required placeholder="Jane Doe" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
           </div>
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Email</label>
-            <input type="email" name="customer_email" required placeholder="jane@example.com" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
+          <div data-field="customer_email">
+            <label class="block text-sm font-medium text-slate-300 mb-1">Customer Email <span class="field-required-indicator text-red-400">*</span></label>
+            <input type="text" name="customer_email" data-required data-validate-email placeholder="jane@example.com" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-500" />
           </div>
         </div>
       </fieldset>
@@ -1161,6 +1161,68 @@ function addDeployCard(initialState) {
   }
 }
 
+function validateForm(form) {
+  // Clear previous errors
+  form.querySelectorAll('.field-error').forEach(el => el.remove());
+  form.querySelectorAll('.border-red-500').forEach(el => {
+    el.classList.remove('border-red-500');
+    el.classList.add('border-slate-700');
+  });
+
+  let valid = true;
+  let firstError = null;
+
+  // Check all fields with data-required that are visible
+  form.querySelectorAll('[data-required]').forEach(input => {
+    const wrapper = input.closest('[data-field]') || input.closest('div');
+    // Skip hidden fields (e.g. provider credentials toggled off)
+    if (input.offsetParent === null) return;
+
+    const value = input.value.trim();
+    let errorMsg = null;
+
+    if (!value) {
+      const label = wrapper.querySelector('label');
+      let fieldName = input.name;
+      if (label) {
+        const clone = label.cloneNode(true);
+        clone.querySelectorAll('.field-required-indicator').forEach(s => s.remove());
+        fieldName = clone.textContent.trim();
+      }
+      errorMsg = fieldName + ' is required';
+    } else if (input.hasAttribute('data-validate-email') && value) {
+      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value)) {
+        errorMsg = 'Please enter a valid email address';
+      }
+    }
+
+    if (errorMsg) {
+      valid = false;
+      input.classList.remove('border-slate-700');
+      input.classList.add('border-red-500');
+      const err = document.createElement('p');
+      err.className = 'field-error text-red-400 text-xs mt-1';
+      err.textContent = errorMsg;
+      input.closest('.relative')?.appendChild(err) || input.parentNode.appendChild(err);
+      if (!firstError) firstError = input;
+    }
+  });
+
+  if (firstError) firstError.focus();
+  return valid;
+}
+
+// Clear error styling on input
+document.addEventListener('input', function(e) {
+  const input = e.target;
+  if (input.classList.contains('border-red-500')) {
+    input.classList.remove('border-red-500');
+    input.classList.add('border-slate-700');
+    const err = (input.closest('.relative') || input.parentNode).querySelector('.field-error');
+    if (err) err.remove();
+  }
+});
+
 function syncTailscaleKeyRequirement(form) {
   const tailscaleToggle = form.querySelector('[name="tailscale"]');
   const tailscaleKeyInput = form.querySelector('[name="tailscale_auth_key"]');
@@ -1168,8 +1230,11 @@ function syncTailscaleKeyRequirement(form) {
   if (!tailscaleToggle || !tailscaleKeyInput) return;
 
   const isRequired = tailscaleToggle.checked;
-  tailscaleKeyInput.required = isRequired;
-  tailscaleKeyInput.setAttribute('aria-required', isRequired ? 'true' : 'false');
+  if (isRequired) {
+    tailscaleKeyInput.setAttribute('data-required', '');
+  } else {
+    tailscaleKeyInput.removeAttribute('data-required');
+  }
 
   if (indicator) {
     if (isRequired) {
@@ -1509,7 +1574,7 @@ async function startDeploy(e, cardNum) {
   const btn = card.querySelector('.deploy-submit-btn');
   const progressDiv = card.querySelector('.deploy-progress');
   syncTailscaleKeyRequirement(form);
-  if (!form.reportValidity()) return;
+  if (!validateForm(form)) return;
 
   const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
   const body = {
