@@ -1009,7 +1009,7 @@ function addDeployCard(initialState) {
         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
     </div>
-    <form class="space-y-6" onsubmit="startDeploy(event, ${n})">
+    <form class="space-y-6" novalidate onsubmit="startDeploy(event, ${n})">
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Customer Information</legend>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
