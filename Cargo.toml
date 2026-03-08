@@ -1,37 +1,47 @@
-[package]
-name = "clawmacdo"
-version = "0.4.0"
-edition = "2021"
-description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
+[workspace]
+resolver = "2"
+members = [
+    "crates/clawmacdo-cli",
+    "crates/clawmacdo-core", 
+    "crates/clawmacdo-cloud",
+    "crates/clawmacdo-provision",
+    "crates/clawmacdo-db",
+    "crates/clawmacdo-ssh",
+    "crates/clawmacdo-ui"
+]
 
-[[bin]]
-name = "clawmacdo"
-path = "src/main.rs"
-
-[dependencies]
-hmac = "0.12"
-sha2 = "0.10"
-async-trait = "0.1"
-hex = "0.4"
-
+[workspace.dependencies]
+# External dependencies
 anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 console = "0.15"
 dialoguer = "0.11"
 dirs = "6"
+dotenvy = "0.15"
 flate2 = "1"
+hex = "0.4"
+hmac = "0.12"
 indicatif = "0.17"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 ssh2 = "0.9"
 tar = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
-axum = "0.8"
-rusqlite = { version = "0.32", features = ["bundled"] }
-dotenvy = "0.15"
+
+# Internal crates
+clawmacdo-core = { path = "crates/clawmacdo-core" }
+clawmacdo-cloud = { path = "crates/clawmacdo-cloud" }
+clawmacdo-provision = { path = "crates/clawmacdo-provision" }
+clawmacdo-db = { path = "crates/clawmacdo-db" }
+clawmacdo-ssh = { path = "crates/clawmacdo-ssh" }
+clawmacdo-ui = { path = "crates/clawmacdo-ui" }
