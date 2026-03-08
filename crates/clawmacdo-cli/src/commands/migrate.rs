@@ -1,5 +1,7 @@
 use crate::commands::deploy::{self, DeployParams};
-use crate::{config, ssh, ui};
+use clawmacdo_core::config;
+use clawmacdo_ssh as ssh;
+use clawmacdo_ui::ui;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::PathBuf;

@@ -1,5 +1,5 @@
-use crate::digitalocean::DoClient;
-use crate::tencent::TencentClient;
+use clawmacdo_cloud::digitalocean::DoClient;
+use clawmacdo_cloud::tencent::TencentClient;
 use anyhow::{bail, Result};
 use console::style;
 

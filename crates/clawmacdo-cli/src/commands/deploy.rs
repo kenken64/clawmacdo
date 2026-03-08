@@ -1,9 +1,10 @@
-use crate::config::{self, CloudProviderType, DeployRecord};
-use crate::digitalocean::DoClient;
-use crate::progress;
-use crate::provision::{self, ProvisionOpts};
-use crate::tencent::TencentClient;
-use crate::{cloud_init, ssh, ui};
+use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
+use clawmacdo_cloud::digitalocean::DoClient;
+use clawmacdo_cloud::tencent::TencentClient;
+use clawmacdo_cloud::cloud_init;
+use clawmacdo_provision::{self as provision, ProvisionOpts};
+use clawmacdo_ssh as ssh;
+use clawmacdo_ui::{progress, ui};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use std::path::PathBuf;

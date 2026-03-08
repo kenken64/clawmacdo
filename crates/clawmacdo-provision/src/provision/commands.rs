@@ -1,5 +1,5 @@
-use crate::error::AppError;
-use crate::ssh;
+use clawmacdo_core::error::AppError;
+use clawmacdo_ssh as ssh;
 use std::path::Path;
 
 /// Execute a command on the remote host as root.

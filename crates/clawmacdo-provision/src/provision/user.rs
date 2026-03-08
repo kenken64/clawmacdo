@@ -1,5 +1,5 @@
-use crate::config::{OPENCLAW_HOME, OPENCLAW_USER};
-use crate::error::AppError;
+use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
+use clawmacdo_core::error::AppError;
 use crate::provision::commands::ssh_root_async;
 use std::path::Path;
 

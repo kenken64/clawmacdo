@@ -1,4 +1,5 @@
-use crate::error::AppError;
+use clawmacdo_core::error::AppError;
+use clawmacdo_core::config;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
@@ -173,7 +174,7 @@ impl DoClient {
             image: "ubuntu-24-04-x64",
             ssh_keys: vec![ssh_key_id],
             user_data,
-            tags: vec![crate::config::DROPLET_TAG, &email_tag],
+            tags: vec![config::DROPLET_TAG, &email_tag],
             backups: enable_backups,
         };
 
@@ -278,7 +279,7 @@ impl DoClient {
             .client
             .get(format!(
                 "{API_BASE}/droplets?tag_name={}",
-                crate::config::DROPLET_TAG
+                config::DROPLET_TAG
             ))
             .send()
             .await?;

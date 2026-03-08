@@ -1,4 +1,4 @@
-use crate::config::CLOUD_INIT_SENTINEL;
+use clawmacdo_core::config::CLOUD_INIT_SENTINEL;
 
 /// Generate a cloud-init YAML script for the droplet.
 ///

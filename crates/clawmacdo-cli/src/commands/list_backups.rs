@@ -1,4 +1,4 @@
-use crate::config;
+use clawmacdo_core::config;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 

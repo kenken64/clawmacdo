@@ -46,7 +46,7 @@ pub enum AppError {
     Io(#[from] std::io::Error),
 
     #[error("HTTP error: {0}")]
-    Http(String),
+    Http(#[from] reqwest::Error),
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

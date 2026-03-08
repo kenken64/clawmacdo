@@ -1,5 +1,5 @@
 use crate::cloud_provider::{CloudProvider, CreateInstanceParams, InstanceInfo, KeyInfo};
-use crate::error::AppError;
+use clawmacdo_core::error::AppError;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::Client;

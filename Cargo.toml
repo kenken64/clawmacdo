@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.dependencies]
-# External dependencies
+# External dependencies (from original Cargo.toml)
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -38,7 +38,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
-# Internal crates
+# Internal crates (will be defined below)
 clawmacdo-core = { path = "crates/clawmacdo-core" }
 clawmacdo-cloud = { path = "crates/clawmacdo-cloud" }
 clawmacdo-provision = { path = "crates/clawmacdo-provision" }
