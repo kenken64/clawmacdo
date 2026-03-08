@@ -1,9 +1,9 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
 use crate::commands::whatsapp;
-use crate::config;
-use crate::db;
-use crate::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_core::config;
+use clawmacdo_db as db;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
@@ -229,7 +229,7 @@ async fn index_handler() -> Html<&'static str> {
 
 /// MMascot handler.
 async fn mascot_handler() -> impl IntoResponse {
-    const MASCOT: &[u8] = include_bytes!("../../assets/mascot.jpg");
+    const MASCOT: &[u8] = include_bytes!("../../../../assets/mascot.jpg");
     (
         [
             ("content-type", "image/jpeg"),

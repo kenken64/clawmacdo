@@ -7,8 +7,8 @@ mod system_tools;
 mod tailscale;
 mod user;
 
-use crate::error::AppError;
-use crate::progress;
+use clawmacdo_core::error::AppError;
+use clawmacdo_ui::progress;
 use std::path::Path;
 use tokio::sync::mpsc;
 

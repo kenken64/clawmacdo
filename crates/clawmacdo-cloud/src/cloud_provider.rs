@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use clawmacdo_core::error::AppError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

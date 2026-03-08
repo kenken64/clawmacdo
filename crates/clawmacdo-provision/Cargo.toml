@@ -12,3 +12,4 @@ tokio = { workspace = true }
 
 clawmacdo-core = { workspace = true }
 clawmacdo-ssh = { workspace = true }
+clawmacdo-ui = { workspace = true }

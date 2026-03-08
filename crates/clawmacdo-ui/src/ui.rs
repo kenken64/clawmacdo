@@ -1,4 +1,4 @@
-use crate::config::{self, DeployRecord, OPENCLAW_GATEWAY_PORT};
+use clawmacdo_core::config::{self, DeployRecord, OPENCLAW_GATEWAY_PORT};
 use console::style;
 use dialoguer::{Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};

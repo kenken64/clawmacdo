@@ -1,18 +1,13 @@
 mod commands;
 
+// Import required types (avoiding unused wildcard imports)
+use clawmacdo_core::*;  // Config, errors, types used throughout
+
 use clap::{Parser, Subcommand};
 use commands::deploy::DeployParams;
 use commands::destroy::DestroyParams;
 use commands::migrate::MigrateParams;
 use std::path::PathBuf;
-
-// Use the new crate structure
-use clawmacdo_core::*;
-use clawmacdo_cloud::*;
-use clawmacdo_db::*;
-use clawmacdo_provision::*;
-use clawmacdo_ssh::*;
-use clawmacdo_ui::*;
 
 #[derive(Parser)]
 #[command(
@@ -36,232 +31,224 @@ enum Commands {
         #[arg(long)]
         customer_name: String,
 
-        /// Provider (digitalocean or tencent)
-        #[arg(long, env = "PROVIDER", default_value = "digitalocean")]
+        /// Customer email
+        #[arg(long)]
+        customer_email: String,
+
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
         provider: String,
 
-        /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
-        do_token: Option<String>,
+        /// DigitalOcean API token (required for digitalocean provider)
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
+        do_token: String,
 
-        /// Tencent Cloud Secret ID
-        #[arg(long, env = "TENCENT_SECRET_ID")]
-        tencent_secret_id: Option<String>,
+        /// Tencent Cloud SecretId (required for tencent provider)
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
 
-        /// Tencent Cloud Secret Key
-        #[arg(long, env = "TENCENT_SECRET_KEY")]
-        tencent_secret_key: Option<String>,
+        /// Tencent Cloud SecretKey (required for tencent provider)
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
 
-        /// Anthropic API key or setup token
+        /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
-        anthropic_key: Option<String>,
+        anthropic_key: String,
 
-        /// OpenAI API key (optional)
-        #[arg(long, env = "OPENAI_API_KEY")]
-        openai_key: Option<String>,
+        /// OpenAI API key (written to server .env)
+        #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
+        openai_key: String,
 
-        /// Gemini API key (optional)
-        #[arg(long, env = "GEMINI_API_KEY")]
-        gemini_key: Option<String>,
+        /// Google Gemini API key (written to server .env)
+        #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
+        gemini_key: String,
 
-        /// WhatsApp phone number (optional)
-        #[arg(long, env = "WHATSAPP_PHONE_NUMBER")]
-        whatsapp_phone_number: Option<String>,
+        /// WhatsApp phone number (written to server .env)
+        #[arg(long, env = "WHATSAPP_PHONE_NUMBER", default_value = "")]
+        whatsapp_phone_number: String,
 
-        /// Telegram bot token (optional)
-        #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
-        telegram_bot_token: Option<String>,
+        /// Telegram bot token (written to server .env)
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+        telegram_bot_token: String,
 
-        /// Tailscale auth key (optional, used with --tailscale)
-        #[arg(long, env = "TAILSCALE_AUTH_KEY")]
-        tailscale_auth_key: Option<String>,
+        /// DigitalOcean region slug (e.g. sgp1, nyc1)
+        #[arg(long)]
+        region: Option<String>,
 
-        /// Region to deploy to
-        #[arg(long, default_value = "sgp1")]
-        region: String,
+        /// Droplet size slug (e.g. s-2vcpu-4gb)
+        #[arg(long)]
+        size: Option<String>,
 
-        /// Instance size
-        #[arg(long, default_value = "s-2vcpu-4gb")]
-        size: String,
-
-        /// Custom hostname (optional)
+        /// Droplet hostname
         #[arg(long)]
         hostname: Option<String>,
 
-        /// Path to backup file to restore (optional)
+        /// Path to a specific backup archive to restore
         #[arg(long)]
         backup: Option<PathBuf>,
 
-        /// Enable automatic backups
-        #[arg(long)]
+        /// Enable DigitalOcean automated backups
+        #[arg(long, default_value = "false")]
         enable_backups: bool,
 
-        /// Enable Tailscale VPN
-        #[arg(long)]
+        /// Enable OpenClaw sandbox mode (Docker-based tool isolation)
+        #[arg(long, default_value = "false")]
+        enable_sandbox: bool,
+
+        /// Enable Tailscale VPN on the droplet
+        #[arg(long, default_value = "false")]
         tailscale: bool,
 
-        /// Enable OpenClaw sandbox environment
-        #[arg(long)]
-        enable_sandbox: bool,
+        /// Tailscale auth key for automatic `tailscale up` (optional)
+        #[arg(long, env = "TAILSCALE_AUTH_KEY")]
+        tailscale_auth_key: Option<String>,
     },
 
-    /// Destroy an instance by name and clean up SSH keys
-    Destroy {
-        /// Provider (digitalocean or tencent)
-        #[arg(long, env = "PROVIDER", default_value = "digitalocean")]
-        provider: String,
-
-        /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
-        do_token: Option<String>,
-
-        /// Tencent Cloud Secret ID
-        #[arg(long, env = "TENCENT_SECRET_ID")]
-        tencent_secret_id: Option<String>,
-
-        /// Tencent Cloud Secret Key
-        #[arg(long, env = "TENCENT_SECRET_KEY")]
-        tencent_secret_key: Option<String>,
-
-        /// Instance name to destroy
-        #[arg(long)]
-        name: String,
-
-        /// Skip confirmation prompt
-        #[arg(long)]
-        yes: bool,
-
-        /// Force destruction (alias for --yes)
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Cloud-to-cloud migration: backup source, deploy new, restore
+    /// Cloud-to-cloud migration: backup source instance, deploy new, restore config
     Migrate {
-        /// Customer name (who is migrating)
-        #[arg(long)]
-        customer_name: String,
-
-        /// Provider (digitalocean or tencent)
-        #[arg(long, env = "PROVIDER", default_value = "digitalocean")]
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
         provider: String,
 
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
-        do_token: Option<String>,
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
+        do_token: String,
 
-        /// Tencent Cloud Secret ID
-        #[arg(long, env = "TENCENT_SECRET_ID")]
-        tencent_secret_id: Option<String>,
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
 
-        /// Tencent Cloud Secret Key
-        #[arg(long, env = "TENCENT_SECRET_KEY")]
-        tencent_secret_key: Option<String>,
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
 
-        /// Anthropic API key or setup token
+        /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
-        anthropic_key: Option<String>,
+        anthropic_key: String,
 
-        /// OpenAI API key (optional)
-        #[arg(long, env = "OPENAI_API_KEY")]
-        openai_key: Option<String>,
+        /// OpenAI API key (written to server .env)
+        #[arg(long, env = "OPENAI_API_KEY", default_value = "")]
+        openai_key: String,
 
-        /// Gemini API key (optional)
-        #[arg(long, env = "GEMINI_API_KEY")]
-        gemini_key: Option<String>,
+        /// Google Gemini API key (written to server .env)
+        #[arg(long, env = "GEMINI_API_KEY", default_value = "")]
+        gemini_key: String,
 
-        /// WhatsApp phone number (optional)
-        #[arg(long, env = "WHATSAPP_PHONE_NUMBER")]
-        whatsapp_phone_number: Option<String>,
+        /// WhatsApp phone number (written to server .env)
+        #[arg(long, env = "WHATSAPP_PHONE_NUMBER", default_value = "")]
+        whatsapp_phone_number: String,
 
-        /// Telegram bot token (optional)
-        #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
-        telegram_bot_token: Option<String>,
+        /// Telegram bot token (written to server .env)
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
+        telegram_bot_token: String,
 
-        /// Source instance IP address
+        /// IP address of the source droplet
         #[arg(long)]
         source_ip: String,
 
-        /// Source SSH private key path
+        /// Path to SSH private key for the source droplet
         #[arg(long)]
         source_key: PathBuf,
 
-        /// Region to deploy to
-        #[arg(long, default_value = "sgp1")]
-        region: String,
+        /// DigitalOcean region for the new droplet
+        #[arg(long)]
+        region: Option<String>,
 
-        /// Instance size
-        #[arg(long, default_value = "s-2vcpu-4gb")]
-        size: String,
+        /// Droplet size for the new droplet
+        #[arg(long)]
+        size: Option<String>,
 
-        /// Custom hostname (optional)
+        /// Hostname for the new droplet
         #[arg(long)]
         hostname: Option<String>,
 
-        /// Enable automatic backups
-        #[arg(long)]
-        enable_backups: bool,
+        /// Enable OpenClaw sandbox mode (Docker-based tool isolation)
+        #[arg(long, default_value = "false")]
+        enable_sandbox: bool,
 
-        /// Enable Tailscale VPN
-        #[arg(long)]
+        /// Enable Tailscale VPN on the droplet
+        #[arg(long, default_value = "false")]
         tailscale: bool,
 
-        /// Tailscale auth key (optional, used with --tailscale)
+        /// Tailscale auth key for automatic `tailscale up` (optional)
         #[arg(long, env = "TAILSCALE_AUTH_KEY")]
         tailscale_auth_key: Option<String>,
-
-        /// Enable OpenClaw sandbox environment
-        #[arg(long)]
-        enable_sandbox: bool,
     },
 
     /// List deployed openclaw-tagged instances
     Status {
-        /// Provider (digitalocean or tencent)
-        #[arg(long, env = "PROVIDER", default_value = "digitalocean")]
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
         provider: String,
 
         /// DigitalOcean API token
-        #[arg(long, env = "DO_TOKEN")]
-        do_token: Option<String>,
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
+        do_token: String,
 
-        /// Tencent Cloud Secret ID
-        #[arg(long, env = "TENCENT_SECRET_ID")]
-        tencent_secret_id: Option<String>,
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
 
-        /// Tencent Cloud Secret Key
-        #[arg(long, env = "TENCENT_SECRET_KEY")]
-        tencent_secret_key: Option<String>,
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
+    },
+
+    /// Destroy an openclaw-tagged instance by name and clean up SSH keys
+    Destroy {
+        /// Cloud provider: digitalocean or tencent
+        #[arg(long, default_value = "digitalocean")]
+        provider: String,
+
+        /// DigitalOcean API token
+        #[arg(long, env = "DO_TOKEN", default_value = "")]
+        do_token: String,
+
+        /// Tencent Cloud SecretId
+        #[arg(long, env = "TENCENT_SECRET_ID", default_value = "")]
+        tencent_secret_id: String,
+
+        /// Tencent Cloud SecretKey
+        #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
+        tencent_secret_key: String,
+
+        /// Instance name
+        #[arg(long)]
+        name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, alias = "force")]
+        yes: bool,
     },
 
     /// Show local backup archives with sizes and dates
     ListBackups,
 
-    /// Start the local web UI
+    /// Launch a local web UI for deploying OpenClaw
     Serve {
-        /// Port to serve on
+        /// Port for the web server
         #[arg(long, default_value = "3456")]
         port: u16,
     },
 
-    /// Repair WhatsApp channel support on an existing instance
+    /// Repair WhatsApp channel support on an existing droplet (update OpenClaw + restart gateway)
     WhatsappRepair {
-        /// Target instance IP address
+        /// Droplet IP address
         #[arg(long)]
         ip: String,
 
-        /// SSH private key path
+        /// Path to SSH private key for the target droplet
         #[arg(long)]
         ssh_key_path: PathBuf,
     },
 
-    /// Repair agent Docker access on an existing instance
+    /// Repair agent Docker access on an existing droplet (gateway service + docker socket perms path)
     DockerFix {
-        /// Target instance IP address
+        /// Droplet IP address
         #[arg(long)]
         ip: String,
 
-        /// SSH private key path
+        /// Path to SSH private key for the target droplet
         #[arg(long)]
         ssh_key_path: PathBuf,
     },
@@ -269,13 +256,16 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok(); // Load .env file if present
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Backup => commands::backup::run().await,
+        Commands::Backup => {
+            commands::backup::run()?;
+        }
         Commands::Deploy {
             customer_name,
+            customer_email,
             provider,
             do_token,
             tencent_secret_id,
@@ -285,17 +275,18 @@ async fn main() -> anyhow::Result<()> {
             gemini_key,
             whatsapp_phone_number,
             telegram_bot_token,
-            tailscale_auth_key,
             region,
             size,
             hostname,
             backup,
             enable_backups,
-            tailscale,
             enable_sandbox,
+            tailscale,
+            tailscale_auth_key,
         } => {
             let params = DeployParams {
                 customer_name,
+                customer_email,
                 provider,
                 do_token,
                 tencent_secret_id,
@@ -305,38 +296,20 @@ async fn main() -> anyhow::Result<()> {
                 gemini_key,
                 whatsapp_phone_number,
                 telegram_bot_token,
-                tailscale_auth_key,
                 region,
                 size,
                 hostname,
                 backup,
                 enable_backups,
-                tailscale,
                 enable_sandbox,
+                tailscale,
+                tailscale_auth_key,
+                non_interactive: false,
+                progress_tx: None,
             };
-            commands::deploy::run(params).await
-        }
-        Commands::Destroy {
-            provider,
-            do_token,
-            tencent_secret_id,
-            tencent_secret_key,
-            name,
-            yes,
-            force,
-        } => {
-            let params = DestroyParams {
-                provider,
-                do_token,
-                tencent_secret_id,
-                tencent_secret_key,
-                name,
-                yes: yes || force,
-            };
-            commands::destroy::run(params).await
+            commands::deploy::run(params).await?;
         }
         Commands::Migrate {
-            customer_name,
             provider,
             do_token,
             tencent_secret_id,
@@ -351,13 +324,11 @@ async fn main() -> anyhow::Result<()> {
             region,
             size,
             hostname,
-            enable_backups,
+            enable_sandbox,
             tailscale,
             tailscale_auth_key,
-            enable_sandbox,
         } => {
             let params = MigrateParams {
-                customer_name,
                 provider,
                 do_token,
                 tencent_secret_id,
@@ -372,12 +343,11 @@ async fn main() -> anyhow::Result<()> {
                 region,
                 size,
                 hostname,
-                enable_backups,
+                enable_sandbox,
                 tailscale,
                 tailscale_auth_key,
-                enable_sandbox,
             };
-            commands::migrate::run(params).await
+            commands::migrate::run(params).await?;
         }
         Commands::Status {
             provider,
@@ -385,15 +355,45 @@ async fn main() -> anyhow::Result<()> {
             tencent_secret_id,
             tencent_secret_key,
         } => {
-            commands::status::run(provider, do_token, tencent_secret_id, tencent_secret_key).await
+            commands::status::run(
+                &provider,
+                &do_token,
+                &tencent_secret_id,
+                &tencent_secret_key,
+            )
+            .await?;
         }
-        Commands::ListBackups => commands::list_backups::run().await,
-        Commands::Serve { port } => commands::serve::run(port).await,
+        Commands::Destroy {
+            provider,
+            do_token,
+            tencent_secret_id,
+            tencent_secret_key,
+            name,
+            yes,
+        } => {
+            let params = DestroyParams {
+                provider,
+                do_token,
+                tencent_secret_id,
+                tencent_secret_key,
+                name,
+                yes,
+            };
+            commands::destroy::run(params).await?;
+        }
+        Commands::ListBackups => {
+            commands::list_backups::run()?;
+        }
+        Commands::Serve { port } => {
+            commands::serve::run(port).await?;
+        }
         Commands::WhatsappRepair { ip, ssh_key_path } => {
-            commands::whatsapp::run(ip, ssh_key_path).await
+            commands::whatsapp::run(&ip, &ssh_key_path).await?;
         }
         Commands::DockerFix { ip, ssh_key_path } => {
-            commands::docker_fix::run(ip, ssh_key_path).await
+            commands::docker_fix::run(&ip, &ssh_key_path).await?;
         }
     }
+
+    Ok(())
 }
