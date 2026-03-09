@@ -44,27 +44,64 @@ chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
     );
     ssh_root_async(ip, key, &write_env).await?;
 
-    // Configure Claude Code to use Anthropic API key from ~/.openclaw/.env (no interactive login required).
+    // Configure Claude Code with enhanced settings and better error handling
     let claude_cfg = format!(
-        r#"mkdir -p {home}/.claude && \
+        r#"mkdir -p {home}/.claude {home}/.config/claude && \
 cat > {home}/.claude/api-key-helper.sh << 'CCHELPEREOF'
 #!/usr/bin/env bash
+# Enhanced API key helper with error handling and fallbacks
+set -euo pipefail
+
+# Try to source from .openclaw/.env first
 if [ -f "$HOME/.openclaw/.env" ]; then
   set -a
-  . "$HOME/.openclaw/.env"
+  . "$HOME/.openclaw/.env" 2>/dev/null || true
   set +a
 fi
-printf '%s' "${{ANTHROPIC_API_KEY:-}}"
+
+# Fallback to environment variable
+if [ -n "${{ANTHROPIC_API_KEY:-}}" ]; then
+  printf '%s' "$ANTHROPIC_API_KEY"
+  exit 0
+fi
+
+# If no key found, provide helpful error
+echo "Error: No Anthropic API key found. Please set ANTHROPIC_API_KEY in ~/.openclaw/.env" >&2
+exit 1
 CCHELPEREOF
 chmod 700 {home}/.claude && chmod 700 {home}/.claude/api-key-helper.sh && \
 cat > {home}/.claude/settings.json << 'CCSETTINGSEOF'
 {{
   "apiKeyHelper": "{home}/.claude/api-key-helper.sh",
-  "forceLoginMethod": "console"
+  "forceLoginMethod": "console",
+  "defaultModel": "claude-3-5-sonnet-20241022",
+  "maxTokens": 8192,
+  "temperature": 0.7,
+  "autoSave": true,
+  "theme": "dark",
+  "editor": {{
+    "fontSize": 14,
+    "wordWrap": "on",
+    "tabSize": 2,
+    "minimap": {{
+      "enabled": false
+    }}
+  }},
+  "ai": {{
+    "codeCompletion": true,
+    "suggestions": true,
+    "contextAware": true
+  }},
+  "telemetry": {{
+    "enabled": false
+  }}
 }}
 CCSETTINGSEOF
 chmod 600 {home}/.claude/settings.json && \
-chown -R {user}:{user} {home}/.claude"#,
+chown -R {user}:{user} {home}/.claude {home}/.config/claude && \
+echo 'Claude Code configuration complete!' && \
+echo 'Configuration file: {home}/.claude/settings.json' && \
+echo 'API key helper: {home}/.claude/api-key-helper.sh'"#,
     );
     ssh_root_async(ip, key, &claude_cfg).await?;
 

@@ -184,9 +184,11 @@ pub fn print_summary(record: &DeployRecord) {
     println!();
     println!("  Pre-installed Tools:");
     println!("    - OpenClaw gateway (port {port})");
-    println!("    - Claude Code CLI  (claude --version)");
-    println!("    - OpenAI Codex CLI (codex --version)");
-    println!("    - Gemini CLI       (gemini --version)");
+    println!("    - Claude Code CLI  (latest, enhanced config)");
+    println!("      • Usage: claude \"your prompt here\"");
+    println!("      • Config: ~/.claude/settings.json");
+    println!("    - OpenAI Codex CLI (latest version)");
+    println!("    - Gemini CLI       (latest version)");
     println!();
     println!("  API Keys:         /home/openclaw/.openclaw/.env on server");
     println!(
