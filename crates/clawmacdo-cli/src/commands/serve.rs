@@ -681,7 +681,7 @@ async fn list_deployments_handler(
     let conn = state.db.lock().unwrap();
     match db::list_deployments_paginated(&conn, page, per_page) {
         Ok((deployments, total)) => {
-            let total_pages = (total + per_page - 1) / per_page;
+            let total_pages = total.div_ceil(per_page);
             Json(ListDeploymentsResponse {
                 deployments,
                 total,

@@ -155,7 +155,7 @@ impl DoClient {
     }
 
     /// Create a droplet with the given parameters and cloud-init user data.
-    /// CCreate droplet.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_droplet(
         &self,
         name: &str,

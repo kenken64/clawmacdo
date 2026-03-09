@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 /// Parameters for a deploy operation.
 pub struct DeployParams {
+    #[allow(dead_code)]
     pub customer_name: String,
     pub customer_email: String,
     pub provider: String,
