@@ -8,9 +8,16 @@ description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
 name = "clawmacdo"
 path = "src/main.rs"
 
+[features]
+default = ["web-ui", "tencent-cloud"]
+web-ui = ["axum", "serde", "serde_json", "tokio-stream", "rusqlite"]
+tencent-cloud = ["clawmacdo-cloud/tencent"]
+digitalocean-only = ["clawmacdo-cloud/digitalocean"]
+minimal = []  # Minimal build without web UI
+
 [dependencies]
+# Core dependencies (always included)
 anyhow = { workspace = true }
-axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -18,13 +25,16 @@ console = { workspace = true }
 dialoguer = { workspace = true }
 dotenvy = { workspace = true }
 flate2 = { workspace = true }
-rusqlite = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tar = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
 uuid = { workspace = true }
+
+# Optional dependencies (feature-gated)
+axum = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
 
 # Internal crates
 clawmacdo-core = { workspace = true }
