@@ -37,6 +37,7 @@ pub fn init_db() -> Result<Connection> {
 }
 
 /// Insert a new deployment row when a deploy starts.
+#[allow(clippy::too_many_arguments)]
 pub fn insert_deployment(
     conn: &Connection,
     id: &str,
