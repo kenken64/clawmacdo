@@ -1,5 +1,5 @@
-use clawmacdo_core::error::AppError;
 use crate::provision::commands::ssh_root_async;
+use clawmacdo_core::error::AppError;
 use std::path::Path;
 
 /// Configure vim and git globally.

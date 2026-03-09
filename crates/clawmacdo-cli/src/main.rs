@@ -1,7 +1,7 @@
 mod commands;
 
 // Import required types (avoiding unused wildcard imports)
-use clawmacdo_core::*;  // Config, errors, types used throughout
+use clawmacdo_core::*; // Config, errors, types used throughout
 
 use clap::{Parser, Subcommand};
 use commands::deploy::DeployParams;

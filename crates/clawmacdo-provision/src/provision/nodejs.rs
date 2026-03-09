@@ -1,6 +1,6 @@
+use crate::provision::commands::{ssh_as_openclaw_async, ssh_root_async};
 use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
 use clawmacdo_core::error::AppError;
-use crate::provision::commands::{ssh_as_openclaw_async, ssh_root_async};
 use std::path::Path;
 
 /// Step 11a: Configure pnpm directories and settings for openclaw user.

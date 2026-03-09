@@ -1,6 +1,6 @@
+use crate::provision::commands::ssh_root_async;
 use clawmacdo_core::config::OPENCLAW_USER;
 use clawmacdo_core::error::AppError;
-use crate::provision::commands::ssh_root_async;
 use std::path::Path;
 
 /// Step 10: Configure Docker daemon and add openclaw to docker group.
