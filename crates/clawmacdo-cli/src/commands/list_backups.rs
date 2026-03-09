@@ -1,6 +1,6 @@
-use clawmacdo_core::config;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use clawmacdo_core::config;
 
 /// List all backup archives in ~/.clawmacdo/backups/ with sizes and dates.
 /// RRun.

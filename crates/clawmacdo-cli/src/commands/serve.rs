@@ -1,15 +1,15 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
 use crate::commands::whatsapp;
-use clawmacdo_core::config;
-use clawmacdo_db as db;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{delete, get, post};
 use axum::Router;
+use clawmacdo_core::config;
+use clawmacdo_db as db;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -333,8 +333,14 @@ async fn start_deploy_handler(
         // Insert deployment record into SQLite
         if let Ok(conn) = db_clone.lock() {
             let _ = db::insert_deployment(
-                &conn, &id, &customer_name, &customer_email,
-                &provider_str, &region_str, &size_str, &hostname_str,
+                &conn,
+                &id,
+                &customer_name,
+                &customer_email,
+                &provider_str,
+                &region_str,
+                &size_str,
+                &hostname_str,
             );
         }
 
@@ -370,8 +376,11 @@ async fn start_deploy_handler(
             };
             if let Ok(conn) = db_clone.lock() {
                 let _ = db::update_deployment_status(
-                    &conn, &id, "dry-run",
-                    Some("0.0.0.0"), Some(&dry_hostname),
+                    &conn,
+                    &id,
+                    "dry-run",
+                    Some("0.0.0.0"),
+                    Some(&dry_hostname),
                 );
             }
             let payload = serde_json::json!({
@@ -393,8 +402,11 @@ async fn start_deploy_handler(
             Ok(record) => {
                 if let Ok(conn) = db_clone.lock() {
                     let _ = db::update_deployment_status(
-                        &conn, &id, "completed",
-                        Some(&record.ip_address), Some(&record.hostname),
+                        &conn,
+                        &id,
+                        "completed",
+                        Some(&record.ip_address),
+                        Some(&record.hostname),
                     );
                 }
                 let payload = serde_json::json!({

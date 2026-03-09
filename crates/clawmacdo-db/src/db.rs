@@ -79,8 +79,7 @@ pub fn list_deployments_paginated(
     page: u32,
     per_page: u32,
 ) -> Result<(Vec<DeploymentRow>, u32)> {
-    let total: u32 = conn
-        .query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))?;
+    let total: u32 = conn.query_row("SELECT COUNT(*) FROM deployments", [], |row| row.get(0))?;
     let offset = (page.saturating_sub(1)) * per_page;
     let mut stmt = conn.prepare(
         "SELECT id, customer_name, customer_email, provider, hostname, ip_address, region, size, status, created_at
@@ -107,7 +106,10 @@ pub fn list_deployments_paginated(
 
 /// Delete a single deployment by ID.
 pub fn delete_deployment(conn: &Connection, id: &str) -> Result<bool> {
-    let changed = conn.execute("DELETE FROM deployments WHERE id = ?1", rusqlite::params![id])?;
+    let changed = conn.execute(
+        "DELETE FROM deployments WHERE id = ?1",
+        rusqlite::params![id],
+    )?;
     Ok(changed > 0)
 }
 
