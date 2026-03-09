@@ -34,7 +34,7 @@ sha2 = "0.10"
 ssh2 = "0.9"
 tar = "0.4"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
@@ -45,3 +45,26 @@ clawmacdo-provision = { path = "crates/clawmacdo-provision" }
 clawmacdo-db = { path = "crates/clawmacdo-db" }
 clawmacdo-ssh = { path = "crates/clawmacdo-ssh" }
 clawmacdo-ui = { path = "crates/clawmacdo-ui" }
+
+[profile.release]
+# Optimize for size and performance
+opt-level = "z"          # Optimize for size
+lto = true               # Link-time optimization
+codegen-units = 1        # Better optimization, slower compile
+panic = "abort"          # Smaller binary (no unwinding)
+strip = true             # Remove symbols and debug info
+
+[profile.release-fast] 
+# Alternative: optimize for speed over size
+inherits = "release"
+opt-level = 3            # Maximum speed optimization
+lto = "fat"              # More aggressive LTO
+
+[profile.release-small]
+# Alternative: maximum size optimization  
+inherits = "release"
+opt-level = "z"          # Size optimization
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

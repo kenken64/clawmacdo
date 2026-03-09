@@ -224,6 +224,7 @@ enum Commands {
     /// Show local backup archives with sizes and dates
     ListBackups,
 
+    #[cfg(feature = "web-ui")]
     /// Launch a local web UI for deploying OpenClaw
     Serve {
         /// Port for the web server
@@ -384,6 +385,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListBackups => {
             commands::list_backups::run()?;
         }
+        #[cfg(feature = "web-ui")]
         Commands::Serve { port } => {
             commands::serve::run(port).await?;
         }

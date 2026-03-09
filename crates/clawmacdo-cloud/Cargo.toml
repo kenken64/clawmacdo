@@ -4,18 +4,26 @@ version = "0.4.0"
 edition = "2021"
 description = "Cloud provider implementations for ClawMacdo"
 
+[features]
+default = ["digitalocean", "tencent"]
+digitalocean = []
+tencent = ["hex", "hmac", "sha2"]
+
 [dependencies]
+# Core dependencies
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-hex = { workspace = true }
-hmac = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
+
+# Tencent Cloud specific (optional)
+hex = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 clawmacdo-core = { workspace = true }

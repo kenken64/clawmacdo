@@ -2,7 +2,11 @@
 
 pub mod cloud_provider;
 pub mod cloud_init;
+
+#[cfg(feature = "digitalocean")]
 pub mod digitalocean;
+
+#[cfg(feature = "tencent")]
 pub mod tencent;
 
 // Re-export main types and traits
