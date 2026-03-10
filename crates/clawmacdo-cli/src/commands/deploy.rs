@@ -791,7 +791,11 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     let lightsail = LightsailCliProvider::new(params.aws_region.clone());
 
     // Test AWS CLI is available
-    if let Err(_) = std::process::Command::new("aws").arg("--version").output() {
+    if std::process::Command::new("aws")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         bail!("AWS CLI not found. Please install the AWS CLI: https://aws.amazon.com/cli/");
     }
 
