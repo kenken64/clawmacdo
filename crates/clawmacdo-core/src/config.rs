@@ -16,6 +16,7 @@ pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
 pub enum CloudProviderType {
     DigitalOcean,
     Tencent,
+    Lightsail,
 }
 
 impl std::fmt::Display for CloudProviderType {
@@ -23,6 +24,7 @@ impl std::fmt::Display for CloudProviderType {
         match self {
             CloudProviderType::DigitalOcean => write!(f, "digitalocean"),
             CloudProviderType::Tencent => write!(f, "tencent"),
+            CloudProviderType::Lightsail => write!(f, "lightsail"),
         }
     }
 }
