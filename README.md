@@ -3,7 +3,7 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean** or **Tencent Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
+Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, or **Tencent Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
 ## ✨ Latest Update (March 2026)
 
@@ -39,7 +39,7 @@ clawmacdo/
 |-------|---------|--------------|
 | **clawmacdo-cli** | Main binary, command parsing, orchestration | All other crates |
 | **clawmacdo-core** | Configuration, errors, shared types | Minimal (serde, anyhow) |
-| **clawmacdo-cloud** | DigitalOcean & Tencent Cloud APIs | reqwest, async-trait |
+| **clawmacdo-cloud** | DigitalOcean, AWS Lightsail & Tencent Cloud APIs | reqwest, async-trait |
 | **clawmacdo-provision** | Server setup, package installation | SSH, Core, UI |
 | **clawmacdo-db** | SQLite operations, job tracking | rusqlite |
 | **clawmacdo-ssh** | SSH connections, file transfers | ssh2 |
@@ -47,7 +47,7 @@ clawmacdo/
 
 ## Features
 
-- **Multi-cloud**: Deploy to DigitalOcean or Tencent Cloud with `--provider` flag
+- **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, or Tencent Cloud with `--provider` flag
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
@@ -59,10 +59,11 @@ clawmacdo/
 
 ## Supported Cloud Providers
 
-| Provider | Flag | Credentials |
-|----------|------|-------------|
-| DigitalOcean | `--provider=digitalocean` (default) | `--do-token` |
-| Tencent Cloud | `--provider=tencent` | `--tencent-secret-id` + `--tencent-secret-key` |
+| Provider | Flag | Credentials | Prerequisite |
+|----------|------|-------------|-------------|
+| DigitalOcean | `--provider=digitalocean` (default) | `--do-token` | — |
+| AWS Lightsail | `--provider=lightsail` (or `aws`) | `--aws-access-key-id` + `--aws-secret-access-key` | [AWS CLI](https://aws.amazon.com/cli/) installed |
+| Tencent Cloud | `--provider=tencent` | `--tencent-secret-id` + `--tencent-secret-key` | — |
 
 ## Download
 
@@ -100,13 +101,21 @@ cargo build --release --no-default-features --features digitalocean-only
 # Binary: target/release/clawmacdo (3.1MB, no Tencent Cloud)
 ```
 
+#### AWS Lightsail-only build
+```bash
+cargo build --release --no-default-features --features aws-only
+# Binary: target/release/clawmacdo (Lightsail only, requires AWS CLI)
+```
+
 ## Build Features
 
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `web-ui` | Browser-based deployment interface | ✅ |
+| `lightsail` | AWS Lightsail provider support (via AWS CLI) | ✅ |
 | `tencent-cloud` | Tencent Cloud provider support | ✅ |
 | `digitalocean` | DigitalOcean provider support | ✅ |
+| `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
 
 ## Usage
@@ -122,6 +131,32 @@ clawmacdo deploy \
   --customer-name "my-openclaw" \
   --restore-from ~/backups/openclaw-backup-2024-03-09.tar.gz
 ```
+
+### Deploy to AWS Lightsail
+
+> **Prerequisite:** [AWS CLI](https://aws.amazon.com/cli/) must be installed and accessible in your `PATH`.
+
+```bash
+# Set AWS credentials
+export AWS_ACCESS_KEY_ID="your_access_key_id"
+export AWS_SECRET_ACCESS_KEY="your_secret_access_key"
+export AWS_REGION="us-east-1"  # default region
+
+# Deploy to Lightsail
+clawmacdo deploy \
+  --provider lightsail \
+  --customer-name "my-openclaw" \
+  --customer-email "you@example.com" \
+  --aws-region us-east-1
+```
+
+#### Lightsail Instance Sizes
+
+| clawmacdo `--size` | Lightsail Bundle | vCPU | RAM | Price |
+|--------------------|-----------------|------|-----|-------|
+| `s-1vcpu-2gb` | `small_3_0` | 1 | 2 GB | ~$10/mo |
+| `s-2vcpu-4gb` *(default)* | `medium_3_0` | 2 | 4 GB | ~$20/mo |
+| `s-4vcpu-8gb` | `large_3_0` | 4 | 8 GB | ~$40/mo |
 
 ### Deploy to Tencent Cloud
 
@@ -238,6 +273,9 @@ new-crate = { workspace = true }
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `DO_TOKEN` | DigitalOcean API token | For DO deploys |
+| `AWS_ACCESS_KEY_ID` | AWS IAM access key ID | For Lightsail deploys |
+| `AWS_SECRET_ACCESS_KEY` | AWS IAM secret access key | For Lightsail deploys |
+| `AWS_REGION` | AWS region (default: `us-east-1`) | For Lightsail deploys |
 | `TENCENT_SECRET_ID` | Tencent Cloud Secret ID | For Tencent deploys |
 | `TENCENT_SECRET_KEY` | Tencent Cloud Secret Key | For Tencent deploys |
 | `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
@@ -285,6 +323,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 9, 2026  
-**Architecture version:** 2.0 (modular workspace)  
+**Last updated:** March 10, 2026
+**Architecture version:** 2.0 (modular workspace)
 **Binary optimizations:** ✅ Applied (32% size reduction)
