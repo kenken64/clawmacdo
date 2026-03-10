@@ -51,6 +51,18 @@ enum Commands {
         #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
         tencent_secret_key: String,
 
+        /// AWS Access Key ID (required for lightsail provider)
+        #[arg(long, env = "AWS_ACCESS_KEY_ID", default_value = "")]
+        aws_access_key_id: String,
+
+        /// AWS Secret Access Key (required for lightsail provider)
+        #[arg(long, env = "AWS_SECRET_ACCESS_KEY", default_value = "")]
+        aws_secret_access_key: String,
+
+        /// AWS Region for Lightsail (required for lightsail provider)
+        #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
+        aws_region: String,
+
         /// Anthropic API key or setup token (sk-ant-api... or sk-ant-oat...)
         #[arg(long, env = "ANTHROPIC_API_KEY")]
         anthropic_key: String,
@@ -271,6 +283,9 @@ async fn main() -> anyhow::Result<()> {
             do_token,
             tencent_secret_id,
             tencent_secret_key,
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_region,
             anthropic_key,
             openai_key,
             gemini_key,
@@ -292,6 +307,9 @@ async fn main() -> anyhow::Result<()> {
                 do_token,
                 tencent_secret_id,
                 tencent_secret_key,
+                aws_access_key_id,
+                aws_secret_access_key,
+                aws_region,
                 anthropic_key,
                 openai_key,
                 gemini_key,

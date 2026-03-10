@@ -9,10 +9,12 @@ name = "clawmacdo"
 path = "src/main.rs"
 
 [features]
-default = ["web-ui", "tencent-cloud"]
+default = ["web-ui", "tencent-cloud", "lightsail"]
 web-ui = ["axum", "serde", "serde_json", "tokio-stream", "rusqlite"]
+lightsail = ["clawmacdo-cloud/lightsail"]
 tencent-cloud = ["clawmacdo-cloud/tencent"]
 digitalocean-only = ["clawmacdo-cloud/digitalocean"]
+aws-only = ["lightsail"]
 minimal = []  # Minimal build without web UI
 
 [dependencies]

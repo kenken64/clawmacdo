@@ -6,6 +6,9 @@ pub mod cloud_provider;
 #[cfg(feature = "digitalocean")]
 pub mod digitalocean;
 
+#[cfg(feature = "lightsail")]
+pub mod lightsail_cli;
+
 #[cfg(feature = "tencent")]
 pub mod tencent;
 
