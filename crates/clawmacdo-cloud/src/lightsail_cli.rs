@@ -61,7 +61,9 @@ impl LightsailCliProvider {
             .arg("--output")
             .arg("json")
             .output()
-            .map_err(|e| AppError::CloudProviderError(format!("Failed to execute AWS CLI: {}", e)))?;
+            .map_err(|e| {
+                AppError::CloudProviderError(format!("Failed to execute AWS CLI: {}", e))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -78,9 +80,9 @@ impl LightsailCliProvider {
     /// Map common sizes to Lightsail bundle IDs
     fn map_size_to_bundle(&self, size: &str) -> &str {
         match size {
-            "s-1vcpu-2gb" | "1vcpu-2gb" => "small_3_0",   // $10/month - 1vCPU, 2GB RAM
-            "s-2vcpu-4gb" | "2vcpu-4gb" => "medium_3_0",  // $20/month - 2vCPU, 4GB RAM ⭐ 
-            "s-4vcpu-8gb" | "4vcpu-8gb" => "large_3_0",   // $40/month - 4vCPU, 8GB RAM
+            "s-1vcpu-2gb" | "1vcpu-2gb" => "small_3_0", // $10/month - 1vCPU, 2GB RAM
+            "s-2vcpu-4gb" | "2vcpu-4gb" => "medium_3_0", // $20/month - 2vCPU, 4GB RAM ⭐
+            "s-4vcpu-8gb" | "4vcpu-8gb" => "large_3_0", // $40/month - 4vCPU, 8GB RAM
             _ => "medium_3_0", // Default to 2vCPU, 4GB for the user's request
         }
     }
@@ -91,12 +93,15 @@ impl CloudProvider for LightsailCliProvider {
     async fn upload_ssh_key(&self, name: &str, public_key: &str) -> Result<KeyInfo, AppError> {
         let output = self.execute_aws_cli(&[
             "import-key-pair",
-            "--key-pair-name", name,
-            "--public-key-base64", public_key,
+            "--key-pair-name",
+            name,
+            "--public-key-base64",
+            public_key,
         ])?;
 
-        let response: LightsailOperationResponse = serde_json::from_str(&output)
-            .map_err(|e| AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e)))?;
+        let response: LightsailOperationResponse = serde_json::from_str(&output).map_err(|e| {
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+        })?;
 
         let fingerprint = response
             .operation
@@ -110,10 +115,7 @@ impl CloudProvider for LightsailCliProvider {
     }
 
     async fn delete_ssh_key(&self, key_id: &str) -> Result<(), AppError> {
-        self.execute_aws_cli(&[
-            "delete-key-pair",
-            "--key-pair-name", key_id,
-        ])?;
+        self.execute_aws_cli(&["delete-key-pair", "--key-pair-name", key_id])?;
         Ok(())
     }
 
@@ -131,10 +133,14 @@ impl CloudProvider for LightsailCliProvider {
 
         let mut args = vec![
             "create-instances",
-            "--instance-names", &params.name,
-            "--blueprint-id", blueprint_id,
-            "--bundle-id", bundle_id,
-            "--availability-zone", &availability_zone,
+            "--instance-names",
+            &params.name,
+            "--blueprint-id",
+            blueprint_id,
+            "--bundle-id",
+            bundle_id,
+            "--availability-zone",
+            &availability_zone,
         ];
 
         // Add SSH key if provided
@@ -154,9 +160,11 @@ impl CloudProvider for LightsailCliProvider {
             r#"[{{"key":"openclaw","value":"true"}},{{"key":"customer_email","value":"{}"}}"#,
             params.customer_email
         );
-        
+
         // Add custom tags
-        let custom_tags: Vec<String> = params.tags.iter()
+        let custom_tags: Vec<String> = params
+            .tags
+            .iter()
             .filter_map(|tag| {
                 if let Some((key, value)) = tag.split_once('=') {
                     Some(format!(r#"{{"key":"{}","value":"{}"}}"#, key, value))
@@ -177,8 +185,9 @@ impl CloudProvider for LightsailCliProvider {
 
         let output = self.execute_aws_cli(&args)?;
 
-        let response: LightsailOperationResponse = serde_json::from_str(&output)
-            .map_err(|e| AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e)))?;
+        let response: LightsailOperationResponse = serde_json::from_str(&output).map_err(|e| {
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+        })?;
 
         let instance_name = response
             .operation
@@ -209,20 +218,19 @@ impl CloudProvider for LightsailCliProvider {
                 )));
             }
 
-            let output = self.execute_aws_cli(&[
-                "get-instance",
-                "--instance-name", instance_id,
-            ])?;
+            let output = self.execute_aws_cli(&["get-instance", "--instance-name", instance_id])?;
 
-            let response: LightsailInstanceResponse = serde_json::from_str(&output)
-                .map_err(|e| AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e)))?;
+            let response: LightsailInstanceResponse =
+                serde_json::from_str(&output).map_err(|e| {
+                    AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+                })?;
 
             if let Some(instance) = response.instance {
                 let status = instance
                     .state
                     .and_then(|state| state.name)
                     .unwrap_or_default();
-                    
+
                 let public_ip = instance.public_ip_address;
 
                 if status == "running" && public_ip.is_some() {
@@ -240,18 +248,16 @@ impl CloudProvider for LightsailCliProvider {
     }
 
     async fn delete_instance(&self, instance_id: &str) -> Result<(), AppError> {
-        self.execute_aws_cli(&[
-            "delete-instance",
-            "--instance-name", instance_id,
-        ])?;
+        self.execute_aws_cli(&["delete-instance", "--instance-name", instance_id])?;
         Ok(())
     }
 
     async fn list_instances(&self, _tag: &str) -> Result<Vec<InstanceInfo>, AppError> {
         let output = self.execute_aws_cli(&["get-instances"])?;
 
-        let response: LightsailInstancesResponse = serde_json::from_str(&output)
-            .map_err(|e| AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e)))?;
+        let response: LightsailInstancesResponse = serde_json::from_str(&output).map_err(|e| {
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+        })?;
 
         let instances = response
             .instances
@@ -268,7 +274,7 @@ impl CloudProvider for LightsailCliProvider {
                     .state
                     .and_then(|state| state.name)
                     .unwrap_or_default();
-                
+
                 InstanceInfo {
                     id: name.clone(),
                     name,
