@@ -55,6 +55,12 @@ struct DeployRequest {
     tencent_secret_id: String,
     #[serde(default)]
     tencent_secret_key: String,
+    #[serde(default)]
+    aws_access_key_id: String,
+    #[serde(default)]
+    aws_secret_access_key: String,
+    #[serde(default)]
+    aws_region: String,
     anthropic_key: String,
     #[serde(default)]
     openai_key: String,
@@ -297,6 +303,9 @@ async fn start_deploy_handler(
             do_token: req.do_token,
             tencent_secret_id: req.tencent_secret_id,
             tencent_secret_key: req.tencent_secret_key,
+            aws_access_key_id: req.aws_access_key_id,
+            aws_secret_access_key: req.aws_secret_access_key,
+            aws_region: req.aws_region,
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
@@ -1042,6 +1051,7 @@ function addDeployCard(initialState) {
           <select name="provider" onchange="toggleProvider(this, ${n})" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
             <option value="digitalocean" selected>DigitalOcean</option>
             <option value="tencent">Tencent Cloud</option>
+            <option value="lightsail">AWS Lightsail</option>
           </select>
         </div>
         <div id="do-creds-${n}">
@@ -1050,6 +1060,10 @@ function addDeployCard(initialState) {
         <div id="tc-creds-${n}" style="display:none" class="space-y-4">
           ${passwordField('tencent_secret_id', 'Tencent SecretId', 'AKIDxxxxxxxx', true)}
           ${passwordField('tencent_secret_key', 'Tencent SecretKey', 'xxxxxxxx', true)}
+        </div>
+        <div id="aws-creds-${n}" style="display:none" class="space-y-4">
+          ${passwordField('aws_access_key_id', 'AWS Access Key ID', 'AKIA...', true)}
+          ${passwordField('aws_secret_access_key', 'AWS Secret Access Key', '...', true)}
         </div>
       </fieldset>
       <fieldset class="space-y-4">
@@ -1263,13 +1277,21 @@ function toggleProvider(select, n) {
   const provider = select.value;
   const doCreds = document.getElementById('do-creds-' + n);
   const tcCreds = document.getElementById('tc-creds-' + n);
+  const awsCreds = document.getElementById('aws-creds-' + n);
   const regionSel = document.getElementById('region-' + n);
   const sizeSel = document.getElementById('size-' + n);
 
+  // Hide all credential sections and clear required
+  doCreds.style.display = 'none';
+  tcCreds.style.display = 'none';
+  awsCreds.style.display = 'none';
+  doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+  tcCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+  awsCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+
   if (provider === 'tencent') {
-    doCreds.style.display = 'none';
     tcCreds.style.display = 'block';
-    // Swap to Tencent regions
+    tcCreds.querySelectorAll('input').forEach(i => i.required = true);
     regionSel.innerHTML = `
       <option value="ap-singapore" selected>ap-singapore (Singapore)</option>
       <option value="ap-hongkong">ap-hongkong (Hong Kong)</option>
@@ -1282,7 +1304,6 @@ function toggleProvider(select, n) {
       <option value="eu-frankfurt">eu-frankfurt (Frankfurt)</option>
       <option value="na-siliconvalley">na-siliconvalley (Silicon Valley)</option>
     `;
-    // Swap to Tencent instance types (SA5/S8 have better availability than S5)
     sizeSel.innerHTML = `
       <option value="SA5.MEDIUM2">SA5.MEDIUM2 (2 vCPU, 2 GB)</option>
       <option value="SA5.MEDIUM4" selected>SA5.MEDIUM4 (2 vCPU, 4 GB)</option>
@@ -1291,13 +1312,33 @@ function toggleProvider(select, n) {
       <option value="S8.LARGE8">S8.LARGE8 (4 vCPU, 8 GB)</option>
       <option value="SA5.LARGE16">SA5.LARGE16 (4 vCPU, 16 GB)</option>
     `;
-    // Disable DO-specific options
-    doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
-    tcCreds.querySelectorAll('input').forEach(i => i.required = true);
+  } else if (provider === 'lightsail') {
+    awsCreds.style.display = 'block';
+    awsCreds.querySelectorAll('input').forEach(i => i.required = true);
+    regionSel.innerHTML = `
+      <option value="ap-southeast-1" selected>ap-southeast-1 (Singapore)</option>
+      <option value="us-east-1">us-east-1 (N. Virginia)</option>
+      <option value="us-east-2">us-east-2 (Ohio)</option>
+      <option value="us-west-2">us-west-2 (Oregon)</option>
+      <option value="eu-west-1">eu-west-1 (Ireland)</option>
+      <option value="eu-west-2">eu-west-2 (London)</option>
+      <option value="eu-central-1">eu-central-1 (Frankfurt)</option>
+      <option value="ap-northeast-1">ap-northeast-1 (Tokyo)</option>
+      <option value="ap-northeast-2">ap-northeast-2 (Seoul)</option>
+      <option value="ap-south-1">ap-south-1 (Mumbai)</option>
+      <option value="ap-southeast-2">ap-southeast-2 (Sydney)</option>
+      <option value="ca-central-1">ca-central-1 (Canada)</option>
+    `;
+    sizeSel.innerHTML = `
+      <option value="micro">micro (1 vCPU, 1 GB - $10/mo)</option>
+      <option value="small">small (1 vCPU, 2 GB - $15/mo)</option>
+      <option value="medium" selected>medium (2 vCPUs, 4 GB - $30/mo)</option>
+      <option value="large">large (2 vCPUs, 8 GB - $60/mo)</option>
+      <option value="xlarge">xlarge (4 vCPUs, 16 GB - $120/mo)</option>
+    `;
   } else {
     doCreds.style.display = 'block';
-    tcCreds.style.display = 'none';
-    // Swap back to DO regions
+    doCreds.querySelectorAll('input').forEach(i => i.required = true);
     regionSel.innerHTML = `
       <option value="sgp1" selected>sgp1 (Singapore 1)</option>
       <option value="nyc1">nyc1 (New York 1)</option>
@@ -1317,8 +1358,6 @@ function toggleProvider(select, n) {
       <option value="s-4vcpu-8gb">s-4vcpu-8gb (4 vCPUs, 8 GB - $48/mo)</option>
       <option value="s-8vcpu-16gb">s-8vcpu-16gb (8 vCPUs, 16 GB - $96/mo)</option>
     `;
-    doCreds.querySelectorAll('input').forEach(i => i.required = true);
-    tcCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   }
 }
 
@@ -1596,6 +1635,9 @@ async function startDeploy(e, cardNum) {
     do_token: val('do_token'),
     tencent_secret_id: val('tencent_secret_id'),
     tencent_secret_key: val('tencent_secret_key'),
+    aws_access_key_id: val('aws_access_key_id'),
+    aws_secret_access_key: val('aws_secret_access_key'),
+    aws_region: val('region'),
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),

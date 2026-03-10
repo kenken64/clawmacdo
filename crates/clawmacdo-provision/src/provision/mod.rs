@@ -1,11 +1,11 @@
 pub mod commands;
-mod docker;
-mod firewall;
-mod nodejs;
-mod openclaw;
-mod system_tools;
-mod tailscale;
-mod user;
+pub mod docker;
+pub mod firewall;
+pub mod nodejs;
+pub mod openclaw;
+pub mod system_tools;
+pub mod tailscale;
+pub mod user;
 
 use clawmacdo_core::error::AppError;
 use clawmacdo_ui::progress;

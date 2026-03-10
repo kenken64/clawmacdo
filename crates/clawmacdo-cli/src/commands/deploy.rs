@@ -798,7 +798,6 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     // Step 2: Generate SSH keypair
     progress::emit(tx, "\n[Step 2/16] Generating SSH keypair...");
     let keypair = clawmacdo_ssh::generate_keypair(&deploy_id)?;
-    let fingerprint = clawmacdo_ssh::compute_fingerprint(&keypair.public_key_openssh)?;
 
     // Step 3: Upload SSH key to AWS Lightsail
     progress::emit(tx, "\n[Step 3/16] Uploading SSH key to AWS Lightsail...");
@@ -810,15 +809,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
 
     progress::emit(
         tx,
-        &format!("  → SSH Key: {} ({})", key_info.id, fingerprint),
+        &format!("  → SSH Key: {}", key_info.id),
     );
 
     // Step 4: Resolve parameters
     progress::emit(tx, "\n[Step 4/16] Resolving parameters...");
     let region = &params.aws_region;
-    let size = params.size.as_deref().unwrap_or("s-2vcpu-4gb"); // Use ClawMacdo size
-    let hostname = params.hostname.as_deref().unwrap_or_else(|| {
-        &format!("openclaw-{}", deploy_id[..8].to_lowercase())
+    let size = params.size.unwrap_or_else(|| "s-2vcpu-4gb".to_string());
+    let hostname = params.hostname.unwrap_or_else(|| {
+        format!("openclaw-{}", deploy_id[..8].to_lowercase())
     });
 
     progress::emit(
@@ -866,63 +865,47 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     progress::emit(tx, "\n[Step 8/16] Waiting for SSH...");
     clawmacdo_ssh::wait_for_ssh(ip, &keypair.private_key_path, std::time::Duration::from_secs(300)).await?;
 
-    // Step 9-16: Standard provisioning steps (same as other providers)
-    progress::emit(tx, "\n[Step 9/16] Installing system packages...");
-    clawmacdo_provision::system_tools::provision(ip, &keypair.private_key_path).await?;
-
-    progress::emit(tx, "\n[Step 10/16] Creating openclaw user...");
-    clawmacdo_provision::user::provision(ip, &keypair.private_key_path).await?;
-
-    progress::emit(tx, "\n[Step 11/16] Installing Node.js + Claude Code...");
-    clawmacdo_provision::nodejs::provision(ip, &keypair.private_key_path).await?;
-
-    progress::emit(tx, "\n[Step 12/16] Installing Docker...");
-    clawmacdo_provision::docker::provision(ip, &keypair.private_key_path).await?;
-
-    progress::emit(tx, "\n[Step 13/16] Configuring firewall...");
-    clawmacdo_provision::firewall::provision(ip, &keypair.private_key_path, params.tailscale).await?;
-
-    // Step 14: Handle Tailscale if requested
-    if params.tailscale {
-        progress::emit(tx, "\n[Step 14/16] Setting up Tailscale...");
-        match clawmacdo_provision::tailscale::provision(ip, &keypair.private_key_path, params.tailscale_auth_key.as_deref()).await? {
-            clawmacdo_provision::tailscale::TailscaleProvisionStatus::Connected { tailscale_ip } => {
-                progress::emit(tx, &format!("  → Tailscale IP: {tailscale_ip}"));
-            }
-            clawmacdo_provision::tailscale::TailscaleProvisionStatus::AuthRequired { auth_url } => {
-                progress::emit(tx, &format!("  → Manual auth required: {auth_url}"));
-            }
-        }
+    // Step 8: Upload & restore backup
+    let backup_restored: Option<String>;
+    if let Some(bp) = params.backup.as_deref() {
+        progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
+        let remote_archive = "/tmp/openclaw_backup.tar.gz";
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        let bp_c = bp.to_path_buf();
+        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
+            .await??;
+        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
+        backup_restored = Some(bp.display().to_string());
     } else {
-        progress::emit(tx, "\n[Step 14/16] Skipping Tailscale (not requested)...");
+        progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
+        backup_restored = None;
     }
 
-    // Step 15: Install OpenClaw
-    progress::emit(tx, "\n[Step 15/16] Installing OpenClaw...");
-    let provision_opts = clawmacdo_provision::ProvisionOpts {
-        anthropic_api_key: &params.anthropic_key,
-        anthropic_setup_token: None,
-        public_key_openssh: &keypair.public_key_openssh,
-        hostname,
-        tailscale: params.tailscale,
+    let (anthropic_api_key, anthropic_setup_token) =
+        split_anthropic_credential(&params.anthropic_key);
+
+    // Steps 9-14: Provision via shared provisioning flow
+    let provision_opts = ProvisionOpts {
+        anthropic_api_key: &anthropic_api_key,
+        anthropic_setup_token: &anthropic_setup_token,
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
-        progress_tx: Some(tx.clone()),
+        public_key_openssh: &keypair.public_key_openssh,
+        hostname: &hostname,
+        tailscale: params.tailscale,
         tailscale_auth_key: params.tailscale_auth_key.as_deref(),
+        progress_tx: tx.clone(),
     };
-    clawmacdo_provision::openclaw::provision(ip, &keypair.private_key_path, provision_opts).await?;
-
-    // Step 16: Handle backup restore
-    let backup_restored = if let Some(backup_path) = &params.backup {
-        progress::emit(tx, "\n[Step 16/16] Restoring from backup...");
-        clawmacdo_ssh::restore_backup(ip, &keypair.private_key_path, backup_path).await?;
-        Some(backup_path.display().to_string())
-    } else {
-        progress::emit(tx, "\n[Step 16/16] Skipping backup restore (none specified)...");
-        None
-    };
+    provision::run(ip, &keypair.private_key_path, &provision_opts)
+        .await
+        .context("Provision failed")?;
 
     // Save deployment record
     progress::emit(tx, "\nSaving deployment record...");
@@ -936,7 +919,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         region: region.to_string(),
         size: size.to_string(),
         ssh_key_path: keypair.private_key_path.display().to_string(),
-        ssh_key_fingerprint: fingerprint,
+        ssh_key_fingerprint: String::new(),
         ssh_key_id: Some(key_name),
         backup_restored,
         created_at: Utc::now(),
