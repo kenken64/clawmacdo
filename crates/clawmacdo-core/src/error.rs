@@ -18,6 +18,9 @@ pub enum AppError {
     #[error("Tencent Cloud API error: {0}")]
     TencentCloud(String),
 
+    #[error("Cloud provider API error: {0}")]
+    CloudProviderError(String),
+
     #[error("{0}")]
     Generic(String),
 

@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clawmacdo_cloud::cloud_init;
 use clawmacdo_cloud::digitalocean::DoClient;
+#[cfg(feature = "lightsail")]
+use clawmacdo_cloud::lightsail_cli::LightsailCliProvider;
 use clawmacdo_cloud::tencent::TencentClient;
 use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_provision::{self as provision, ProvisionOpts};
@@ -19,6 +21,9 @@ pub struct DeployParams {
     pub do_token: String,
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
+    pub aws_access_key_id: String,
+    pub aws_secret_access_key: String,
+    pub aws_region: String,
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
@@ -77,8 +82,9 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
 fn resolve_provider(provider: &str) -> Result<CloudProviderType> {
     match provider {
         "digitalocean" | "do" => Ok(CloudProviderType::DigitalOcean),
+        "lightsail" | "aws" => Ok(CloudProviderType::Lightsail),
         "tencent" | "tc" => Ok(CloudProviderType::Tencent),
-        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean' or 'tencent'."),
+        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', or 'tencent'."),
     }
 }
 
@@ -87,6 +93,12 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
     let provider = resolve_provider(&params.provider)?;
     match provider {
         CloudProviderType::DigitalOcean => run_do(params).await,
+        #[cfg(feature = "lightsail")]
+        CloudProviderType::Lightsail => run_lightsail(params).await,
+        #[cfg(not(feature = "lightsail"))]
+        CloudProviderType::Lightsail => {
+            bail!("Lightsail support not compiled in. Build with --features lightsail")
+        }
         CloudProviderType::Tencent => run_tencent(params).await,
     }
 }
@@ -747,6 +759,191 @@ async fn deploy_steps_5_through_16(
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 16/16] Done!");
+    ui::print_summary(&record);
+    Ok(record)
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// AWS Lightsail deploy (CLI-based)
+// ══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "lightsail")]
+async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
+    use clawmacdo_cloud::CloudProvider;
+    use std::env;
+
+    config::ensure_dirs()?;
+    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let tx = &params.progress_tx;
+
+    // Step 1: Validate AWS credentials
+    progress::emit(tx, "\n[Step 1/16] Validating AWS credentials and CLI...");
+    if params.aws_access_key_id.is_empty() || params.aws_secret_access_key.is_empty() {
+        bail!("AWS credentials required. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY");
+    }
+
+    // Set AWS credentials as environment variables for the CLI
+    env::set_var("AWS_ACCESS_KEY_ID", &params.aws_access_key_id);
+    env::set_var("AWS_SECRET_ACCESS_KEY", &params.aws_secret_access_key);
+    env::set_var("AWS_DEFAULT_REGION", &params.aws_region);
+
+    // Initialize Lightsail provider
+    let lightsail = LightsailCliProvider::new(params.aws_region.clone());
+
+    // Test AWS CLI is available
+    if let Err(_) = std::process::Command::new("aws").arg("--version").output() {
+        bail!("AWS CLI not found. Please install the AWS CLI: https://aws.amazon.com/cli/");
+    }
+
+    // Step 2: Generate SSH keypair
+    progress::emit(tx, "\n[Step 2/16] Generating SSH keypair...");
+    let keypair = clawmacdo_ssh::generate_keypair(&deploy_id)?;
+    let fingerprint = clawmacdo_ssh::compute_fingerprint(&keypair.public_key_openssh)?;
+
+    // Step 3: Upload SSH key to AWS Lightsail
+    progress::emit(tx, "\n[Step 3/16] Uploading SSH key to AWS Lightsail...");
+    let key_name = format!("clawmacdo-{}", deploy_id);
+    let key_info = lightsail
+        .upload_ssh_key(&key_name, &keypair.public_key_openssh)
+        .await
+        .context("Failed to upload SSH key")?;
+
+    progress::emit(
+        tx,
+        &format!("  → SSH Key: {} ({})", key_info.id, fingerprint),
+    );
+
+    // Step 4: Resolve parameters
+    progress::emit(tx, "\n[Step 4/16] Resolving parameters...");
+    let region = &params.aws_region;
+    let size = params.size.as_deref().unwrap_or("s-2vcpu-4gb"); // Use ClawMacdo size
+    let hostname = params.hostname.as_deref().unwrap_or_else(|| {
+        &format!("openclaw-{}", deploy_id[..8].to_lowercase())
+    });
+
+    progress::emit(
+        tx,
+        &format!("  → Region: {region}, Size: {size}, Name: {hostname}"),
+    );
+
+    // Step 5: Generate cloud-init user data
+    progress::emit(tx, "\n[Step 5/16] Generating cloud-init user data...");
+    let user_data = cloud_init::generate();
+
+    // Step 6: Create Lightsail instance
+    progress::emit(tx, "\n[Step 6/16] Creating Lightsail instance...");
+
+    let create_params = clawmacdo_cloud::cloud_provider::CreateInstanceParams {
+        name: hostname.to_string(),
+        region: region.clone(),
+        size: size.to_string(),
+        image: "ubuntu_24_04".to_string(), // Ubuntu 24.04 LTS
+        ssh_key_id: key_name.clone(),
+        user_data,
+        tags: vec![
+            "openclaw=true".to_string(),
+            format!("customer_email={}", params.customer_email),
+        ],
+        customer_email: params.customer_email.clone(),
+    };
+
+    let instance_info = lightsail.create_instance(create_params).await?;
+    progress::emit(tx, &format!("  → Instance ID: {}", instance_info.id));
+
+    // Step 7: Wait for instance to become active
+    progress::emit(tx, "\n[Step 7/16] Waiting for instance to become active...");
+    let instance_info = lightsail
+        .wait_for_active(&instance_info.id, 600) // 10 minute timeout
+        .await?;
+
+    let ip = instance_info
+        .public_ip
+        .as_ref()
+        .context("Instance has no public IP")?;
+    progress::emit(tx, &format!("  → IP: {ip}"));
+
+    // Step 8: Wait for SSH
+    progress::emit(tx, "\n[Step 8/16] Waiting for SSH...");
+    clawmacdo_ssh::wait_for_ssh(ip, &keypair.private_key_path, std::time::Duration::from_secs(300)).await?;
+
+    // Step 9-16: Standard provisioning steps (same as other providers)
+    progress::emit(tx, "\n[Step 9/16] Installing system packages...");
+    clawmacdo_provision::system_tools::provision(ip, &keypair.private_key_path).await?;
+
+    progress::emit(tx, "\n[Step 10/16] Creating openclaw user...");
+    clawmacdo_provision::user::provision(ip, &keypair.private_key_path).await?;
+
+    progress::emit(tx, "\n[Step 11/16] Installing Node.js + Claude Code...");
+    clawmacdo_provision::nodejs::provision(ip, &keypair.private_key_path).await?;
+
+    progress::emit(tx, "\n[Step 12/16] Installing Docker...");
+    clawmacdo_provision::docker::provision(ip, &keypair.private_key_path).await?;
+
+    progress::emit(tx, "\n[Step 13/16] Configuring firewall...");
+    clawmacdo_provision::firewall::provision(ip, &keypair.private_key_path, params.tailscale).await?;
+
+    // Step 14: Handle Tailscale if requested
+    if params.tailscale {
+        progress::emit(tx, "\n[Step 14/16] Setting up Tailscale...");
+        match clawmacdo_provision::tailscale::provision(ip, &keypair.private_key_path, params.tailscale_auth_key.as_deref()).await? {
+            clawmacdo_provision::tailscale::TailscaleProvisionStatus::Connected { tailscale_ip } => {
+                progress::emit(tx, &format!("  → Tailscale IP: {tailscale_ip}"));
+            }
+            clawmacdo_provision::tailscale::TailscaleProvisionStatus::AuthRequired { auth_url } => {
+                progress::emit(tx, &format!("  → Manual auth required: {auth_url}"));
+            }
+        }
+    } else {
+        progress::emit(tx, "\n[Step 14/16] Skipping Tailscale (not requested)...");
+    }
+
+    // Step 15: Install OpenClaw
+    progress::emit(tx, "\n[Step 15/16] Installing OpenClaw...");
+    let provision_opts = clawmacdo_provision::ProvisionOpts {
+        anthropic_api_key: &params.anthropic_key,
+        anthropic_setup_token: None,
+        public_key_openssh: &keypair.public_key_openssh,
+        hostname,
+        tailscale: params.tailscale,
+        openai_key: &params.openai_key,
+        gemini_key: &params.gemini_key,
+        whatsapp_phone_number: &params.whatsapp_phone_number,
+        telegram_bot_token: &params.telegram_bot_token,
+        progress_tx: Some(tx.clone()),
+        tailscale_auth_key: params.tailscale_auth_key.as_deref(),
+    };
+    clawmacdo_provision::openclaw::provision(ip, &keypair.private_key_path, provision_opts).await?;
+
+    // Step 16: Handle backup restore
+    let backup_restored = if let Some(backup_path) = &params.backup {
+        progress::emit(tx, "\n[Step 16/16] Restoring from backup...");
+        clawmacdo_ssh::restore_backup(ip, &keypair.private_key_path, backup_path).await?;
+        Some(backup_path.display().to_string())
+    } else {
+        progress::emit(tx, "\n[Step 16/16] Skipping backup restore (none specified)...");
+        None
+    };
+
+    // Save deployment record
+    progress::emit(tx, "\nSaving deployment record...");
+    let record = DeployRecord {
+        id: deploy_id,
+        provider: Some(CloudProviderType::Lightsail),
+        droplet_id: 0, // Not applicable for Lightsail
+        instance_id: Some(instance_info.id.clone()),
+        hostname: hostname.to_string(),
+        ip_address: ip.clone(),
+        region: region.to_string(),
+        size: size.to_string(),
+        ssh_key_path: keypair.private_key_path.display().to_string(),
+        ssh_key_fingerprint: fingerprint,
+        ssh_key_id: Some(key_name),
+        backup_restored,
+        created_at: Utc::now(),
+    };
+    let record_path = record.save()?;
+    progress::emit(tx, &format!("  Saved: {}", record_path.display()));
+    progress::emit(tx, "\n[🚀 Done!] Lightsail deployment complete!");
     ui::print_summary(&record);
     Ok(record)
 }

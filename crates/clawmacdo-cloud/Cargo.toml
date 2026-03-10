@@ -7,6 +7,7 @@ description = "Cloud provider implementations for ClawMacdo"
 [features]
 default = ["digitalocean", "tencent"]
 digitalocean = []
+lightsail = []  # AWS CLI integration (no extra dependencies)
 tencent = ["hex", "hmac", "sha2"]
 
 [dependencies]
