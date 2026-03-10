@@ -862,14 +862,34 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         .context("Instance has no public IP")?;
     progress::emit(tx, &format!("  → IP: {ip}"));
 
-    // Step 8: Wait for SSH
+    // Step 8: Wait for SSH (with retries)
     progress::emit(tx, "\n[Step 8/16] Waiting for SSH...");
-    clawmacdo_ssh::wait_for_ssh(
-        ip,
-        &keypair.private_key_path,
-        std::time::Duration::from_secs(300),
-    )
-    .await?;
+    let mut ssh_ready = false;
+    let mut attempt: u32 = 0;
+    // Try up to 30 attempts, sleeping 10s between attempts (total ~5 minutes)
+    while attempt < 30 {
+        attempt += 1;
+        progress::emit(tx, &format!("  → SSH check attempt {}/30", attempt));
+        match clawmacdo_ssh::wait_for_ssh(
+            ip,
+            &keypair.private_key_path,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        {
+            Ok(_) => {
+                ssh_ready = true;
+                break;
+            }
+            Err(e) => {
+                progress::emit(tx, &format!("  SSH not ready: {}", e));
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        }
+    }
+    if !ssh_ready {
+        bail!("Timeout waiting for SSH on {}", ip);
+    }
 
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
