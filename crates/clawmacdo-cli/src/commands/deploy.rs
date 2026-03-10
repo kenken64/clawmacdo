@@ -807,18 +807,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         .await
         .context("Failed to upload SSH key")?;
 
-    progress::emit(
-        tx,
-        &format!("  → SSH Key: {}", key_info.id),
-    );
+    progress::emit(tx, &format!("  → SSH Key: {}", key_info.id));
 
     // Step 4: Resolve parameters
     progress::emit(tx, "\n[Step 4/16] Resolving parameters...");
     let region = &params.aws_region;
     let size = params.size.unwrap_or_else(|| "s-2vcpu-4gb".to_string());
-    let hostname = params.hostname.unwrap_or_else(|| {
-        format!("openclaw-{}", deploy_id[..8].to_lowercase())
-    });
+    let hostname = params
+        .hostname
+        .unwrap_or_else(|| format!("openclaw-{}", deploy_id[..8].to_lowercase()));
 
     progress::emit(
         tx,
@@ -863,7 +860,12 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
 
     // Step 8: Wait for SSH
     progress::emit(tx, "\n[Step 8/16] Waiting for SSH...");
-    clawmacdo_ssh::wait_for_ssh(ip, &keypair.private_key_path, std::time::Duration::from_secs(300)).await?;
+    clawmacdo_ssh::wait_for_ssh(
+        ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(300),
+    )
+    .await?;
 
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
