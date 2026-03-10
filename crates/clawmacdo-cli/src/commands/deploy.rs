@@ -819,7 +819,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     let size = params.size.unwrap_or_else(|| "s-2vcpu-4gb".to_string());
     let hostname = params
         .hostname
-        .unwrap_or_else(|| format!("openclaw-{}", deploy_id[..8].to_lowercase()));
+        .unwrap_or_else(|| format!("openclaw-{}-prod", deploy_id[..8].to_lowercase()));
 
     progress::emit(
         tx,
