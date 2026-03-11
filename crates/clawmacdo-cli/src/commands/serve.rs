@@ -9,7 +9,9 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use clawmacdo_core::config;
 use clawmacdo_db as db;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -61,11 +63,18 @@ struct DeployRequest {
     aws_secret_access_key: String,
     #[serde(default)]
     aws_region: String,
+    #[serde(default)]
     anthropic_key: String,
     #[serde(default)]
     openai_key: String,
     #[serde(default)]
     gemini_key: String,
+    #[serde(default = "default_primary_model")]
+    primary_model: String,
+    #[serde(default)]
+    failover_1: String,
+    #[serde(default)]
+    failover_2: String,
     #[serde(default)]
     whatsapp_phone_number: String,
     #[serde(default)]
@@ -92,6 +101,10 @@ fn default_provider() -> String {
     "digitalocean".to_string()
 }
 
+fn default_primary_model() -> String {
+    "anthropic".to_string()
+}
+
 #[derive(Serialize)]
 struct DeployResponse {
     deploy_id: String,
@@ -114,6 +127,8 @@ struct TelegramPairingApproveRequest {
     ip: String,
     ssh_key_path: String,
     pairing_code: String,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +167,8 @@ struct WhatsAppRepairResponse {
 struct DockerFixRequest {
     ip: String,
     ssh_key_path: String,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -268,6 +285,26 @@ async fn start_deploy_handler(
             .into_response();
     }
 
+    // Validate primary model's API key is present
+    let primary_key_present = match req.primary_model.as_str() {
+        "anthropic" => !req.anthropic_key.trim().is_empty(),
+        "openai" => !req.openai_key.trim().is_empty(),
+        "gemini" => !req.gemini_key.trim().is_empty(),
+        _ => false,
+    };
+    if !primary_key_present {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                message: format!(
+                    "API key for primary model '{}' is required.",
+                    req.primary_model
+                ),
+            }),
+        )
+            .into_response();
+    }
+
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
@@ -335,6 +372,9 @@ async fn start_deploy_handler(
             } else {
                 Some(req.tailscale_auth_key)
             },
+            primary_model: req.primary_model,
+            failover_1: req.failover_1,
+            failover_2: req.failover_2,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
         };
@@ -506,7 +546,13 @@ async fn approve_telegram_pairing_handler(
         code = code,
     );
 
-    match ssh_as_openclaw_async(&ip, &key, &cmd).await {
+    let ssh_user = ssh_user_for_provider(req.provider.as_deref());
+    let result = if ssh_user == "root" {
+        ssh_as_openclaw_async(&ip, &key, &cmd).await
+    } else {
+        ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await
+    };
+    match result {
         Ok(_out) => (
             StatusCode::OK,
             Json(TelegramPairingApproveResponse {
@@ -652,7 +698,8 @@ async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl 
     }
 
     let key = PathBuf::from(key_path);
-    match docker_fix::repair_access(&ip, &key).await {
+    let ssh_user = ssh_user_for_provider(req.provider.as_deref());
+    match docker_fix::repair_access(&ip, &key, ssh_user).await {
         Ok(result) => {
             let code = if result.ok {
                 StatusCode::OK
@@ -746,6 +793,15 @@ async fn config_handler() -> impl IntoResponse {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Resolve the SSH username from the provider string.
+/// Lightsail uses "ubuntu"; all others default to "root".
+fn ssh_user_for_provider(provider: Option<&str>) -> &str {
+    match provider {
+        Some(p) if p.eq_ignore_ascii_case("lightsail") => "ubuntu",
+        _ => "root",
+    }
+}
 
 /// NNormalize pairing code.
 fn normalize_pairing_code(raw: &str) -> Option<String> {
@@ -920,6 +976,98 @@ function eyeBtn() {
   return `<button type="button" class="eye-btn" onclick="toggleEye(this)">${eyeClosed}${eyeOpen}</button>`;
 }
 
+const MODEL_DEFS = {
+  anthropic: { keyField: 'anthropic_key', label: 'Anthropic Key / Setup Token', placeholder: 'sk-ant-api-... or sk-ant-oat-...' },
+  openai:    { keyField: 'openai_key',    label: 'OpenAI API Key',              placeholder: 'sk-...' },
+  gemini:    { keyField: 'gemini_key',    label: 'Gemini API Key',              placeholder: 'AI...' },
+};
+const ALL_MODELS = ['anthropic', 'openai', 'gemini'];
+
+function syncModelSelectors(n) {
+  const container = document.getElementById('model-selectors-' + n);
+  if (!container) return;
+  const card = document.getElementById('deploy-card-' + n);
+
+  // Preserve current values
+  const saved = {};
+  container.querySelectorAll('select[data-model-slot]').forEach(sel => {
+    saved[sel.dataset.modelSlot] = sel.value;
+  });
+  container.querySelectorAll('input[data-model-key]').forEach(inp => {
+    saved[inp.name] = inp.value;
+  });
+
+  // Determine selections
+  const primary = saved.primary || 'anthropic';
+  const fo1 = saved.failover_1 || '';
+  const fo2 = saved.failover_2 || '';
+
+  // Available for failover 1 = all models except primary
+  const avail1 = ALL_MODELS.filter(m => m !== primary);
+  // Available for failover 2 = avail1 minus fo1 (if fo1 is a model)
+  const avail2 = avail1.filter(m => m !== fo1);
+
+  // Build HTML
+  let html = '';
+
+  // Primary model
+  html += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">';
+  html += '<div>';
+  html += '<label class="block text-sm font-medium text-slate-300 mb-1">Primary Model <span class="text-red-400">*</span></label>';
+  html += '<select data-model-slot="primary" onchange="syncModelSelectors(' + n + ')" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">';
+  ALL_MODELS.forEach(m => {
+    html += '<option value="' + m + '"' + (m === primary ? ' selected' : '') + '>' + capitalize(m) + '</option>';
+  });
+  html += '</select></div>';
+  const pDef = MODEL_DEFS[primary];
+  html += '<div data-field="' + pDef.keyField + '">';
+  html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + pDef.label + ' <span class="field-required-indicator text-red-400">*</span></label>';
+  html += '<div class="relative"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn() + '</div></div>';
+  html += '</div>';
+
+  // Failover 1
+  html += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">';
+  html += '<div>';
+  html += '<label class="block text-sm font-medium text-slate-300 mb-1">Failover 1 <span class="text-slate-500">(optional)</span></label>';
+  html += '<select data-model-slot="failover_1" onchange="syncModelSelectors(' + n + ')" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">';
+  html += '<option value=""' + (fo1 === '' ? ' selected' : '') + '>None</option>';
+  avail1.forEach(m => {
+    html += '<option value="' + m + '"' + (m === fo1 ? ' selected' : '') + '>' + capitalize(m) + '</option>';
+  });
+  html += '</select></div>';
+  if (fo1 && MODEL_DEFS[fo1]) {
+    const f1Def = MODEL_DEFS[fo1];
+    html += '<div data-field="' + f1Def.keyField + '">';
+    html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + f1Def.label + ' <span class="field-required-indicator text-slate-500">(optional)</span></label>';
+    html += '<div class="relative"><input type="password" name="' + f1Def.keyField + '" data-model-key="failover_1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + f1Def.placeholder + '" value="' + esc(saved[f1Def.keyField] || '') + '">' + eyeBtn() + '</div></div>';
+  }
+  html += '</div>';
+
+  // Failover 2 (only if failover 1 is selected)
+  if (fo1) {
+    html += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">';
+    html += '<div>';
+    html += '<label class="block text-sm font-medium text-slate-300 mb-1">Failover 2 <span class="text-slate-500">(optional)</span></label>';
+    html += '<select data-model-slot="failover_2" onchange="syncModelSelectors(' + n + ')" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">';
+    html += '<option value=""' + (fo2 === '' ? ' selected' : '') + '>None</option>';
+    avail2.forEach(m => {
+      html += '<option value="' + m + '"' + (m === fo2 ? ' selected' : '') + '>' + capitalize(m) + '</option>';
+    });
+    html += '</select></div>';
+    if (fo2 && MODEL_DEFS[fo2]) {
+      const f2Def = MODEL_DEFS[fo2];
+      html += '<div data-field="' + f2Def.keyField + '">';
+      html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + f2Def.label + ' <span class="field-required-indicator text-slate-500">(optional)</span></label>';
+      html += '<div class="relative"><input type="password" name="' + f2Def.keyField + '" data-model-key="failover_2" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + f2Def.placeholder + '" value="' + esc(saved[f2Def.keyField] || '') + '">' + eyeBtn() + '</div></div>';
+    }
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
 function passwordField(name, label, placeholder, required) {
   const req = required
     ? '<span class="field-required-indicator text-red-400">*</span>'
@@ -1067,10 +1215,8 @@ function addDeployCard(initialState) {
         </div>
       </fieldset>
       <fieldset class="space-y-4">
-        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Credentials</legend>
-        ${passwordField('anthropic_key', 'Anthropic Key / Setup Token', 'sk-ant-api-... or sk-ant-oat-...', true)}
-        ${passwordField('openai_key', 'OpenAI API Key', 'sk-...', false)}
-        ${passwordField('gemini_key', 'Gemini API Key', 'AI...', false)}
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">AI Models</legend>
+        <div id="model-selectors-${n}" class="space-y-4"></div>
         ${passwordField('tailscale_auth_key', 'Tailscale Auth Key', 'tskey-auth-...', false)}
       </fieldset>
       <fieldset class="space-y-4">
@@ -1166,6 +1312,7 @@ function addDeployCard(initialState) {
     </div>
   `;
   container.appendChild(card);
+  syncModelSelectors(n);
   const form = card.querySelector('form');
   const tailscaleToggle = form.querySelector('[name="tailscale"]');
   if (tailscaleToggle) {
@@ -1217,7 +1364,7 @@ function validateForm(form) {
       }
       errorMsg = fieldName + ' is required';
     } else if (input.hasAttribute('data-validate-email') && value) {
-      if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value)) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
         errorMsg = 'Please enter a valid email address';
       }
     }
@@ -1628,6 +1775,10 @@ async function startDeploy(e, cardNum) {
   if (!validateForm(form)) return;
 
   const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
+  const selVal = (slot) => {
+    const sel = card.querySelector(`select[data-model-slot="${slot}"]`);
+    return sel ? sel.value : '';
+  };
   const body = {
     customer_name: val('customer_name'),
     customer_email: val('customer_email'),
@@ -1641,6 +1792,9 @@ async function startDeploy(e, cardNum) {
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),
+    primary_model: selVal('primary'),
+    failover_1: selVal('failover_1'),
+    failover_2: selVal('failover_2'),
     whatsapp_phone_number: val('whatsapp_phone_number'),
     telegram_bot_token: val('telegram_bot_token'),
     region: val('region'),
@@ -1821,7 +1975,7 @@ async function loadDeployments(page) {
           '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.ip_address || '-') + '</td>' +
           '<td class="px-4 py-3 text-slate-400">' + esc(d.region || '-') + '</td>' +
           '<td class="px-4 py-3">' + statusBadge(d.status) + '</td>' +
-          '<td class="px-4 py-3 text-slate-500 text-xs">' + esc(d.created_at) + '</td>' +
+          '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
           '<td class="px-4 py-3"><button onclick="deleteDeployment(\'' + esc(d.id) + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Delete</button></td>';
         tbody.appendChild(tr);
       }
@@ -1857,6 +2011,15 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function formatSGT(dateStr) {
+  if (!dateStr) return '-';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d)) return esc(dateStr);
+    return d.toLocaleString('en-SG', { timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch (e) { return esc(dateStr); }
 }
 
 // ── Check dry-run config ────────────────────────────────────────────────

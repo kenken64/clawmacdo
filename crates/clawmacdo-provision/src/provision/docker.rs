@@ -1,4 +1,4 @@
-use crate::provision::commands::ssh_root_async;
+use crate::provision::commands::ssh_root_as_async;
 use clawmacdo_core::config::OPENCLAW_USER;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::path::Path;
 /// This step writes daemon.json for hardening and restarts docker.
 /// Translated from openclaw-ansible daemon.json.j2 + docker-linux.yml.
 /// PProvision.
-pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
+pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppError> {
     // Write /etc/docker/daemon.json
     let daemon_json = r#"mkdir -p /etc/docker && cat > /etc/docker/daemon.json << 'DJEOF'
 {
@@ -31,7 +31,7 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
 }
 DJEOF
 "#;
-    ssh_root_async(ip, key, daemon_json)
+    ssh_root_as_async(ip, key, daemon_json, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "docker daemon.json".into(),
@@ -39,10 +39,16 @@ DJEOF
         })?;
 
     // Add openclaw user to docker group
-    ssh_root_async(ip, key, &format!("usermod -aG docker {OPENCLAW_USER}")).await?;
+    ssh_root_as_async(
+        ip,
+        key,
+        &format!("usermod -aG docker {OPENCLAW_USER}"),
+        ssh_user,
+    )
+    .await?;
 
     // Restart docker to pick up daemon.json changes
-    ssh_root_async(ip, key, "systemctl restart docker").await?;
+    ssh_root_as_async(ip, key, "systemctl restart docker", ssh_user).await?;
 
     Ok(())
 }

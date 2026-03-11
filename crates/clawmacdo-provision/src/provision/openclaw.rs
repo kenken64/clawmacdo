@@ -1,4 +1,4 @@
-use crate::provision::commands::{ssh_as_openclaw_async, ssh_root_async};
+use crate::provision::commands::{ssh_as_openclaw_with_user_async, ssh_root_as_async};
 use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
 use clawmacdo_core::error::AppError;
 use std::path::Path;
@@ -16,6 +16,7 @@ pub async fn provision(
     gemini_key: &str,
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
+    ssh_user: &str,
 ) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;
@@ -28,7 +29,7 @@ pub async fn provision(
 chmod 700 {cd} {cd}/credentials {cd}/agents/main/agent && \
 chown -R {user}:{user} {cd}"#,
     );
-    ssh_root_async(ip, key, &mkdirs).await?;
+    ssh_root_as_async(ip, key, &mkdirs, ssh_user).await?;
 
     // Write .env with provider credentials (chmod 600 for security)
     let write_env = format!(
@@ -42,7 +43,7 @@ TELEGRAM_BOT_TOKEN={telegram_bot_token}
 ENVEOF
 chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
     );
-    ssh_root_async(ip, key, &write_env).await?;
+    ssh_root_as_async(ip, key, &write_env, ssh_user).await?;
 
     // Configure Claude Code with enhanced settings and better error handling
     let claude_cfg = format!(
@@ -103,7 +104,7 @@ echo 'Claude Code configuration complete!' && \
 echo 'Configuration file: {home}/.claude/settings.json' && \
 echo 'API key helper: {home}/.claude/api-key-helper.sh'"#,
     );
-    ssh_root_async(ip, key, &claude_cfg).await?;
+    ssh_root_as_async(ip, key, &claude_cfg, ssh_user).await?;
 
     // Break hardlinked files under extensions (OpenClaw security rejects hardlinks).
     let normalize_extensions = format!(
@@ -113,7 +114,7 @@ fi && \
 chown -R {user}:{user} {cd} && \
 chmod 700 {cd}"#,
     );
-    ssh_root_async(ip, key, &normalize_extensions).await?;
+    ssh_root_as_async(ip, key, &normalize_extensions, ssh_user).await?;
 
     // Install openclaw globally. Try pnpm first (user-scoped), fall back to npm (system-wide as root).
     // On some Tencent Ubuntu images, npm global install fails with ENOENT due to /bin/sh quirks,
@@ -124,7 +125,7 @@ chmod 700 {cd}"#,
          HOME={home} \
          pnpm install -g openclaw@latest 2>&1 || true",
     );
-    ssh_as_openclaw_async(ip, key, &install_cmd)
+    ssh_as_openclaw_with_user_async(ip, key, &install_cmd, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "openclaw install (pnpm)".into(),
@@ -137,15 +138,16 @@ chmod 700 {cd}"#,
          HOME={home} \
          openclaw --version 2>/dev/null || echo OPENCLAW_NOT_FOUND",
     );
-    let pnpm_result = ssh_as_openclaw_async(ip, key, &verify_pnpm)
+    let pnpm_result = ssh_as_openclaw_with_user_async(ip, key, &verify_pnpm, ssh_user)
         .await
         .unwrap_or_default();
     if pnpm_result.contains("OPENCLAW_NOT_FOUND") {
         // Fallback: install as root via npm (installs to /usr/lib/node_modules, binary at /usr/bin/openclaw)
-        ssh_root_async(
+        ssh_root_as_async(
             ip,
             key,
             "npm install -g openclaw@latest 2>&1 || pnpm install -g openclaw@latest 2>&1",
+            ssh_user,
         )
         .await
         .map_err(|e| AppError::Provision {
@@ -160,7 +162,7 @@ chmod 700 {cd}"#,
          HOME={home} \
          openclaw --version",
     );
-    let version = ssh_as_openclaw_async(ip, key, &verify_cmd).await?;
+    let version = ssh_as_openclaw_with_user_async(ip, key, &verify_cmd, ssh_user).await?;
     println!("  OpenClaw version: {}", version.trim());
 
     if !anthropic_api_key.trim().is_empty() {
@@ -171,7 +173,8 @@ chmod 700 {cd}"#,
              HOME={home} \
              timeout 240s claude -p \"health check\" --output-format text --max-turns 1 >/dev/null 2>&1 || true",
         );
-        if let Err(e) = ssh_as_openclaw_async(ip, key, &claude_bootstrap).await {
+        if let Err(e) = ssh_as_openclaw_with_user_async(ip, key, &claude_bootstrap, ssh_user).await
+        {
             eprintln!("  Warning: Claude bootstrap failed; continuing: {e}");
         }
     }

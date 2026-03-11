@@ -37,6 +37,9 @@ pub struct DeployParams {
     pub enable_sandbox: bool,
     pub tailscale: bool,
     pub tailscale_auth_key: Option<String>,
+    pub primary_model: String,
+    pub failover_1: String,
+    pub failover_2: String,
     pub non_interactive: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
@@ -54,10 +57,16 @@ fn split_anthropic_credential(input: &str) -> (String, String) {
     }
 }
 
-fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Option<String> {
-    if !openai_enabled && !gemini_enabled {
-        return None;
+fn model_identifier(model: &str) -> Option<&'static str> {
+    match model {
+        "anthropic" => Some("anthropic/claude-opus-4-6"),
+        "openai" => Some("openai/gpt-5-mini"),
+        "gemini" => Some("google/gemini-2.5-flash"),
+        _ => None,
     }
+}
+
+fn build_model_setup_cmd(primary: &str, failovers: &[&str]) -> String {
     let home = config::OPENCLAW_HOME;
     let uid = "$(id -u)";
     let mut cmd = format!(
@@ -65,17 +74,45 @@ fn build_failover_setup_cmd(openai_enabled: bool, gemini_enabled: bool) -> Optio
          XDG_RUNTIME_DIR=/run/user/{uid} \
          DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus; ",
     );
-    cmd.push_str("openclaw models set anthropic/claude-opus-4-6 >/dev/null 2>&1 || true;");
-    if openai_enabled {
-        cmd.push_str(" openclaw models fallbacks add openai/gpt-5-mini >/dev/null 2>&1 || true;");
-    }
-    if gemini_enabled {
-        cmd.push_str(
-            " openclaw models fallbacks add google/gemini-2.5-flash >/dev/null 2>&1 || true;",
-        );
+    let primary_id = model_identifier(primary).unwrap_or("anthropic/claude-opus-4-6");
+    cmd.push_str(&format!(
+        "openclaw models set {primary_id} >/dev/null 2>&1 || true;"
+    ));
+    for fo in failovers {
+        if let Some(fo_id) = model_identifier(fo) {
+            cmd.push_str(&format!(
+                " openclaw models fallbacks add {fo_id} >/dev/null 2>&1 || true;"
+            ));
+        }
     }
     cmd.push_str(" echo ok");
-    Some(cmd)
+    cmd
+}
+
+/// Collect failover model slugs that have an API key supplied.
+fn collect_failovers<'a>(
+    failover_1: &'a str,
+    failover_2: &'a str,
+    anthropic_key: &str,
+    openai_key: &str,
+    gemini_key: &str,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for fo in [failover_1, failover_2] {
+        if fo.is_empty() {
+            continue;
+        }
+        let keyed = match fo {
+            "anthropic" => has_value(anthropic_key),
+            "openai" => has_value(openai_key),
+            "gemini" => has_value(gemini_key),
+            _ => false,
+        };
+        if keyed {
+            out.push(fo);
+        }
+    }
+    out
 }
 
 /// Resolve the cloud provider type from the --provider flag.
@@ -228,6 +265,9 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         params.enable_sandbox,
         params.tailscale,
         params.tailscale_auth_key.as_deref(),
+        &params.primary_model,
+        &params.failover_1,
+        &params.failover_2,
         &params.progress_tx,
     )
     .await;
@@ -375,6 +415,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         &ip,
         &keypair.private_key_path,
         std::time::Duration::from_secs(1800),
+        None,
     )
     .await
     .context("Cloud-init did not complete within 30 minutes")?;
@@ -416,6 +457,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         tailscale: params.tailscale,
         tailscale_auth_key: params.tailscale_auth_key.as_deref(),
         hostname: &hostname,
+        ssh_user: None,
         progress_tx: tx.clone(),
     };
     provision::run(&ip, &keypair.private_key_path, &provision_opts)
@@ -451,7 +493,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
@@ -518,18 +560,22 @@ SVCEOF\n\
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
 
-    // Failover
-    let openai_enabled = has_value(&params.openai_key);
-    let gemini_enabled = has_value(&params.gemini_key);
-    if let Some(failover_cmd) = build_failover_setup_cmd(openai_enabled, gemini_enabled) {
-        progress::emit(tx, "[Step 15/16] Configuring model failover chain...");
-        let ip_c = ip.clone();
-        let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || {
-            provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)
-        })
-        .await??;
-    }
+    // Model setup (primary + failovers)
+    let failovers = collect_failovers(
+        &params.failover_1,
+        &params.failover_2,
+        &params.anthropic_key,
+        &params.openai_key,
+        &params.gemini_key,
+    );
+    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    progress::emit(tx, "[Step 15/16] Configuring model setup...");
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
+    })
+    .await??;
 
     // Step 16: Save DeployRecord
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
@@ -580,6 +626,9 @@ async fn deploy_steps_5_through_16(
     enable_sandbox: bool,
     tailscale: bool,
     tailscale_auth_key: Option<&str>,
+    primary_model: &str,
+    failover_1: &str,
+    failover_2: &str,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
 ) -> Result<DeployRecord> {
     let tx = progress_tx;
@@ -608,9 +657,14 @@ async fn deploy_steps_5_through_16(
     // Step 7: Wait for cloud-init
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
-    ssh::wait_for_cloud_init(&ip, private_key_path, std::time::Duration::from_secs(1800))
-        .await
-        .context("Cloud-init did not complete within 30 minutes")?;
+    ssh::wait_for_cloud_init(
+        &ip,
+        private_key_path,
+        std::time::Duration::from_secs(1800),
+        None,
+    )
+    .await
+    .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
 
@@ -649,6 +703,7 @@ async fn deploy_steps_5_through_16(
         tailscale,
         tailscale_auth_key,
         hostname,
+        ssh_user: None,
         progress_tx: tx.clone(),
     };
     provision::run(&ip, private_key_path, &provision_opts)
@@ -677,7 +732,7 @@ async fn deploy_steps_5_through_16(
     let sandbox_setup_cmd = if enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
@@ -726,18 +781,22 @@ async fn deploy_steps_5_through_16(
     sp.finish_with_message("[Step 15/16] Gateway started");
     progress::emit(tx, "[Step 15/16] Gateway started");
 
-    // Failover
-    let openai_enabled = has_value(openai_key);
-    let gemini_enabled = has_value(gemini_key);
-    if let Some(failover_cmd) = build_failover_setup_cmd(openai_enabled, gemini_enabled) {
-        progress::emit(tx, "[Step 15/16] Configuring model failover chain...");
-        let ip_c = ip.clone();
-        let key_c = private_key_path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            provision::commands::ssh_as_openclaw(&ip_c, &key_c, &failover_cmd)
-        })
-        .await??;
-    }
+    // Model setup (primary + failovers)
+    let failovers = collect_failovers(
+        failover_1,
+        failover_2,
+        anthropic_api_key,
+        openai_key,
+        gemini_key,
+    );
+    let model_cmd = build_model_setup_cmd(primary_model, &failovers);
+    progress::emit(tx, "[Step 15/16] Configuring model setup...");
+    let ip_c = ip.clone();
+    let key_c = private_key_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
+    })
+    .await??;
 
     // Step 16: Save DeployRecord
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
@@ -790,13 +849,45 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     // Initialize Lightsail provider
     let lightsail = LightsailCliProvider::new(params.aws_region.clone());
 
-    // Test AWS CLI is available
+    // Test AWS CLI is available; attempt auto-install if missing
     if std::process::Command::new("aws")
         .arg("--version")
         .output()
         .is_err()
     {
-        bail!("AWS CLI not found. Please install the AWS CLI: https://aws.amazon.com/cli/");
+        progress::emit(tx, "  AWS CLI not found — attempting auto-install...");
+        let installed = if cfg!(target_os = "macos") {
+            std::process::Command::new("brew")
+                .args(["install", "awscli"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else if cfg!(target_os = "linux") {
+            // Download and install via the official installer
+            std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip \
+                     && unzip -qo /tmp/awscliv2.zip -d /tmp \
+                     && sudo /tmp/aws/install --update \
+                     && rm -rf /tmp/awscliv2.zip /tmp/aws",
+                ])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !installed
+            || std::process::Command::new("aws")
+                .arg("--version")
+                .output()
+                .is_err()
+        {
+            bail!("AWS CLI not found and auto-install failed. Please install manually: https://aws.amazon.com/cli/");
+        }
+        progress::emit(tx, "  AWS CLI installed successfully.");
     }
 
     // Step 2: Generate SSH keypair
@@ -805,7 +896,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
 
     // Step 3: Upload SSH key to AWS Lightsail
     progress::emit(tx, "\n[Step 3/16] Uploading SSH key to AWS Lightsail...");
-    let key_name = format!("clawmacdo-{}", deploy_id);
+    let key_name = format!("clawmacdo-{deploy_id}");
     let key_info = lightsail
         .upload_ssh_key(&key_name, &keypair.public_key_openssh)
         .await
@@ -817,9 +908,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     progress::emit(tx, "\n[Step 4/16] Resolving parameters...");
     let region = &params.aws_region;
     let size = params.size.unwrap_or_else(|| "s-2vcpu-4gb".to_string());
-    let hostname = params
-        .hostname
-        .unwrap_or_else(|| format!("openclaw-{}-prod", deploy_id[..8].to_lowercase()));
+    let hostname = params.hostname.unwrap_or_else(|| {
+        let short_id = deploy_id[..8].to_lowercase();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            % 100_000;
+        format!("openclaw-{short_id}-{ts}-prod")
+    });
 
     progress::emit(
         tx,
@@ -828,7 +925,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
 
     // Step 5: Generate cloud-init user data
     progress::emit(tx, "\n[Step 5/16] Generating cloud-init user data...");
-    let user_data = cloud_init::generate();
+    let user_data = cloud_init::generate_shell();
 
     // Step 6: Create Lightsail instance
     progress::emit(tx, "\n[Step 6/16] Creating Lightsail instance...");
@@ -840,10 +937,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         image: "ubuntu_24_04".to_string(), // Ubuntu 24.04 LTS
         ssh_key_id: key_name.clone(),
         user_data,
-        tags: vec![
-            "openclaw=true".to_string(),
-            format!("customer_email={}", params.customer_email),
-        ],
+        tags: vec![],
         customer_email: params.customer_email.clone(),
     };
 
@@ -869,7 +963,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     // Try up to 30 attempts, sleeping 10s between attempts (total ~5 minutes)
     while attempt < 30 {
         attempt += 1;
-        progress::emit(tx, &format!("  → SSH check attempt {}/30", attempt));
+        progress::emit(tx, &format!("  → SSH check attempt {attempt}/30"));
         match clawmacdo_ssh::wait_for_ssh(
             ip,
             &keypair.private_key_path,
@@ -882,16 +976,28 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
                 break;
             }
             Err(e) => {
-                progress::emit(tx, &format!("  SSH not ready: {}", e));
+                progress::emit(tx, &format!("  SSH not ready: {e}"));
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             }
         }
     }
     if !ssh_ready {
-        bail!("Timeout waiting for SSH on {}", ip);
+        bail!("Timeout waiting for SSH on {ip}");
     }
 
-    // Step 8: Upload & restore backup
+    // Wait for cloud-init to complete (Lightsail uses ubuntu user, not root)
+    progress::emit(tx, "\n[Step 8/16] Waiting for cloud-init to finish...");
+    ssh::wait_for_cloud_init(
+        ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(1800),
+        Some("ubuntu"),
+    )
+    .await
+    .context("Cloud-init did not complete within 30 minutes")?;
+    progress::emit(tx, "[Step 8/16] Cloud-init complete");
+
+    // Step 9: Upload & restore backup
     let backup_restored: Option<String>;
     if let Some(bp) = params.backup.as_deref() {
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
@@ -899,12 +1005,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
         let bp_c = bp.to_path_buf();
-        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
-            .await??;
-        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        tokio::task::spawn_blocking(move || {
+            ssh::scp_upload_as(&ip_c, &key_c, &bp_c, remote_archive, "ubuntu")
+        })
+        .await??;
+        let extract_cmd = "sudo mkdir -p /root/.openclaw && cd /tmp && sudo tar xzf openclaw_backup.tar.gz && sudo cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; sudo rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, extract_cmd, "ubuntu"))
+            .await??;
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
     } else {
@@ -927,14 +1036,122 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         hostname: &hostname,
         tailscale: params.tailscale,
         tailscale_auth_key: params.tailscale_auth_key.as_deref(),
+        ssh_user: Some("ubuntu"),
         progress_tx: tx.clone(),
     };
     provision::run(ip, &keypair.private_key_path, &provision_opts)
         .await
         .context("Provision failed")?;
 
-    // Save deployment record
-    progress::emit(tx, "\nSaving deployment record...");
+    // Step 15: Start gateway (Lightsail path — same as Tencent, uses ubuntu SSH user)
+    progress::emit(
+        tx,
+        "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
+    );
+    let home = config::OPENCLAW_HOME;
+    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
+        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
+    } else {
+        ""
+    };
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
+    let sandbox_setup_cmd = if params.enable_sandbox {
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi && \
+             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
+        )
+    } else {
+        "true".to_string()
+    };
+    let start_cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
+         if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
+           (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
+         fi; \
+         OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
+         SVC={home}/.config/systemd/user/openclaw-gateway.service; \
+         mkdir -p {home}/.config/systemd/user; \
+         cat > \"$SVC\" << SVCEOF\n\
+[Unit]\n\
+Description=OpenClaw Gateway\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=simple\n\
+WorkingDirectory={home}/.openclaw\n\
+ExecStart=$OC_BIN gateway run\n\
+Restart=always\n\
+RestartSec=5\n\
+Environment=HOME={home}\n\
+Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
+Environment=OPENCLAW_NO_RESPAWN=1\n\
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
+EnvironmentFile=-{home}/.openclaw/.env\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n\
+SVCEOF\n\
+         mkdir -p /var/tmp/openclaw-compile-cache && \
+         OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
+         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         ({sandbox_setup_cmd}) && \
+         (systemctl --user daemon-reload || true) && \
+         (systemctl --user enable openclaw-gateway.service || true) && \
+         (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
+         for i in $(seq 1 150); do \
+           STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
+           if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
+           sleep 1; \
+         done; exit 1"
+    );
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    let start_result = tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &start_cmd, "ubuntu")
+    })
+    .await?;
+    if let Err(e) = start_result {
+        bail!("OpenClaw gateway start failed on Lightsail instance: {e}");
+    }
+    progress::emit(tx, "[Step 15/16] Gateway started (user service)");
+
+    // Model setup (primary + failovers)
+    let failovers = collect_failovers(
+        &params.failover_1,
+        &params.failover_2,
+        &params.anthropic_key,
+        &params.openai_key,
+        &params.gemini_key,
+    );
+    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    progress::emit(tx, "[Step 15/16] Configuring model setup...");
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &model_cmd, "ubuntu")
+    })
+    .await??;
+
+    // Step 16: Save DeployRecord
+    progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
         id: deploy_id,
         provider: Some(CloudProviderType::Lightsail),
@@ -952,6 +1169,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     };
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
+    progress::emit(tx, "\n[Step 16/16] Done!");
     progress::emit(tx, "\n[🚀 Done!] Lightsail deployment complete!");
     ui::print_summary(&record);
     Ok(record)

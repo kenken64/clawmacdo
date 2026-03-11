@@ -24,6 +24,9 @@ pub struct ProvisionOpts<'a> {
     pub hostname: &'a str,
     pub tailscale: bool,
     pub tailscale_auth_key: Option<&'a str>,
+    /// SSH username to connect as (e.g. "root" for DigitalOcean, "ubuntu" for AWS Lightsail).
+    /// Defaults to "root" if None.
+    pub ssh_user: Option<&'a str>,
     /// Optional channel for streaming progress to the web UI (SSE).
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
@@ -37,13 +40,14 @@ pub struct ProvisionOpts<'a> {
 /// RRun.
 pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), AppError> {
     let tx = &opts.progress_tx;
+    let ssh_user = opts.ssh_user.unwrap_or("root");
 
     // Step 9: Create openclaw user + sudoers + .ssh
     progress::emit(
         tx,
         "\n[Step 9/16] Creating openclaw user and configuring access...",
     );
-    user::provision(ip, key, opts.public_key_openssh).await?;
+    user::provision(ip, key, opts.public_key_openssh, ssh_user).await?;
     progress::emit(tx, "  User 'openclaw' created with SSH access");
 
     // Step 10: Harden firewall (fail2ban, UFW, DOCKER-USER)
@@ -51,17 +55,17 @@ pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), A
         tx,
         "\n[Step 10/16] Hardening firewall (fail2ban, UFW, Docker isolation)...",
     );
-    firewall::provision(ip, key, opts.tailscale).await?;
+    firewall::provision(ip, key, opts.tailscale, ssh_user).await?;
     progress::emit(tx, "  Firewall hardened");
 
     // Step 11: Configure Docker daemon
     progress::emit(tx, "\n[Step 11/16] Configuring Docker daemon...");
-    docker::provision(ip, key).await?;
+    docker::provision(ip, key, ssh_user).await?;
     progress::emit(tx, "  Docker daemon configured");
 
     // Step 12: Install pnpm + configure for openclaw user
     progress::emit(tx, "\n[Step 12/16] Setting up Node.js/pnpm...");
-    nodejs::provision(ip, key).await?;
+    nodejs::provision(ip, key, ssh_user).await?;
     progress::emit(tx, "  pnpm configured");
 
     // Step 13: Install OpenClaw as openclaw user
@@ -75,17 +79,20 @@ pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), A
         opts.gemini_key,
         opts.whatsapp_phone_number,
         opts.telegram_bot_token,
+        ssh_user,
     )
     .await?;
     progress::emit(tx, "  OpenClaw installed");
 
     // System tools (vim config, git config) — not a numbered step, runs as part of setup
-    system_tools::provision(ip, key).await?;
+    system_tools::provision(ip, key, ssh_user).await?;
 
     // Step 14: Optional Tailscale
     if opts.tailscale {
         progress::emit(tx, "\n[Step 14/16] Installing Tailscale VPN...");
-        match tailscale::provision(ip, key, opts.hostname, opts.tailscale_auth_key).await? {
+        match tailscale::provision(ip, key, opts.hostname, opts.tailscale_auth_key, ssh_user)
+            .await?
+        {
             tailscale::TailscaleProvisionStatus::Connected => {
                 progress::emit(tx, "  Tailscale installed and connected");
             }

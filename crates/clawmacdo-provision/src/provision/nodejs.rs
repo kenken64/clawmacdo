@@ -1,4 +1,4 @@
-use crate::provision::commands::{ssh_as_openclaw_async, ssh_root_async};
+use crate::provision::commands::{ssh_as_openclaw_with_user_async, ssh_root_as_async};
 use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
 use clawmacdo_core::error::AppError;
 use std::path::Path;
@@ -7,7 +7,7 @@ use std::path::Path;
 /// Node.js + pnpm already installed globally by cloud-init.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/nodejs.yml + openclaw.yml (pnpm config).
 /// PProvision.
-pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
+pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;
 
@@ -16,14 +16,14 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
         "mkdir -p {home}/.local/share/pnpm/store {home}/.local/bin && \
          chown -R {user}:{user} {home}/.local",
     );
-    ssh_root_async(ip, key, &mkdirs).await?;
+    ssh_root_as_async(ip, key, &mkdirs, ssh_user).await?;
 
     // Configure pnpm for openclaw user
     let pnpm_cfg = format!(
         "pnpm config set global-dir {home}/.local/share/pnpm && \
          pnpm config set global-bin-dir {home}/.local/bin",
     );
-    ssh_as_openclaw_async(ip, key, &pnpm_cfg)
+    ssh_as_openclaw_with_user_async(ip, key, &pnpm_cfg, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "pnpm config".into(),
@@ -37,7 +37,7 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
          HOME={home} \
          pnpm install -g @anthropic-ai/claude-code@latest @openai/codex@latest @google/gemini-cli@latest",
     );
-    ssh_as_openclaw_async(ip, key, &cli_install)
+    ssh_as_openclaw_with_user_async(ip, key, &cli_install, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "node cli install".into(),
@@ -56,7 +56,7 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
          echo 'AI CLI setup complete!' && \
          echo 'Claude Code config: {home}/.claude/settings.json'",
     );
-    ssh_as_openclaw_async(ip, key, &cli_verify)
+    ssh_as_openclaw_with_user_async(ip, key, &cli_verify, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "node cli verify".into(),
@@ -73,7 +73,7 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
            fi; \
          done",
     );
-    ssh_root_async(ip, key, &symlink_cmd)
+    ssh_root_as_async(ip, key, &symlink_cmd, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "cli symlinks".into(),
@@ -95,7 +95,7 @@ pub async fn provision(ip: &str, key: &Path) -> Result<(), AppError> {
          echo 'Usage: claude <your-prompt>' && \
          echo 'Example: claude \"Write a hello world in Python\"'",
     );
-    ssh_as_openclaw_async(ip, key, &claude_config_check)
+    ssh_as_openclaw_with_user_async(ip, key, &claude_config_check, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "claude config check".into(),

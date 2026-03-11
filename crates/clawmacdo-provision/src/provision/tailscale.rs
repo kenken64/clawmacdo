@@ -1,4 +1,4 @@
-use crate::provision::commands::ssh_root_async;
+use crate::provision::commands::ssh_root_as_async;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
 
@@ -17,6 +17,7 @@ pub async fn provision(
     key: &Path,
     hostname: &str,
     tailscale_auth_key: Option<&str>,
+    ssh_user: &str,
 ) -> Result<TailscaleProvisionStatus, AppError> {
     // Add Tailscale GPG key + repository
     let add_repo = r#"
@@ -25,7 +26,7 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg" | \
 curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list" | \
     tee /etc/apt/sources.list.d/tailscale.list > /dev/null
 "#;
-    ssh_root_async(ip, key, add_repo)
+    ssh_root_as_async(ip, key, add_repo, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "tailscale repo".into(),
@@ -33,18 +34,25 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.lis
         })?;
 
     // Install tailscale
-    ssh_root_async(ip, key, "apt-get update && apt-get install -y tailscale").await?;
+    ssh_root_as_async(
+        ip,
+        key,
+        "apt-get update && apt-get install -y tailscale",
+        ssh_user,
+    )
+    .await?;
 
     // Enable and start tailscaled service
-    ssh_root_async(
+    ssh_root_as_async(
         ip,
         key,
         "systemctl enable tailscaled && systemctl start tailscaled",
+        ssh_user,
     )
     .await?;
 
     // Allow Tailscale UDP port through UFW
-    ssh_root_async(ip, key, "ufw allow 41641/udp comment 'Tailscale'").await?;
+    ssh_root_as_async(ip, key, "ufw allow 41641/udp comment 'Tailscale'", ssh_user).await?;
 
     // Auto-connect if an auth key is provided.
     if let Some(auth_key) = tailscale_auth_key {
@@ -55,7 +63,7 @@ curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.lis
                 shell_quote(trimmed),
                 shell_quote(hostname),
             );
-            return match ssh_root_async(ip, key, &up_cmd).await {
+            return match ssh_root_as_async(ip, key, &up_cmd, ssh_user).await {
                 Ok(_) => Ok(TailscaleProvisionStatus::Connected),
                 Err(e) => Ok(TailscaleProvisionStatus::ConnectFailed(e.to_string())),
             };

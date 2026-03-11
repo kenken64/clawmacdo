@@ -114,6 +114,18 @@ enum Commands {
         /// Tailscale auth key for automatic `tailscale up` (optional)
         #[arg(long, env = "TAILSCALE_AUTH_KEY")]
         tailscale_auth_key: Option<String>,
+
+        /// Primary AI model: anthropic, openai, or gemini
+        #[arg(long, default_value = "anthropic")]
+        primary_model: String,
+
+        /// First failover model (empty = none)
+        #[arg(long, default_value = "")]
+        failover_1: String,
+
+        /// Second failover model (empty = none)
+        #[arg(long, default_value = "")]
+        failover_2: String,
     },
 
     /// Cloud-to-cloud migration: backup source instance, deploy new, restore config
@@ -185,6 +197,18 @@ enum Commands {
         /// Tailscale auth key for automatic `tailscale up` (optional)
         #[arg(long, env = "TAILSCALE_AUTH_KEY")]
         tailscale_auth_key: Option<String>,
+
+        /// Primary AI model: anthropic, openai, or gemini
+        #[arg(long, default_value = "anthropic")]
+        primary_model: String,
+
+        /// First failover model (empty = none)
+        #[arg(long, default_value = "")]
+        failover_1: String,
+
+        /// Second failover model (empty = none)
+        #[arg(long, default_value = "")]
+        failover_2: String,
     },
 
     /// List deployed openclaw-tagged instances
@@ -208,7 +232,7 @@ enum Commands {
 
     /// Destroy an openclaw-tagged instance by name and clean up SSH keys
     Destroy {
-        /// Cloud provider: digitalocean or tencent
+        /// Cloud provider: digitalocean, lightsail, or tencent
         #[arg(long, default_value = "digitalocean")]
         provider: String,
 
@@ -223,6 +247,10 @@ enum Commands {
         /// Tencent Cloud SecretKey
         #[arg(long, env = "TENCENT_SECRET_KEY", default_value = "")]
         tencent_secret_key: String,
+
+        /// AWS region for Lightsail
+        #[arg(long, default_value = "ap-southeast-1")]
+        aws_region: String,
 
         /// Instance name
         #[arg(long)]
@@ -299,6 +327,9 @@ async fn main() -> anyhow::Result<()> {
             enable_sandbox,
             tailscale,
             tailscale_auth_key,
+            primary_model,
+            failover_1,
+            failover_2,
         } => {
             let params = DeployParams {
                 customer_name,
@@ -323,6 +354,9 @@ async fn main() -> anyhow::Result<()> {
                 enable_sandbox,
                 tailscale,
                 tailscale_auth_key,
+                primary_model,
+                failover_1,
+                failover_2,
                 non_interactive: false,
                 progress_tx: None,
             };
@@ -346,6 +380,9 @@ async fn main() -> anyhow::Result<()> {
             enable_sandbox,
             tailscale,
             tailscale_auth_key,
+            primary_model,
+            failover_1,
+            failover_2,
         } => {
             let params = MigrateParams {
                 provider,
@@ -365,6 +402,9 @@ async fn main() -> anyhow::Result<()> {
                 enable_sandbox,
                 tailscale,
                 tailscale_auth_key,
+                primary_model,
+                failover_1,
+                failover_2,
             };
             commands::migrate::run(params).await?;
         }
@@ -387,6 +427,7 @@ async fn main() -> anyhow::Result<()> {
             do_token,
             tencent_secret_id,
             tencent_secret_key,
+            aws_region,
             name,
             yes,
         } => {
@@ -395,6 +436,7 @@ async fn main() -> anyhow::Result<()> {
                 do_token,
                 tencent_secret_id,
                 tencent_secret_key,
+                aws_region,
                 name,
                 yes,
             };
@@ -411,7 +453,7 @@ async fn main() -> anyhow::Result<()> {
             commands::whatsapp::run(&ip, &ssh_key_path).await?;
         }
         Commands::DockerFix { ip, ssh_key_path } => {
-            commands::docker_fix::run(&ip, &ssh_key_path).await?;
+            commands::docker_fix::run(&ip, &ssh_key_path, "root").await?;
         }
     }
 

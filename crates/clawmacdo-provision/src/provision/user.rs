@@ -1,4 +1,4 @@
-use crate::provision::commands::ssh_root_async;
+use crate::provision::commands::ssh_root_as_async;
 use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
 use clawmacdo_core::error::AppError;
 use std::path::Path;
@@ -6,18 +6,24 @@ use std::path::Path;
 /// Step 8: Create openclaw system user, configure sudoers, .ssh, and environment.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/user.yml.
 /// PProvision.
-pub async fn provision(ip: &str, key: &Path, public_key_openssh: &str) -> Result<(), AppError> {
+pub async fn provision(
+    ip: &str,
+    key: &Path,
+    public_key_openssh: &str,
+    ssh_user: &str,
+) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;
 
     // Create system user
-    ssh_root_async(
+    ssh_root_as_async(
         ip,
         key,
         &format!(
             "id -u {user} >/dev/null 2>&1 || \
              useradd --system --create-home --home-dir {home} --shell /bin/bash {user}"
         ),
+        ssh_user,
     )
     .await
     .map_err(|e| AppError::Provision {
@@ -26,10 +32,11 @@ pub async fn provision(ip: &str, key: &Path, public_key_openssh: &str) -> Result
     })?;
 
     // Ensure home directory ownership
-    ssh_root_async(
+    ssh_root_as_async(
         ip,
         key,
         &format!("chown {user}:{user} {home} && chmod 755 {home}"),
+        ssh_user,
     )
     .await?;
 
@@ -70,7 +77,7 @@ fi
 BASHRCEOF
 chown {user}:{user} {home}/.bashrc && chmod 644 {home}/.bashrc"#,
     );
-    ssh_root_async(ip, key, &bashrc).await?;
+    ssh_root_as_async(ip, key, &bashrc, ssh_user).await?;
 
     // Write .bash_profile
     let bash_profile = format!(
@@ -82,7 +89,7 @@ fi
 BPEOF
 chown {user}:{user} {home}/.bash_profile && chmod 644 {home}/.bash_profile"#,
     );
-    ssh_root_async(ip, key, &bash_profile).await?;
+    ssh_root_as_async(ip, key, &bash_profile, ssh_user).await?;
 
     // Write sudoers (scoped permissions)
     let sudoers = format!(
@@ -113,7 +120,7 @@ SUDOEOF
 chmod 440 /etc/sudoers.d/{user} && chown root:root /etc/sudoers.d/{user}
 visudo -cf /etc/sudoers.d/{user}"#,
     );
-    ssh_root_async(ip, key, &sudoers)
+    ssh_root_as_async(ip, key, &sudoers, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "sudoers".into(),
@@ -129,10 +136,10 @@ echo '{pubkey}' > {home}/.ssh/authorized_keys && \
 chmod 600 {home}/.ssh/authorized_keys && \
 chown -R {user}:{user} {home}/.ssh"#,
     );
-    ssh_root_async(ip, key, &ssh_setup).await?;
+    ssh_root_as_async(ip, key, &ssh_setup, ssh_user).await?;
 
     // Enable lingering for systemd user services
-    ssh_root_async(ip, key, &format!("loginctl enable-linger {user}")).await?;
+    ssh_root_as_async(ip, key, &format!("loginctl enable-linger {user}"), ssh_user).await?;
 
     // Create runtime directory
     let runtime_dir = format!(
@@ -141,7 +148,7 @@ mkdir -p /run/user/$OPENCLAW_UID && \
 chown {user}:{user} /run/user/$OPENCLAW_UID && \
 chmod 700 /run/user/$OPENCLAW_UID"#,
     );
-    ssh_root_async(ip, key, &runtime_dir).await?;
+    ssh_root_as_async(ip, key, &runtime_dir, ssh_user).await?;
 
     // Ensure the user systemd manager is started now, not only on next login/reboot.
     let user_manager = format!(
@@ -153,7 +160,7 @@ for i in $(seq 1 20); do \
 done; \
 exit 0"#,
     );
-    ssh_root_async(ip, key, &user_manager).await?;
+    ssh_root_as_async(ip, key, &user_manager, ssh_user).await?;
 
     // If a backup was restored to /root/.openclaw, move it into the openclaw home.
     let restore_backup = format!(
@@ -165,7 +172,7 @@ chmod 700 {home}/.openclaw && \
 rm -rf /root/.openclaw; \
 fi"#,
     );
-    ssh_root_async(ip, key, &restore_backup).await?;
+    ssh_root_as_async(ip, key, &restore_backup, ssh_user).await?;
 
     Ok(())
 }

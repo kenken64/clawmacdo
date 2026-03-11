@@ -1,8 +1,8 @@
 use anyhow::{bail, Result};
 use clawmacdo_cloud::digitalocean::DoClient;
-use clawmacdo_cloud::tencent::TencentClient;
 #[cfg(feature = "lightsail")]
 use clawmacdo_cloud::lightsail_cli::LightsailCliProvider;
+use clawmacdo_cloud::tencent::TencentClient;
 use clawmacdo_core::config;
 use dialoguer::Confirm;
 
@@ -11,6 +11,7 @@ pub struct DestroyParams {
     pub do_token: String,
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
+    pub aws_region: String,
     pub name: String,
     pub yes: bool,
 }
@@ -107,7 +108,7 @@ async fn run_do(params: DestroyParams) -> Result<()> {
 async fn run_lightsail(params: DestroyParams) -> Result<()> {
     use clawmacdo_cloud::CloudProvider;
 
-    let provider = LightsailCliProvider::new(params.do_token.clone());
+    let provider = LightsailCliProvider::new(params.aws_region.clone());
 
     println!("Fetching openclaw instances (Lightsail)...");
     let instances = provider.list_instances("openclaw").await?;
@@ -116,10 +117,15 @@ async fn run_lightsail(params: DestroyParams) -> Result<()> {
         .find(|i| i.name == params.name)
         .ok_or_else(|| anyhow::anyhow!("No openclaw instance found with name '{}'", params.name))?;
 
-    println!("
-Instance to destroy:");
+    println!(
+        "
+Instance to destroy:"
+    );
     println!("  Name:   {}", instance.name);
-    println!("  IP:     {}", instance.public_ip.as_deref().unwrap_or("N/A"));
+    println!(
+        "  IP:     {}",
+        instance.public_ip.as_deref().unwrap_or("N/A")
+    );
 
     if !params.yes {
         let confirmed = Confirm::new()
@@ -132,24 +138,33 @@ Instance to destroy:");
         }
     }
 
-    println!("
-Deleting instance '{}'...", instance.name);
+    println!(
+        "
+Deleting instance '{}'...",
+        instance.name
+    );
     provider.delete_instance(&instance.name).await?;
     println!("Instance deleted.");
 
-    let hostname_suffix = instance.name.strip_prefix("openclaw-").unwrap_or(&instance.name);
-    let expected_key_name = format!("clawmacdo-{}", hostname_suffix);
-    println!("Attempting to delete SSH key '{}' if present...", expected_key_name);
+    let hostname_suffix = instance
+        .name
+        .strip_prefix("openclaw-")
+        .unwrap_or(&instance.name);
+    let expected_key_name = format!("clawmacdo-{hostname_suffix}");
+    println!("Attempting to delete SSH key '{expected_key_name}' if present...");
     let _ = provider.delete_ssh_key(&expected_key_name).await;
 
-    let local_key = config::keys_dir()?.join(format!("clawmacdo_{}", hostname_suffix));
+    let local_key = config::keys_dir()?.join(format!("clawmacdo_{hostname_suffix}"));
     if local_key.exists() {
         std::fs::remove_file(&local_key)?;
         println!("Removed local key: {}", local_key.display());
     }
 
-    println!("
-Destroy complete for '{}'", instance.name);
+    println!(
+        "
+Destroy complete for '{}'",
+        instance.name
+    );
     Ok(())
 }
 
