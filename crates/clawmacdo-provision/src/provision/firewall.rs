@@ -1,4 +1,4 @@
-use crate::provision::commands::ssh_root_async;
+use crate::provision::commands::ssh_root_as_async;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
 
@@ -6,7 +6,12 @@ use std::path::Path;
 /// All packages already installed by cloud-init. This step only writes config files.
 /// Translated from openclaw-ansible/roles/openclaw/tasks/firewall-linux.yml.
 /// PProvision.
-pub async fn provision(ip: &str, key: &Path, tailscale: bool) -> Result<(), AppError> {
+pub async fn provision(
+    ip: &str,
+    key: &Path,
+    tailscale: bool,
+    ssh_user: &str,
+) -> Result<(), AppError> {
     // --- fail2ban configuration ---
     let fail2ban_cfg = r#"cat > /etc/fail2ban/jail.local << 'F2BEOF'
 # OpenClaw security hardening - SSH protection
@@ -22,7 +27,7 @@ port = ssh
 filter = sshd
 F2BEOF
 systemctl restart fail2ban && systemctl enable fail2ban"#;
-    ssh_root_async(ip, key, fail2ban_cfg)
+    ssh_root_as_async(ip, key, fail2ban_cfg, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "fail2ban".into(),
@@ -36,7 +41,7 @@ APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 AUEOF
 "#;
-    ssh_root_async(ip, key, auto_upgrades).await?;
+    ssh_root_as_async(ip, key, auto_upgrades, ssh_user).await?;
 
     // Use printf to avoid shell interpretation of ${distro_id} etc.
     let unattended = r#"cat > /etc/apt/apt.conf.d/50unattended-upgrades << 'UUEOF'
@@ -53,14 +58,14 @@ Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Automatic-Reboot "false";
 UUEOF
 "#;
-    ssh_root_async(ip, key, unattended).await?;
+    ssh_root_as_async(ip, key, unattended, ssh_user).await?;
 
     // --- UFW: deny routed (blocks Docker from bypassing firewall) ---
-    ssh_root_async(ip, key, "ufw default deny routed").await?;
+    ssh_root_as_async(ip, key, "ufw default deny routed", ssh_user).await?;
 
     // --- Tailscale UFW rule (if enabled) ---
     if tailscale {
-        ssh_root_async(ip, key, "ufw allow 41641/udp comment 'Tailscale'").await?;
+        ssh_root_as_async(ip, key, "ufw allow 41641/udp comment 'Tailscale'", ssh_user).await?;
     }
 
     // --- DOCKER-USER iptables chain in /etc/ufw/after.rules ---
@@ -101,7 +106,7 @@ else
     }' /etc/ufw/after.rules > /etc/ufw/after.rules.tmp && mv /etc/ufw/after.rules.tmp /etc/ufw/after.rules
 fi
 "##;
-    ssh_root_async(ip, key, docker_user_rules)
+    ssh_root_as_async(ip, key, docker_user_rules, ssh_user)
         .await
         .map_err(|e| AppError::Provision {
             phase: "DOCKER-USER rules".into(),
@@ -109,7 +114,7 @@ fi
         })?;
 
     // --- Reload UFW ---
-    ssh_root_async(ip, key, "ufw reload").await?;
+    ssh_root_as_async(ip, key, "ufw reload", ssh_user).await?;
 
     Ok(())
 }

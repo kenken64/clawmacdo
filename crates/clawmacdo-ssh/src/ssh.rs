@@ -159,6 +159,46 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
     Ok(output)
 }
 
+/// Upload a local file to the remote host via SCP as a specific user.
+pub fn scp_upload_as(
+    ip: &str,
+    private_key_path: &Path,
+    local_path: &Path,
+    remote_path: &str,
+    username: &str,
+) -> Result<(), AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+
+    let metadata = std::fs::metadata(local_path)?;
+    let file_size = metadata.len();
+
+    let mut remote_file = sess
+        .scp_send(Path::new(remote_path), 0o644, file_size, None)
+        .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
+
+    let local_data = std::fs::read(local_path)?;
+    use std::io::Write;
+    remote_file
+        .write_all(&local_data)
+        .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
+
+    // Signal EOF
+    remote_file
+        .send_eof()
+        .map_err(|e| AppError::Ssh(format!("SCP send_eof: {e}")))?;
+    remote_file
+        .wait_eof()
+        .map_err(|e| AppError::Ssh(format!("SCP wait_eof: {e}")))?;
+    remote_file
+        .close()
+        .map_err(|e| AppError::Ssh(format!("SCP close: {e}")))?;
+    remote_file
+        .wait_close()
+        .map_err(|e| AppError::Ssh(format!("SCP wait_close: {e}")))?;
+
+    Ok(())
+}
+
 /// Upload a local file to the remote host via SCP.
 /// SScp upload.
 pub fn scp_upload(
@@ -255,31 +295,39 @@ pub async fn wait_for_ssh(
 }
 
 /// Wait for the cloud-init sentinel file to appear on the remote host.
-/// WWait for cloud init.
+/// When `ssh_user` is provided (e.g. "ubuntu" for Lightsail), connects as that
+/// user and prefixes commands with `sudo` so we can check the root-owned sentinel.
 pub async fn wait_for_cloud_init(
     ip: &str,
     private_key_path: &Path,
     timeout: std::time::Duration,
+    ssh_user: Option<&str>,
 ) -> Result<(), AppError> {
     let start = std::time::Instant::now();
     let sentinel = config::CLOUD_INIT_SENTINEL;
     let key = private_key_path.to_path_buf();
     let ip = ip.to_string();
+    let ssh_user = ssh_user.map(|s| s.to_string());
     let mut last_status = String::from("unknown");
     loop {
         if start.elapsed() > timeout {
             let ip_clone = ip.clone();
             let key_clone = key.clone();
-            let diag_cmd = concat!(
-                "(cloud-init status --long 2>/dev/null || cloud-init status 2>/dev/null || true);",
-                " echo '--- cloud-init.log (tail) ---';",
-                " (tail -n 30 /var/log/cloud-init.log 2>/dev/null || true);",
-                " echo '--- cloud-init-output.log (tail) ---';",
-                " (tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true)",
+            let user_clone = ssh_user.clone();
+            let diag_cmd_str = format!(
+                "{}(cloud-init status --long 2>/dev/null || cloud-init status 2>/dev/null || true); \
+                 echo '--- cloud-init.log (tail) ---'; \
+                 (tail -n 30 /var/log/cloud-init.log 2>/dev/null || true); \
+                 echo '--- cloud-init-output.log (tail) ---'; \
+                 (tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true)",
+                if user_clone.as_deref().is_some_and(|u| u != "root") { "sudo " } else { "" }
             );
             let diagnostics =
-                match tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, diag_cmd))
-                    .await
+                match tokio::task::spawn_blocking(move || match user_clone.as_deref() {
+                    Some(u) if u != "root" => exec_as(&ip_clone, &key_clone, &diag_cmd_str, u),
+                    _ => exec(&ip_clone, &key_clone, &diag_cmd_str),
+                })
+                .await
                 {
                     Ok(Ok(out)) if !out.trim().is_empty() => out,
                     _ => "No diagnostic output available".to_string(),
@@ -291,10 +339,20 @@ pub async fn wait_for_cloud_init(
         }
         let ip_clone = ip.clone();
         let key_clone = key.clone();
+        let user_clone = ssh_user.clone();
+        let sudo_prefix = if user_clone.as_deref().is_some_and(|u| u != "root") {
+            "sudo "
+        } else {
+            ""
+        };
         let cmd = format!(
-            "if test -f {sentinel}; then echo done; else cloud-init status 2>/dev/null || echo pending; fi"
+            "if {sudo_prefix}test -f {sentinel}; then echo done; else cloud-init status 2>/dev/null || echo pending; fi"
         );
-        let result = tokio::task::spawn_blocking(move || exec(&ip_clone, &key_clone, &cmd)).await;
+        let result = tokio::task::spawn_blocking(move || match user_clone.as_deref() {
+            Some(u) if u != "root" => exec_as(&ip_clone, &key_clone, &cmd, u),
+            _ => exec(&ip_clone, &key_clone, &cmd),
+        })
+        .await;
 
         match result {
             Ok(Ok(out)) if out.trim() == "done" => return Ok(()),

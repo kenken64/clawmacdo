@@ -25,6 +25,9 @@ pub struct MigrateParams {
     pub enable_sandbox: bool,
     pub tailscale: bool,
     pub tailscale_auth_key: Option<String>,
+    pub primary_model: String,
+    pub failover_1: String,
+    pub failover_2: String,
 }
 
 /// Run the full migrate flow: remote backup from source, then deploy to new droplet.
@@ -96,6 +99,9 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         enable_sandbox: params.enable_sandbox,
         tailscale: params.tailscale,
         tailscale_auth_key: params.tailscale_auth_key,
+        primary_model: params.primary_model,
+        failover_1: params.failover_1,
+        failover_2: params.failover_2,
         non_interactive: false,
         progress_tx: None,
     };

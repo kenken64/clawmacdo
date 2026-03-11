@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async,
+};
 use std::path::Path;
 
 pub struct DockerFixResult {
@@ -8,7 +10,7 @@ pub struct DockerFixResult {
     pub output: String,
 }
 
-pub async fn repair_access(ip: &str, key: &Path) -> Result<DockerFixResult> {
+pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<DockerFixResult> {
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -38,7 +40,11 @@ pub async fn repair_access(ip: &str, key: &Path) -> Result<DockerFixResult> {
         home = config::OPENCLAW_HOME,
     );
 
-    let output = ssh_as_openclaw_async(ip, key, &cmd).await?;
+    let output = if ssh_user == "root" {
+        ssh_as_openclaw_async(ip, key, &cmd).await?
+    } else {
+        ssh_as_openclaw_with_user_async(ip, key, &cmd, ssh_user).await?
+    };
     let lowered = output.to_ascii_lowercase();
     let ok = lowered.contains("docker_sg_ok")
         && (lowered.contains("health_ok")
@@ -48,9 +54,9 @@ pub async fn repair_access(ip: &str, key: &Path) -> Result<DockerFixResult> {
     Ok(DockerFixResult { ok, output })
 }
 
-pub async fn run(ip: &str, key: &Path) -> Result<()> {
+pub async fn run(ip: &str, key: &Path, ssh_user: &str) -> Result<()> {
     println!("Repairing agent Docker access on {ip}...");
-    let result = repair_access(ip, key).await?;
+    let result = repair_access(ip, key, ssh_user).await?;
 
     if result.ok {
         println!("Docker access repair completed.\n");

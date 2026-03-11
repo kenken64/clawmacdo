@@ -61,15 +61,12 @@ impl LightsailCliProvider {
             .arg("--output")
             .arg("json")
             .output()
-            .map_err(|e| {
-                AppError::CloudProviderError(format!("Failed to execute AWS CLI: {}", e))
-            })?;
+            .map_err(|e| AppError::CloudProviderError(format!("Failed to execute AWS CLI: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(AppError::CloudProviderError(format!(
-                "AWS CLI command failed: {}",
-                stderr
+                "AWS CLI command failed: {stderr}"
             )));
         }
 
@@ -100,7 +97,7 @@ impl CloudProvider for LightsailCliProvider {
         ])?;
 
         let response: LightsailOperationResponse = serde_json::from_str(&output).map_err(|e| {
-            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {e}"))
         })?;
 
         let fingerprint = response
@@ -167,7 +164,7 @@ impl CloudProvider for LightsailCliProvider {
             .iter()
             .filter_map(|tag| {
                 if let Some((key, value)) = tag.split_once('=') {
-                    Some(format!(r#"{{"key":"{}","value":"{}"}}"#, key, value))
+                    Some(format!(r#"{{"key":"{key}","value":"{value}"}}"#))
                 } else {
                     None
                 }
@@ -175,7 +172,7 @@ impl CloudProvider for LightsailCliProvider {
             .collect();
 
         let full_tags_json = if custom_tags.is_empty() {
-            format!("{}]", tags_json)
+            format!("{tags_json}]")
         } else {
             format!("{},{}]", tags_json, custom_tags.join(","))
         };
@@ -186,7 +183,7 @@ impl CloudProvider for LightsailCliProvider {
         let output = self.execute_aws_cli(&args)?;
 
         let response: LightsailOperationResponse = serde_json::from_str(&output).map_err(|e| {
-            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {e}"))
         })?;
 
         let instance_name = response
@@ -213,8 +210,7 @@ impl CloudProvider for LightsailCliProvider {
         loop {
             if start.elapsed() > timeout {
                 return Err(AppError::CloudProviderError(format!(
-                    "Timeout waiting for instance {} to become active",
-                    instance_id
+                    "Timeout waiting for instance {instance_id} to become active"
                 )));
             }
 
@@ -222,7 +218,7 @@ impl CloudProvider for LightsailCliProvider {
 
             let response: LightsailInstanceResponse =
                 serde_json::from_str(&output).map_err(|e| {
-                    AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+                    AppError::CloudProviderError(format!("Failed to parse AWS response: {e}"))
                 })?;
 
             if let Some(instance) = response.instance {
@@ -256,7 +252,7 @@ impl CloudProvider for LightsailCliProvider {
         let output = self.execute_aws_cli(&["get-instances"])?;
 
         let response: LightsailInstancesResponse = serde_json::from_str(&output).map_err(|e| {
-            AppError::CloudProviderError(format!("Failed to parse AWS response: {}", e))
+            AppError::CloudProviderError(format!("Failed to parse AWS response: {e}"))
         })?;
 
         let instances = response
