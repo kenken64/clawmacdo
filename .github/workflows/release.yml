@@ -148,7 +148,7 @@ jobs:
         id: release_body
         run: |
           cat > release_notes.md << 'EOF'
-          ## 🚀 ClawMacdo v${{ github.ref_name }}
+          ## 🚀 ClawMacdo ${{ github.ref_name }}
 
           ### ✨ What's New
           - **Modular Workspace Architecture** - Refactored from monolithic to 7 focused crates
