@@ -24,8 +24,8 @@ u0=$(awk -F: '($3==0){print $1"("$3")"}' /etc/passwd || true)
 unattended=$(systemctl is-enabled unattended-upgrades 2>/dev/null || echo "unknown")
 # Build JSON
 jq -n \
-  --argpr sshd_pr "$permit_root" \
-  --argpr sshd_pw "$password_auth" \
+  --arg sshd_pr "$permit_root" \
+  --arg sshd_pw "$password_auth" \
   --arg sudo_w "$sudo_writable" \
   --arg etc_w "$etc_writable" \
   --arg cron_u "$cron_jobs" \
