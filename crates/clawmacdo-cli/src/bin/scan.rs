@@ -8,6 +8,10 @@ fn main(){
     if args.len()>1 { target = args[1].clone(); }
     if args.len()>2 { out = args[2].clone(); }
     match target.as_str() {
+        "all" => {
+            let status = Command::new("/bin/bash").arg("scripts/run_all_scans.sh").status().expect("failed to run all scans");
+            println!("run_all_scans exit: {}", status);
+        }
         "ubuntu" => {
             let status = Command::new("/bin/bash").arg("scripts/ubuntu_scan.sh").arg(&out).status().expect("failed to run ubuntu scan");
             println!("ubuntu scan exit: {}", status);
