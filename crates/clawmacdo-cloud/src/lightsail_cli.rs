@@ -6,6 +6,59 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::cloud_provider::{CloudProvider, CreateInstanceParams, InstanceInfo, KeyInfo};
 
+/// Check that the AWS CLI is installed, and attempt to install it automatically
+/// if it is missing.  Returns `Ok(())` when the CLI is available, or an error
+/// describing what went wrong.
+pub fn ensure_aws_cli() -> Result<(), AppError> {
+    if Command::new("aws")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    eprintln!("AWS CLI not found — attempting auto-install...");
+
+    let installed = if cfg!(target_os = "macos") {
+        Command::new("brew")
+            .args(["install", "awscli"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else if cfg!(target_os = "linux") {
+        Command::new("sh")
+            .args([
+                "-c",
+                "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip \
+                 && unzip -qo /tmp/awscliv2.zip -d /tmp \
+                 && sudo /tmp/aws/install --update \
+                 && rm -rf /tmp/awscliv2.zip /tmp/aws",
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if !installed
+        || !Command::new("aws")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    {
+        return Err(AppError::CloudProviderError(
+            "AWS CLI not found and auto-install failed. Please install manually: https://aws.amazon.com/cli/".into(),
+        ));
+    }
+
+    eprintln!("AWS CLI installed successfully.");
+    Ok(())
+}
+
 pub struct LightsailCliProvider {
     region: String,
 }

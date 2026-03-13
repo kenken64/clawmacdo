@@ -40,6 +40,7 @@ pub struct DeployParams {
     pub primary_model: String,
     pub failover_1: String,
     pub failover_2: String,
+    pub profile: String,
     pub non_interactive: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
 }
@@ -87,6 +88,32 @@ fn build_model_setup_cmd(primary: &str, failovers: &[&str]) -> String {
     }
     cmd.push_str(" echo ok");
     cmd
+}
+
+fn build_profile_setup_cmd(profile: &str) -> String {
+    let home = config::OPENCLAW_HOME;
+    let uid = "$(id -u)";
+    let profile_val = match profile {
+        "messaging" | "coding" | "full" => profile,
+        _ => "full",
+    };
+    format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" \
+         XDG_RUNTIME_DIR=/run/user/{uid} \
+         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus; \
+         CFG={home}/.openclaw/openclaw.json; \
+         if [ -f \"$CFG\" ]; then \
+           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";\
+const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));\
+cfg.tools=cfg.tools||{{}};\
+cfg.tools.profile=\"{profile_val}\";\
+fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok; \
+         else \
+           mkdir -p {home}/.openclaw && \
+           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";\
+fs.writeFileSync(p, JSON.stringify({{\"tools\":{{\"profile\":\"{profile_val}\"}}}},null,2)+\"\\n\");' && echo ok; \
+         fi"
+    )
 }
 
 /// Collect failover model slugs that have an API key supplied.
@@ -268,6 +295,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         &params.primary_model,
         &params.failover_1,
         &params.failover_2,
+        &params.profile,
         &params.progress_tx,
     )
     .await;
@@ -493,7 +521,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
@@ -577,6 +605,16 @@ SVCEOF\n\
     })
     .await??;
 
+    // Profile setup (tools.profile in openclaw.json)
+    let profile_cmd = build_profile_setup_cmd(&params.profile);
+    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{}'...", params.profile));
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
+    })
+    .await??;
+
     // Step 16: Save DeployRecord
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
@@ -629,6 +667,7 @@ async fn deploy_steps_5_through_16(
     primary_model: &str,
     failover_1: &str,
     failover_2: &str,
+    profile: &str,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
 ) -> Result<DeployRecord> {
     let tx = progress_tx;
@@ -732,7 +771,7 @@ async fn deploy_steps_5_through_16(
     let sandbox_setup_cmd = if enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
@@ -746,6 +785,7 @@ async fn deploy_steps_5_through_16(
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
@@ -798,6 +838,16 @@ async fn deploy_steps_5_through_16(
     })
     .await??;
 
+    // Profile setup (tools.profile in openclaw.json)
+    let profile_cmd = build_profile_setup_cmd(profile);
+    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{profile}'..."));
+    let ip_c = ip.clone();
+    let key_c = private_key_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
+    })
+    .await??;
+
     // Step 16: Save DeployRecord
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
@@ -846,49 +896,9 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     env::set_var("AWS_SECRET_ACCESS_KEY", &params.aws_secret_access_key);
     env::set_var("AWS_DEFAULT_REGION", &params.aws_region);
 
-    // Initialize Lightsail provider
+    // Initialize Lightsail provider — ensure AWS CLI is available first
+    clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
     let lightsail = LightsailCliProvider::new(params.aws_region.clone());
-
-    // Test AWS CLI is available; attempt auto-install if missing
-    if std::process::Command::new("aws")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        progress::emit(tx, "  AWS CLI not found — attempting auto-install...");
-        let installed = if cfg!(target_os = "macos") {
-            std::process::Command::new("brew")
-                .args(["install", "awscli"])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        } else if cfg!(target_os = "linux") {
-            // Download and install via the official installer
-            std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip \
-                     && unzip -qo /tmp/awscliv2.zip -d /tmp \
-                     && sudo /tmp/aws/install --update \
-                     && rm -rf /tmp/awscliv2.zip /tmp/aws",
-                ])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
-
-        if !installed
-            || std::process::Command::new("aws")
-                .arg("--version")
-                .output()
-                .is_err()
-        {
-            bail!("AWS CLI not found and auto-install failed. Please install manually: https://aws.amazon.com/cli/");
-        }
-        progress::emit(tx, "  AWS CLI installed successfully.");
-    }
 
     // Step 2: Generate SSH keypair
     progress::emit(tx, "\n[Step 2/16] Generating SSH keypair...");
@@ -1067,7 +1077,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";cfg.agents.defaults.sandbox.docker.volumes=[\"/usr/bin:/usr/bin:ro\",\"/usr/lib:/usr/lib:ro\",\"/usr/local:/usr/local:ro\",\"/usr/share/git-core:/usr/share/git-core:ro\",\"/etc/ssl/certs:/etc/ssl/certs:ro\",\"/etc/ca-certificates:/etc/ca-certificates:ro\",\"{home}/.local:{home}/.local:ro\"];fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
              fi && \
              docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
@@ -1147,6 +1157,16 @@ SVCEOF\n\
     let key_c = keypair.private_key_path.clone();
     tokio::task::spawn_blocking(move || {
         provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &model_cmd, "ubuntu")
+    })
+    .await??;
+
+    // Profile setup (tools.profile in openclaw.json)
+    let profile_cmd = build_profile_setup_cmd(&params.profile);
+    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{}'...", params.profile));
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &profile_cmd, "ubuntu")
     })
     .await??;
 
