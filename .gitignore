@@ -1,9 +1,42 @@
+# Rust / Cargo
 /target
+**/*.rs.bk
+*.d
+*.rlib
+*.dylib
+*.so
+*.dll
 *.exe
 *.pdb
-.env
-envdump.txt
+
+# Cargo
+.cargo/config.toml
+
+# Build artifacts
 build_output.txt
 clawmacdo-*.tar.gz
 clawmacdo-*.zip
-.cargo/config.toml
+
+# Environment / secrets
+.env
+envdump.txt
+keys.db
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# Misc
+*.bak
+*.log
