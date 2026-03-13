@@ -1,9 +1,27 @@
 const express = require('express');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const app = express();
 app.use(express.json());
 const jobs = {};
 let idCounter = 1;
+const KEY_DB = process.env.KEY_DB || '/root/.openclaw/workspace/clawmacdo/keys.db';
+
+function checkApiKey(key){
+  try{
+    const out = execFileSync('python3',['scripts/verify_apikey.py', key, KEY_DB],{encoding:'utf8'}).trim();
+    return out==='OK';
+  }catch(e){ return false; }
+}
+
+// middleware
+app.use((req,res,next)=>{
+  if(req.path.startsWith('/api/security/')){
+    const apiKey = req.header('x-api-key') || req.header('authorization') && req.header('authorization').split(' ').pop();
+    if(!apiKey || !checkApiKey(apiKey)) return res.status(401).json({error:'invalid api key'});
+  }
+  next();
+});
+
 app.post('/api/security/scan', (req,res)=>{
   const id = String(idCounter++);
   const ts = Date.now();
