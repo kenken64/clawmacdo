@@ -1,14 +1,17 @@
 const express = require('express');
 const { spawn, execFileSync } = require('child_process');
+const path = require('path');
 const app = express();
 app.use(express.json());
 const jobs = {};
 let idCounter = 1;
-const KEY_DB = process.env.KEY_DB || '/root/.openclaw/workspace/clawmacdo/keys.db';
+const ROOT = path.resolve(__dirname, '..');
+const KEY_DB = process.env.KEY_DB || path.join(ROOT,'keys.db');
+const VERIFY_SCRIPT = path.join(ROOT,'scripts','verify_apikey.py');
 
 function checkApiKey(key){
   try{
-    const out = execFileSync('python3',['scripts/verify_apikey.py', key, KEY_DB],{encoding:'utf8'}).trim();
+    const out = execFileSync('python3',[VERIFY_SCRIPT, key, KEY_DB],{encoding:'utf8', cwd:ROOT}).trim();
     return out==='OK';
   }catch(e){ return false; }
 }
@@ -27,7 +30,7 @@ app.post('/api/security/scan', (req,res)=>{
   const ts = Date.now();
   const out = `/tmp/openclaw_security_scan_${ts}.json`;
   jobs[id] = { status:'running', out };
-  const child = spawn('/bin/bash',['scripts/run_all_scans.sh'],{cwd:process.cwd()});
+  const child = spawn('/bin/bash',['scripts/run_all_scans.sh'],{cwd:ROOT});
   child.on('exit',(code)=>{ jobs[id].status = code===0? 'done':'error'; });
   res.json({jobId:id,status:'started',out});
 });
