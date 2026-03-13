@@ -1,0 +1,5 @@
+{
+  "host":"test-host",
+  "secrets":"somekey",
+  "checks":[{"id":"sshd_permit_root","value":"PermitRootLogin yes"}]
+}
