@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json());
 const jobs = {};
 let idCounter = 1;
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const KEY_DB = process.env.KEY_DB || path.join(ROOT,'keys.db');
 const VERIFY_SCRIPT = path.join(ROOT,'scripts','verify_apikey.py');
 
