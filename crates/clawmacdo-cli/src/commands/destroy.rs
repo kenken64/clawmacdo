@@ -108,6 +108,7 @@ async fn run_do(params: DestroyParams) -> Result<()> {
 async fn run_lightsail(params: DestroyParams) -> Result<()> {
     use clawmacdo_cloud::CloudProvider;
 
+    clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
     let provider = LightsailCliProvider::new(params.aws_region.clone());
 
     println!("Fetching openclaw instances (Lightsail)...");

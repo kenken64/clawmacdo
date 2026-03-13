@@ -95,6 +95,8 @@ struct DeployRequest {
     tailscale: bool,
     #[serde(default)]
     tailscale_auth_key: String,
+    #[serde(default = "default_profile")]
+    profile: String,
 }
 
 fn default_provider() -> String {
@@ -103,6 +105,10 @@ fn default_provider() -> String {
 
 fn default_primary_model() -> String {
     "anthropic".to_string()
+}
+
+fn default_profile() -> String {
+    "full".to_string()
 }
 
 #[derive(Serialize)]
@@ -375,6 +381,7 @@ async fn start_deploy_handler(
             primary_model: req.primary_model,
             failover_1: req.failover_1,
             failover_2: req.failover_2,
+            profile: req.profile,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
         };
@@ -1217,6 +1224,15 @@ function addDeployCard(initialState) {
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">AI Models</legend>
         <div id="model-selectors-${n}" class="space-y-4"></div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Tools Profile</label>
+          <select name="profile" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            <option value="full" selected>Full (unrestricted access to all tools)</option>
+            <option value="coding">Coding (code-focused tools only)</option>
+            <option value="messaging">Messaging (messaging tools only)</option>
+          </select>
+          <p class="text-xs text-slate-500 mt-1">Controls which tool groups the OpenClaw agent can access</p>
+        </div>
         ${passwordField('tailscale_auth_key', 'Tailscale Auth Key', 'tskey-auth-...', false)}
       </fieldset>
       <fieldset class="space-y-4">
@@ -1805,6 +1821,7 @@ async function startDeploy(e, cardNum) {
     enable_sandbox: form.querySelector('[name="enable_sandbox"]').checked,
     tailscale: form.querySelector('[name="tailscale"]').checked,
     tailscale_auth_key: val('tailscale_auth_key'),
+    profile: val('profile'),
   };
 
   // Disable button and show progress

@@ -1,6 +1,6 @@
 // CLI scaffold: security scan command
-use std::path::PathBuf;
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 pub struct ScanSecurity {
@@ -13,6 +13,9 @@ pub struct ScanSecurity {
 }
 
 pub fn run(args: ScanSecurity) -> anyhow::Result<()> {
-    println!("TODO: implement security scan. target={} host={:?} out={:?}", args.target, args.host, args.out);
+    println!(
+        "TODO: implement security scan. target={} host={:?} out={:?}",
+        args.target, args.host, args.out
+    );
     Ok(())
 }

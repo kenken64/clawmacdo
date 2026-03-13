@@ -28,6 +28,7 @@ pub struct MigrateParams {
     pub primary_model: String,
     pub failover_1: String,
     pub failover_2: String,
+    pub profile: String,
 }
 
 /// Run the full migrate flow: remote backup from source, then deploy to new droplet.
@@ -102,6 +103,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         primary_model: params.primary_model,
         failover_1: params.failover_1,
         failover_2: params.failover_2,
+        profile: params.profile,
         non_interactive: false,
         progress_tx: None,
     };
