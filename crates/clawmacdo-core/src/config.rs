@@ -11,12 +11,18 @@ pub const DEFAULT_TENCENT_REGION: &str = "ap-singapore";
 pub const DEFAULT_TENCENT_INSTANCE_TYPE: &str = "SA5.MEDIUM4";
 pub const DEFAULT_TENCENT_IMAGE_ID: &str = "img-487zeit5"; // Ubuntu 24.04 LTS
 
+// Azure defaults
+pub const DEFAULT_AZURE_REGION: &str = "southeastasia";
+pub const DEFAULT_AZURE_SIZE: &str = "Standard_B2s";
+pub const DEFAULT_AZURE_IMAGE: &str = "Canonical:ubuntu-24_04-lts:server:latest";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CloudProviderType {
     DigitalOcean,
     Tencent,
     Lightsail,
+    Azure,
 }
 
 impl std::fmt::Display for CloudProviderType {
@@ -25,6 +31,7 @@ impl std::fmt::Display for CloudProviderType {
             CloudProviderType::DigitalOcean => write!(f, "digitalocean"),
             CloudProviderType::Tencent => write!(f, "tencent"),
             CloudProviderType::Lightsail => write!(f, "lightsail"),
+            CloudProviderType::Azure => write!(f, "azure"),
         }
     }
 }
@@ -100,6 +107,9 @@ pub struct DeployRecord {
     /// For Tencent, stores the KeyPair ID for cleanup.
     #[serde(default)]
     pub ssh_key_id: Option<String>,
+    /// For Azure, stores the resource group name for cleanup.
+    #[serde(default)]
+    pub resource_group: Option<String>,
     pub backup_restored: Option<String>,
     pub created_at: DateTime<Utc>,
 }

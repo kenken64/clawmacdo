@@ -12,6 +12,9 @@ pub mod lightsail_cli;
 #[cfg(feature = "tencent")]
 pub mod tencent;
 
+#[cfg(feature = "azure")]
+pub mod azure_cli;
+
 // Re-export main types and traits
 pub use cloud_init::*;
 pub use cloud_provider::*;

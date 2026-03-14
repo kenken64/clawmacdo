@@ -9,6 +9,14 @@ use clawmacdo_core::config::CLOUD_INIT_SENTINEL;
 /// daemon config) is handled by the provision modules over SSH after
 /// cloud-init completes.
 pub fn generate() -> String {
+    generate_for_user("ubuntu")
+}
+
+/// Generate a cloud-init YAML script with a configurable admin user for SSH key copying.
+///
+/// This allows providers with different default admin users (e.g. `azureuser`)
+/// to use the same cloud-init logic.
+pub fn generate_for_user(admin_user: &str) -> String {
     let sentinel = CLOUD_INIT_SENTINEL;
     format!(
         r##"#cloud-config
@@ -45,11 +53,11 @@ runcmd:
   # --- Enable Docker ---
   - systemctl enable --now docker
 
-  # --- Enable root SSH login (needed for Tencent Cloud which defaults to ubuntu user) ---
+  # --- Enable root SSH login (needed for providers which default to a non-root user) ---
   - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
   - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
   - mkdir -p /root/.ssh && chmod 700 /root/.ssh
-  - cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
+  - cp /home/{admin_user}/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
   - chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
   - systemctl restart sshd || systemctl restart ssh
 
@@ -66,6 +74,11 @@ runcmd:
 /// is not interpreted correctly. This function produces plain shell commands
 /// that get appended to Lightsail's init script and run as root.
 pub fn generate_shell() -> String {
+    generate_shell_for_user("ubuntu")
+}
+
+/// Generate a shell-script version of cloud-init with a configurable admin user.
+pub fn generate_shell_for_user(admin_user: &str) -> String {
     let sentinel = CLOUD_INIT_SENTINEL;
     format!(
         r##"
@@ -100,7 +113,7 @@ systemctl enable --now docker
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
-cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
+cp /home/{admin_user}/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
 chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
 systemctl restart sshd || systemctl restart ssh
 

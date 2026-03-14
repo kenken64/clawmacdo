@@ -6,12 +6,16 @@ use clawmacdo_ssh as ssh;
 use clawmacdo_ui::ui;
 use std::path::PathBuf;
 
-/// Parameters for a DO → DO migration.
+/// Parameters for a cloud-to-cloud migration.
 pub struct MigrateParams {
     pub provider: String,
     pub do_token: String,
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
+    pub azure_tenant_id: String,
+    pub azure_subscription_id: String,
+    pub azure_client_id: String,
+    pub azure_client_secret: String,
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
@@ -87,6 +91,10 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         aws_access_key_id: String::new(),
         aws_secret_access_key: String::new(),
         aws_region: String::new(),
+        azure_tenant_id: params.azure_tenant_id,
+        azure_subscription_id: params.azure_subscription_id,
+        azure_client_id: params.azure_client_id,
+        azure_client_secret: params.azure_client_secret,
         anthropic_key: params.anthropic_key,
         openai_key: params.openai_key,
         gemini_key: params.gemini_key,

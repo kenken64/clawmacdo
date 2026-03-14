@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.0
+
+### Added
+- Microsoft Azure Compute VM as fourth cloud provider (service principal auth)
+- Azure CLI integration (`az` commands) — feature-gated with `#[cfg(feature = "azure")]`
+- Azure credential fields: Tenant ID, Subscription ID, Client ID, Client Secret
+- Resource group-based lifecycle: `clawmacdo-<id>` resource group per deploy, full cleanup on destroy
+- Azure regions (13 locations, default: southeastasia) and VM SKUs (6 sizes, default: Standard_B2s)
+- Azure option in web UI provider dropdown with dynamic credential fields, regions, and sizes
+- Parameterized cloud-init: `generate_for_user()` / `generate_shell_for_user()` support `azureuser` admin user
+- `Azure` variant in `CloudProviderType` enum and `Azure(String)` error variant in `AppError`
+- `resource_group` field on `DeployRecord` (with `#[serde(default)]` for backward compat)
+
+### Changed
+- `azure` feature enabled by default in `clawmacdo-cli`
+- `cloud_init::generate()` now delegates to `generate_for_user("ubuntu")` (no behavior change for existing providers)
+
 ## v0.6.0
 
 ### Added
