@@ -21,6 +21,9 @@ pub enum AppError {
     #[error("Azure error: {0}")]
     Azure(String),
 
+    #[error("BytePlus API error: {0}")]
+    BytePlus(String),
+
     #[error("Cloud provider API error: {0}")]
     CloudProviderError(String),
 

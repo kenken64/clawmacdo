@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.12.0
+
+### Added
+- **BytePlus Cloud** as 5th cloud provider (`--provider=byteplus` or `bp`)
+- BytePlus ECS client with HMAC-SHA256 signing (similar to AWS SigV4)
+- Auto-provisioning of VPC, subnet, and security group on BytePlus
+- Web UI dropdown, credential fields, region/size selectors for BytePlus
+- `byteplus` feature flag in `clawmacdo-cloud` and `clawmacdo-cli`
+
 ## v0.11.0
 
 ### Added

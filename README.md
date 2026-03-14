@@ -3,7 +3,7 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, or **Microsoft Azure** — with Claude Code, Codex, and Gemini CLI pre-installed.
+Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
 ## ✨ What's New in v0.11.0
 
@@ -17,7 +17,7 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 - **Follow mode** (`--follow`) — Live-polling display that refreshes until deployment finishes
 - **JSON output** (`--json`) — NDJSON format for programmatic consumption
 - **Clap-based CLI** — Proper subcommand routing with `track` and `serve`
-- **4 cloud providers** — DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure
+- **5 cloud providers** — DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, BytePlus Cloud
 - **npm distribution** — `npm install -g clawmacdo`
 
 ## 🏗️ Project Structure
@@ -43,7 +43,7 @@ clawmacdo/
 |-------|---------|--------------|
 | **clawmacdo-cli** | Main binary, command parsing, orchestration | All other crates |
 | **clawmacdo-core** | Configuration, errors, shared types | Minimal (serde, anyhow) |
-| **clawmacdo-cloud** | DigitalOcean, AWS Lightsail & Tencent Cloud APIs | reqwest, async-trait |
+| **clawmacdo-cloud** | DigitalOcean, AWS Lightsail, Tencent Cloud & BytePlus APIs | reqwest, async-trait |
 | **clawmacdo-provision** | Server setup, package installation | SSH, Core, UI |
 | **clawmacdo-db** | SQLite operations, job tracking | rusqlite |
 | **clawmacdo-ssh** | SSH connections, file transfers | ssh2 |
@@ -51,7 +51,7 @@ clawmacdo/
 
 ## Features
 
-- **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, or Tencent Cloud with `--provider` flag
+- **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
@@ -59,7 +59,7 @@ clawmacdo/
 - **Status**: list all openclaw-tagged instances with IPs
 - **List backups**: show local backup archives with sizes and dates
 - **Web UI**: Browser-based deploy interface with real-time SSE progress streaming (optional)
-- **Security groups**: Auto-create firewall rules on Tencent Cloud (SSH + HTTP/HTTPS)
+- **Security groups**: Auto-create firewall rules on Tencent Cloud and BytePlus (SSH + HTTP/HTTPS + Gateway)
 
 ## Supported Cloud Providers
 
@@ -69,6 +69,7 @@ clawmacdo/
 | AWS Lightsail | `--provider=lightsail` (or `aws`) | `--aws-access-key-id` + `--aws-secret-access-key` | [AWS CLI](https://aws.amazon.com/cli/) installed |
 | Tencent Cloud | `--provider=tencent` | `--tencent-secret-id` + `--tencent-secret-key` | — |
 | Microsoft Azure | `--provider=azure` (or `az`) | `--azure-tenant-id` + `--azure-subscription-id` + `--azure-client-id` + `--azure-client-secret` | [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/) installed |
+| BytePlus Cloud | `--provider=byteplus` (or `bp`) | `--byteplus-access-key` + `--byteplus-secret-key` | — |
 
 ## Download
 
@@ -126,6 +127,7 @@ cargo build --release --no-default-features --features aws-only
 | `lightsail` | AWS Lightsail provider support (via AWS CLI) | ✅ |
 | `tencent-cloud` | Tencent Cloud provider support | ✅ |
 | `azure` | Microsoft Azure provider support (via Azure CLI) | ✅ |
+| `byteplus` | BytePlus Cloud provider support | ✅ |
 | `digitalocean` | DigitalOcean provider support | ✅ |
 | `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
@@ -183,6 +185,29 @@ clawmacdo deploy \
   --customer-name "my-openclaw-hk" \
   --region ap-hongkong
 ```
+
+### Deploy to BytePlus Cloud
+
+```bash
+# Set BytePlus credentials
+export BYTEPLUS_ACCESS_KEY="your_access_key"
+export BYTEPLUS_SECRET_KEY="your_secret_key"
+
+# Deploy to Singapore region
+clawmacdo deploy \
+  --provider byteplus \
+  --customer-name "my-openclaw-bp" \
+  --region ap-southeast-1
+```
+
+#### BytePlus Instance Sizes
+
+| clawmacdo `--size` | vCPU | RAM | Notes |
+|--------------------|------|-----|-------|
+| `ecs.c3i.large` | 2 | 4 GB | Compute-optimized |
+| `ecs.g3i.large` *(default)* | 2 | 8 GB | General purpose |
+| `ecs.c3i.xlarge` | 4 | 8 GB | Compute-optimized |
+| `ecs.g3i.xlarge` | 4 | 16 GB | General purpose |
 
 ### Track Deploy Progress
 
@@ -307,6 +332,8 @@ new-crate = { workspace = true }
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID | For Azure deploys |
 | `AZURE_CLIENT_ID` | Azure service principal client ID | For Azure deploys |
 | `AZURE_CLIENT_SECRET` | Azure service principal client secret | For Azure deploys |
+| `BYTEPLUS_ACCESS_KEY` | BytePlus Access Key | For BytePlus deploys |
+| `BYTEPLUS_SECRET_KEY` | BytePlus Secret Key | For BytePlus deploys |
 | `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
 | `OPENAI_API_KEY` | OpenAI API key | Optional |
 | `TELEGRAM_TOKEN` | Telegram bot token | Optional |
@@ -352,6 +379,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 14, 2026
-**Current version:** 0.11.0
+**Last updated:** March 15, 2026
+**Current version:** 0.12.0
 **Architecture version:** 2.0 (modular workspace)

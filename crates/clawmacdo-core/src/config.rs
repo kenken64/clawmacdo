@@ -16,6 +16,10 @@ pub const DEFAULT_AZURE_REGION: &str = "southeastasia";
 pub const DEFAULT_AZURE_SIZE: &str = "Standard_B2s";
 pub const DEFAULT_AZURE_IMAGE: &str = "Canonical:ubuntu-24_04-lts:server:latest";
 
+// BytePlus defaults
+pub const DEFAULT_BYTEPLUS_REGION: &str = "ap-southeast-1";
+pub const DEFAULT_BYTEPLUS_SIZE: &str = "ecs.g3i.large";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum CloudProviderType {
@@ -23,6 +27,7 @@ pub enum CloudProviderType {
     Tencent,
     Lightsail,
     Azure,
+    BytePlus,
 }
 
 impl std::fmt::Display for CloudProviderType {
@@ -32,6 +37,7 @@ impl std::fmt::Display for CloudProviderType {
             CloudProviderType::Tencent => write!(f, "tencent"),
             CloudProviderType::Lightsail => write!(f, "lightsail"),
             CloudProviderType::Azure => write!(f, "azure"),
+            CloudProviderType::BytePlus => write!(f, "byteplus"),
         }
     }
 }

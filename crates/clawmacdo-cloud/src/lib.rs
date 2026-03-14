@@ -15,6 +15,9 @@ pub mod tencent;
 #[cfg(feature = "azure")]
 pub mod azure_cli;
 
+#[cfg(feature = "byteplus")]
+pub mod byteplus;
+
 // Re-export main types and traits
 pub use cloud_init::*;
 pub use cloud_provider::*;
