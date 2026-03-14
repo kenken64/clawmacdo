@@ -72,6 +72,10 @@ struct DeployRequest {
     #[serde(default)]
     azure_client_secret: String,
     #[serde(default)]
+    byteplus_access_key: String,
+    #[serde(default)]
+    byteplus_secret_key: String,
+    #[serde(default)]
     anthropic_key: String,
     #[serde(default)]
     openai_key: String,
@@ -361,6 +365,8 @@ async fn start_deploy_handler(
             azure_subscription_id: req.azure_subscription_id,
             azure_client_id: req.azure_client_id,
             azure_client_secret: req.azure_client_secret,
+            byteplus_access_key: req.byteplus_access_key,
+            byteplus_secret_key: req.byteplus_secret_key,
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
@@ -912,7 +918,7 @@ tailwind.config = {
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
-    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.11.0</span>
+    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.12.0</span>
   </div>
   <!-- Tab bar -->
   <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 flex gap-0">
@@ -936,7 +942,7 @@ tailwind.config = {
   <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-lg shadow-lg w-24 h-24 sm:w-32 sm:h-32 object-cover shrink-0">
   <div class="flex-1 text-center sm:text-left">
     <h2 class="text-xl sm:text-2xl font-bold text-slate-100 mb-1">Cloud Deployment Console</h2>
-    <p class="text-sm text-slate-400 mb-4">Provision OpenClaw instances across DigitalOcean, AWS Lightsail, Tencent Cloud, and Microsoft Azure.</p>
+    <p class="text-sm text-slate-400 mb-4">Provision OpenClaw instances across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
     <div class="flex flex-col sm:flex-row gap-2">
       <button type="button" onclick="addDeployCard()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
@@ -1225,6 +1231,7 @@ function addDeployCard(initialState) {
             <option value="tencent">Tencent Cloud</option>
             <option value="lightsail">AWS Lightsail</option>
             <option value="azure">Microsoft Azure</option>
+            <option value="byteplus">BytePlus Cloud</option>
           </select>
         </div>
         <div id="do-creds-${n}">
@@ -1243,6 +1250,10 @@ function addDeployCard(initialState) {
           ${passwordField('azure_subscription_id', 'Azure Subscription ID', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', true)}
           ${passwordField('azure_client_id', 'Azure Client ID', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', true)}
           ${passwordField('azure_client_secret', 'Azure Client Secret', '...', true)}
+        </div>
+        <div id="bp-creds-${n}" style="display:none" class="space-y-4">
+          ${passwordField('byteplus_access_key', 'BytePlus Access Key', 'AKLT...', true)}
+          ${passwordField('byteplus_secret_key', 'BytePlus Secret Key', '...', true)}
         </div>
       </fieldset>
       <fieldset class="space-y-4">
@@ -1466,6 +1477,7 @@ function toggleProvider(select, n) {
   const tcCreds = document.getElementById('tc-creds-' + n);
   const awsCreds = document.getElementById('aws-creds-' + n);
   const azureCreds = document.getElementById('azure-creds-' + n);
+  const bpCreds = document.getElementById('bp-creds-' + n);
   const regionSel = document.getElementById('region-' + n);
   const sizeSel = document.getElementById('size-' + n);
 
@@ -1474,10 +1486,12 @@ function toggleProvider(select, n) {
   tcCreds.style.display = 'none';
   awsCreds.style.display = 'none';
   azureCreds.style.display = 'none';
+  bpCreds.style.display = 'none';
   doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   tcCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   awsCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   azureCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+  bpCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
 
   if (provider === 'tencent') {
     tcCreds.style.display = 'block';
@@ -1551,6 +1565,18 @@ function toggleProvider(select, n) {
       <option value="Standard_B4ms">Standard_B4ms (4 vCPUs, 16 GB)</option>
       <option value="Standard_D2s_v5">Standard_D2s_v5 (2 vCPUs, 8 GB)</option>
       <option value="Standard_D4s_v5">Standard_D4s_v5 (4 vCPUs, 16 GB)</option>
+    `;
+  } else if (provider === 'byteplus') {
+    bpCreds.style.display = 'block';
+    bpCreds.querySelectorAll('input').forEach(i => i.required = true);
+    regionSel.innerHTML = `
+      <option value="ap-southeast-1" selected>ap-southeast-1 (Singapore)</option>
+    `;
+    sizeSel.innerHTML = `
+      <option value="ecs.c3i.large">ecs.c3i.large (2 vCPU, 4 GB)</option>
+      <option value="ecs.g3i.large" selected>ecs.g3i.large (2 vCPU, 8 GB)</option>
+      <option value="ecs.c3i.xlarge">ecs.c3i.xlarge (4 vCPU, 8 GB)</option>
+      <option value="ecs.g3i.xlarge">ecs.g3i.xlarge (4 vCPU, 16 GB)</option>
     `;
   } else {
     doCreds.style.display = 'block';
@@ -1862,6 +1888,8 @@ async function startDeploy(e, cardNum) {
     azure_subscription_id: val('azure_subscription_id'),
     azure_client_id: val('azure_client_id'),
     azure_client_secret: val('azure_client_secret'),
+    byteplus_access_key: val('byteplus_access_key'),
+    byteplus_secret_key: val('byteplus_secret_key'),
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),

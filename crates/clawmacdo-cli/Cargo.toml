@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cli"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
 
@@ -9,11 +9,12 @@ name = "clawmacdo"
 path = "src/main.rs"
 
 [features]
-default = ["web-ui", "tencent-cloud", "lightsail", "azure"]
+default = ["web-ui", "tencent-cloud", "lightsail", "azure", "byteplus"]
 web-ui = ["axum", "tokio-stream"]
 lightsail = ["clawmacdo-cloud/lightsail"]
 azure = ["clawmacdo-cloud/azure"]
 tencent-cloud = ["clawmacdo-cloud/tencent"]
+byteplus = ["clawmacdo-cloud/byteplus"]
 digitalocean-only = ["clawmacdo-cloud/digitalocean"]
 aws-only = ["lightsail"]
 minimal = []  # Minimal build without web UI

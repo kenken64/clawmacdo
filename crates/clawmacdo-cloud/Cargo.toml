@@ -1,15 +1,16 @@
 [package]
 name = "clawmacdo-cloud"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Cloud provider implementations for ClawMacdo"
 
 [features]
-default = ["digitalocean", "tencent"]
+default = ["digitalocean", "tencent", "byteplus"]
 digitalocean = []
 lightsail = []  # AWS CLI integration (no extra dependencies)
 tencent = ["hex", "hmac", "sha2"]
 azure = []  # Azure CLI integration (no extra dependencies)
+byteplus = ["hex", "hmac", "sha2"]
 
 [dependencies]
 # Core dependencies

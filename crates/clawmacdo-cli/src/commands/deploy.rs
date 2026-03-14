@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+#[cfg(feature = "byteplus")]
+use clawmacdo_cloud::byteplus::BytePlusClient;
 use clawmacdo_cloud::cloud_init;
 use clawmacdo_cloud::digitalocean::DoClient;
 #[cfg(feature = "lightsail")]
@@ -33,6 +35,8 @@ pub struct DeployParams {
     pub azure_subscription_id: String,
     pub azure_client_id: String,
     pub azure_client_secret: String,
+    pub byteplus_access_key: String,
+    pub byteplus_secret_key: String,
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
@@ -219,7 +223,8 @@ fn resolve_provider(provider: &str) -> Result<CloudProviderType> {
         "lightsail" | "aws" => Ok(CloudProviderType::Lightsail),
         "tencent" | "tc" => Ok(CloudProviderType::Tencent),
         "azure" | "az" => Ok(CloudProviderType::Azure),
-        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', 'tencent', or 'azure'."),
+        "byteplus" | "bp" => Ok(CloudProviderType::BytePlus),
+        _ => bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', 'tencent', 'azure', or 'byteplus'."),
     }
 }
 
@@ -240,6 +245,12 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
         #[cfg(not(feature = "azure"))]
         CloudProviderType::Azure => {
             bail!("Azure support not compiled in. Build with --features azure")
+        }
+        #[cfg(feature = "byteplus")]
+        CloudProviderType::BytePlus => run_byteplus(params).await,
+        #[cfg(not(feature = "byteplus"))]
+        CloudProviderType::BytePlus => {
+            bail!("BytePlus support not compiled in. Build with --features byteplus")
         }
     }
 }
@@ -745,6 +756,356 @@ SVCEOF\n\
         id: deploy_id.to_string(),
         provider: Some(CloudProviderType::Tencent),
         droplet_id: 0, // Not applicable for Tencent
+        instance_id: Some(instance_id),
+        hostname: hostname.to_string(),
+        ip_address: ip.clone(),
+        region: region.to_string(),
+        size: size.to_string(),
+        ssh_key_path: keypair.private_key_path.display().to_string(),
+        ssh_key_fingerprint: String::new(),
+        ssh_key_id: Some(key_info.id),
+        resource_group: None,
+        backup_restored,
+        created_at: Utc::now(),
+    };
+    let record_path = record.save()?;
+    progress::emit(tx, &format!("  Saved: {}", record_path.display()));
+    progress::emit(tx, "\n[Step 16/16] Done!");
+    record_step_complete(step_db, &deploy_id, 16);
+    ui::print_summary(&record);
+    Ok(record)
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// BytePlus deploy
+// ══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "byteplus")]
+async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
+    config::ensure_dirs()?;
+    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let tx = &params.progress_tx;
+    let step_db = &params.db;
+
+    // Step 1: Resolve parameters
+    record_step_start(step_db, &deploy_id, 1, "Resolving parameters");
+    progress::emit(tx, "\n[Step 1/16] Resolving parameters...");
+    let region = params
+        .region
+        .unwrap_or_else(|| config::DEFAULT_BYTEPLUS_REGION.to_string());
+    let size = params
+        .size
+        .unwrap_or_else(|| config::DEFAULT_BYTEPLUS_SIZE.to_string());
+    let hostname = params
+        .hostname
+        .unwrap_or_else(|| format!("openclaw-{}", &deploy_id[..8]));
+    let backup_path = if params.non_interactive {
+        params.backup
+    } else {
+        params.backup.or_else(|| ui::prompt_backup().ok().flatten())
+    };
+
+    progress::emit(tx, "  Provider: BytePlus Cloud");
+    progress::emit(tx, &format!("  Region:   {region}"));
+    progress::emit(tx, &format!("  Size:     {size}"));
+    progress::emit(tx, &format!("  Hostname: {hostname}"));
+    progress::emit(
+        tx,
+        &format!(
+            "  Backup:   {}",
+            backup_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".into())
+        ),
+    );
+
+    let (anthropic_api_key, anthropic_setup_token) =
+        split_anthropic_credential(&params.anthropic_key);
+    record_step_complete(step_db, &deploy_id, 1);
+
+    // Step 2: Generate SSH key pair
+    record_step_start(step_db, &deploy_id, 2, "Generating SSH key pair");
+    progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
+    let keypair = ssh::generate_keypair(&deploy_id)?;
+    progress::emit(
+        tx,
+        &format!("  Key saved: {}", keypair.private_key_path.display()),
+    );
+    record_step_complete(step_db, &deploy_id, 2);
+
+    // Step 3: Upload public key to BytePlus
+    record_step_start(
+        step_db,
+        &deploy_id,
+        3,
+        "Uploading SSH public key to BytePlus",
+    );
+    progress::emit(tx, "\n[Step 3/16] Uploading SSH public key to BytePlus...");
+    let bp_client = BytePlusClient::new(
+        &params.byteplus_access_key,
+        &params.byteplus_secret_key,
+        &region,
+    )?;
+    let key_name = format!("clawmacdo_{}", &deploy_id[..8]);
+    let key_info = bp_client
+        .import_key_pair(&key_name, &keypair.public_key_openssh)
+        .await
+        .context("Failed to upload SSH key to BytePlus")?;
+    progress::emit(tx, &format!("  Key ID: {}", key_info.id));
+    record_step_complete(step_db, &deploy_id, 3);
+
+    // Step 4: Create ECS instance
+    record_step_start(step_db, &deploy_id, 4, "Creating ECS instance");
+    progress::emit(tx, "\n[Step 4/16] Creating ECS instance with cloud-init...");
+    if has_value(&anthropic_setup_token) {
+        progress::emit(tx, "  Detected Anthropic setup token (sk-ant-oat...).");
+    }
+    let user_data = cloud_init::generate();
+    let user_data_b64 =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &user_data);
+    let instance_id = bp_client
+        .create_instance(
+            &hostname,
+            &size,
+            &key_name,
+            &user_data_b64,
+            &params.customer_email,
+        )
+        .await
+        .context("Failed to create BytePlus ECS instance")?;
+    progress::emit(tx, &format!("  Instance created: {instance_id}"));
+    record_step_complete(step_db, &deploy_id, 4);
+
+    // Step 5: Wait for instance to be RUNNING
+    record_step_start(step_db, &deploy_id, 5, "Waiting for instance to be RUNNING");
+    progress::emit(tx, "\n[Step 5/16] Waiting for instance to become active...");
+    let sp = ui::spinner("[Step 5/16] Waiting for instance to become active...");
+    let instance = bp_client
+        .wait_for_running(&instance_id, std::time::Duration::from_secs(300))
+        .await
+        .context("Instance did not become RUNNING within 5 minutes")?;
+    let ip = instance.public_ip.unwrap();
+    let msg = format!("[Step 5/16] Instance active at {ip}");
+    sp.finish_with_message(msg.clone());
+    progress::emit(tx, &msg);
+    record_step_complete(step_db, &deploy_id, 5);
+
+    // Step 6: Wait for SSH
+    record_step_start(step_db, &deploy_id, 6, "Waiting for SSH");
+    progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
+    let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
+    ssh::wait_for_ssh(
+        &ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(300),
+    )
+    .await
+    .context("SSH did not become available within 5 minutes")?;
+    sp.finish_with_message("[Step 6/16] SSH ready");
+    progress::emit(tx, "[Step 6/16] SSH ready");
+    record_step_complete(step_db, &deploy_id, 6);
+
+    // Step 7: Wait for cloud-init
+    record_step_start(step_db, &deploy_id, 7, "Waiting for cloud-init");
+    progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
+    let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
+    ssh::wait_for_cloud_init(
+        &ip,
+        &keypair.private_key_path,
+        std::time::Duration::from_secs(1800),
+        None,
+    )
+    .await
+    .context("Cloud-init did not complete within 30 minutes")?;
+    sp.finish_with_message("[Step 7/16] Cloud-init complete");
+    progress::emit(tx, "[Step 7/16] Cloud-init complete");
+    record_step_complete(step_db, &deploy_id, 7);
+
+    // Step 8: Upload & restore backup
+    let backup_restored: Option<String>;
+    if let Some(bp) = backup_path.as_deref() {
+        record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
+        progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
+        let sp = ui::spinner("[Step 8/16] Uploading and restoring backup...");
+        let remote_archive = "/tmp/openclaw_backup.tar.gz";
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        let bp_c = bp.to_path_buf();
+        tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
+            .await??;
+        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
+        progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
+        backup_restored = Some(bp.display().to_string());
+        record_step_complete(step_db, &deploy_id, 8);
+    } else {
+        record_step_skipped(step_db, &deploy_id, 8);
+        progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
+        backup_restored = None;
+    }
+
+    // Steps 9–14: Provision (identical SSH-based provisioning)
+    let (on_step, on_step_done) = make_step_callbacks(step_db, &deploy_id);
+    let provision_opts = ProvisionOpts {
+        anthropic_api_key: &anthropic_api_key,
+        anthropic_setup_token: &anthropic_setup_token,
+        openai_key: &params.openai_key,
+        gemini_key: &params.gemini_key,
+        whatsapp_phone_number: &params.whatsapp_phone_number,
+        telegram_bot_token: &params.telegram_bot_token,
+        public_key_openssh: &keypair.public_key_openssh,
+        tailscale: params.tailscale,
+        tailscale_auth_key: params.tailscale_auth_key.as_deref(),
+        hostname: &hostname,
+        ssh_user: None,
+        progress_tx: tx.clone(),
+        on_step,
+        on_step_done,
+    };
+    provision::run(&ip, &keypair.private_key_path, &provision_opts)
+        .await
+        .context("Provision failed")?;
+
+    // Step 15: Start gateway (BytePlus path — same as Tencent)
+    record_step_start(step_db, &deploy_id, 15, "Starting OpenClaw gateway");
+    progress::emit(
+        tx,
+        "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
+    );
+    let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
+    let home = config::OPENCLAW_HOME;
+    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
+        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
+    } else {
+        ""
+    };
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
+    let sandbox_setup_cmd = if params.enable_sandbox {
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi && \
+             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
+        )
+    } else {
+        "true".to_string()
+    };
+    let start_cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
+         if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
+           (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
+         fi; \
+         OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
+         SVC={home}/.config/systemd/user/openclaw-gateway.service; \
+         mkdir -p {home}/.config/systemd/user; \
+         cat > \"$SVC\" << SVCEOF\n\
+[Unit]\n\
+Description=OpenClaw Gateway\n\
+After=network-online.target\n\
+Wants=network-online.target\n\
+\n\
+[Service]\n\
+Type=simple\n\
+WorkingDirectory={home}/.openclaw\n\
+ExecStart=$OC_BIN gateway run\n\
+Restart=always\n\
+RestartSec=5\n\
+Environment=HOME={home}\n\
+Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
+Environment=OPENCLAW_NO_RESPAWN=1\n\
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
+EnvironmentFile=-{home}/.openclaw/.env\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n\
+SVCEOF\n\
+         mkdir -p /var/tmp/openclaw-compile-cache && \
+         OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
+         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         ({sandbox_setup_cmd}) && \
+         (systemctl --user daemon-reload || true) && \
+         (systemctl --user enable openclaw-gateway.service || true) && \
+         (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
+         for i in $(seq 1 150); do \
+           STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
+           if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
+           sleep 1; \
+         done; exit 1"
+    );
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    let start_result = tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &start_cmd)
+    })
+    .await?;
+    if let Err(e) = start_result {
+        let err_msg = format!("OpenClaw gateway start failed on BytePlus instance: {e}");
+        record_step_failed(step_db, &deploy_id, 15, &err_msg);
+        bail!("{err_msg}");
+    }
+    sp.finish_with_message("[Step 15/16] Gateway started (user service)");
+    progress::emit(tx, "[Step 15/16] Gateway started (user service)");
+
+    // Model setup (primary + failovers)
+    let failovers = collect_failovers(
+        &params.failover_1,
+        &params.failover_2,
+        &params.anthropic_key,
+        &params.openai_key,
+        &params.gemini_key,
+    );
+    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    progress::emit(tx, "[Step 15/16] Configuring model setup...");
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
+    })
+    .await??;
+
+    // Profile setup (tools.profile in openclaw.json)
+    let profile_cmd = build_profile_setup_cmd(&params.profile);
+    progress::emit(
+        tx,
+        &format!(
+            "[Step 15/16] Setting tools profile to '{}'...",
+            params.profile
+        ),
+    );
+    let ip_c = ip.clone();
+    let key_c = keypair.private_key_path.clone();
+    tokio::task::spawn_blocking(move || {
+        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
+    })
+    .await??;
+    record_step_complete(step_db, &deploy_id, 15);
+
+    // Step 16: Save DeployRecord
+    record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
+    progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
+    let record = DeployRecord {
+        id: deploy_id.to_string(),
+        provider: Some(CloudProviderType::BytePlus),
+        droplet_id: 0,
         instance_id: Some(instance_id),
         hostname: hostname.to_string(),
         ip_address: ip.clone(),
