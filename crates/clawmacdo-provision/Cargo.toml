@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-provision"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 description = "Server provisioning and setup logic for ClawMacdo"
 

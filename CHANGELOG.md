@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.0
+
+### Fixed
+- Make `serde_json` and `rusqlite` non-optional in CLI crate (fixes build without `web-ui` feature)
+
+### Changed
+- `web-ui` feature flag now only gates `axum` and `tokio-stream` dependencies
+
 ## v0.9.1
 
 ### Fixed
