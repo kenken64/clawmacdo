@@ -35,8 +35,27 @@ enum Commands {
     },
 }
 
+/// Check that required external CLIs are installed for compiled-in providers.
+/// Auto-installs missing CLIs when possible (brew on macOS, official scripts on Linux).
+fn preflight_cli_checks() {
+    #[cfg(feature = "lightsail")]
+    {
+        if let Err(e) = clawmacdo_cloud::lightsail_cli::ensure_aws_cli() {
+            eprintln!("Warning: AWS CLI prerequisite check failed: {e}");
+        }
+    }
+    #[cfg(feature = "azure")]
+    {
+        if let Err(e) = clawmacdo_cloud::azure_cli::ensure_az_cli() {
+            eprintln!("Warning: Azure CLI prerequisite check failed: {e}");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    preflight_cli_checks();
+
     let cli = Cli::parse();
 
     match cli.command {
