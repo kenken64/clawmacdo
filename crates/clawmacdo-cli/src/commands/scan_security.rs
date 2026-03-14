@@ -12,6 +12,7 @@ pub struct ScanSecurity {
     pub out: Option<PathBuf>,
 }
 
+#[allow(dead_code)]
 pub fn run(args: ScanSecurity) -> anyhow::Result<()> {
     println!(
         "TODO: implement security scan. target={} host={:?} out={:?}",

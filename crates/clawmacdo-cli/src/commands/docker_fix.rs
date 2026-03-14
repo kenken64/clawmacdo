@@ -54,6 +54,7 @@ pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<Docke
     Ok(DockerFixResult { ok, output })
 }
 
+#[allow(dead_code)]
 pub async fn run(ip: &str, key: &Path, ssh_user: &str) -> Result<()> {
     println!("Repairing agent Docker access on {ip}...");
     let result = repair_access(ip, key, ssh_user).await?;

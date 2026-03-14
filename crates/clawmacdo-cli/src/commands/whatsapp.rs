@@ -61,7 +61,7 @@ pub async fn repair_support(ip: &str, key: &Path) -> Result<WhatsAppRepairResult
     Ok(WhatsAppRepairResult { supported, output })
 }
 
-/// RRun.
+#[allow(dead_code)]
 pub async fn run(ip: &str, key: &Path) -> Result<()> {
     println!("Repairing WhatsApp support on {ip}...");
     let result = repair_support(ip, key).await?;
