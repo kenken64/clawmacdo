@@ -64,6 +64,14 @@ struct DeployRequest {
     #[serde(default)]
     aws_region: String,
     #[serde(default)]
+    azure_tenant_id: String,
+    #[serde(default)]
+    azure_subscription_id: String,
+    #[serde(default)]
+    azure_client_id: String,
+    #[serde(default)]
+    azure_client_secret: String,
+    #[serde(default)]
     anthropic_key: String,
     #[serde(default)]
     openai_key: String,
@@ -349,6 +357,10 @@ async fn start_deploy_handler(
             aws_access_key_id: req.aws_access_key_id,
             aws_secret_access_key: req.aws_secret_access_key,
             aws_region: req.aws_region,
+            azure_tenant_id: req.azure_tenant_id,
+            azure_subscription_id: req.azure_subscription_id,
+            azure_client_id: req.azure_client_id,
+            azure_client_secret: req.azure_client_secret,
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
@@ -806,6 +818,7 @@ async fn config_handler() -> impl IntoResponse {
 fn ssh_user_for_provider(provider: Option<&str>) -> &str {
     match provider {
         Some(p) if p.eq_ignore_ascii_case("lightsail") => "ubuntu",
+        Some(p) if p.eq_ignore_ascii_case("azure") => "azureuser",
         _ => "root",
     }
 }
@@ -1207,6 +1220,7 @@ function addDeployCard(initialState) {
             <option value="digitalocean" selected>DigitalOcean</option>
             <option value="tencent">Tencent Cloud</option>
             <option value="lightsail">AWS Lightsail</option>
+            <option value="azure">Microsoft Azure</option>
           </select>
         </div>
         <div id="do-creds-${n}">
@@ -1219,6 +1233,12 @@ function addDeployCard(initialState) {
         <div id="aws-creds-${n}" style="display:none" class="space-y-4">
           ${passwordField('aws_access_key_id', 'AWS Access Key ID', 'AKIA...', true)}
           ${passwordField('aws_secret_access_key', 'AWS Secret Access Key', '...', true)}
+        </div>
+        <div id="azure-creds-${n}" style="display:none" class="space-y-4">
+          ${passwordField('azure_tenant_id', 'Azure Tenant ID', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', true)}
+          ${passwordField('azure_subscription_id', 'Azure Subscription ID', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', true)}
+          ${passwordField('azure_client_id', 'Azure Client ID', 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', true)}
+          ${passwordField('azure_client_secret', 'Azure Client Secret', '...', true)}
         </div>
       </fieldset>
       <fieldset class="space-y-4">
@@ -1441,6 +1461,7 @@ function toggleProvider(select, n) {
   const doCreds = document.getElementById('do-creds-' + n);
   const tcCreds = document.getElementById('tc-creds-' + n);
   const awsCreds = document.getElementById('aws-creds-' + n);
+  const azureCreds = document.getElementById('azure-creds-' + n);
   const regionSel = document.getElementById('region-' + n);
   const sizeSel = document.getElementById('size-' + n);
 
@@ -1448,9 +1469,11 @@ function toggleProvider(select, n) {
   doCreds.style.display = 'none';
   tcCreds.style.display = 'none';
   awsCreds.style.display = 'none';
+  azureCreds.style.display = 'none';
   doCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   tcCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
   awsCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
+  azureCreds.querySelectorAll('input').forEach(i => { i.required = false; i.value = ''; });
 
   if (provider === 'tencent') {
     tcCreds.style.display = 'block';
@@ -1498,6 +1521,32 @@ function toggleProvider(select, n) {
       <option value="medium" selected>medium (2 vCPUs, 4 GB - $30/mo)</option>
       <option value="large">large (2 vCPUs, 8 GB - $60/mo)</option>
       <option value="xlarge">xlarge (4 vCPUs, 16 GB - $120/mo)</option>
+    `;
+  } else if (provider === 'azure') {
+    azureCreds.style.display = 'block';
+    azureCreds.querySelectorAll('input').forEach(i => i.required = true);
+    regionSel.innerHTML = `
+      <option value="southeastasia" selected>southeastasia (Singapore)</option>
+      <option value="eastasia">eastasia (Hong Kong)</option>
+      <option value="eastus">eastus (East US)</option>
+      <option value="eastus2">eastus2 (East US 2)</option>
+      <option value="westus2">westus2 (West US 2)</option>
+      <option value="westeurope">westeurope (Netherlands)</option>
+      <option value="northeurope">northeurope (Ireland)</option>
+      <option value="uksouth">uksouth (UK South)</option>
+      <option value="japaneast">japaneast (Tokyo)</option>
+      <option value="koreacentral">koreacentral (Seoul)</option>
+      <option value="australiaeast">australiaeast (Sydney)</option>
+      <option value="centralindia">centralindia (Pune)</option>
+      <option value="canadacentral">canadacentral (Toronto)</option>
+    `;
+    sizeSel.innerHTML = `
+      <option value="Standard_B1ms">Standard_B1ms (1 vCPU, 2 GB)</option>
+      <option value="Standard_B2s" selected>Standard_B2s (2 vCPUs, 4 GB)</option>
+      <option value="Standard_B2ms">Standard_B2ms (2 vCPUs, 8 GB)</option>
+      <option value="Standard_B4ms">Standard_B4ms (4 vCPUs, 16 GB)</option>
+      <option value="Standard_D2s_v5">Standard_D2s_v5 (2 vCPUs, 8 GB)</option>
+      <option value="Standard_D4s_v5">Standard_D4s_v5 (4 vCPUs, 16 GB)</option>
     `;
   } else {
     doCreds.style.display = 'block';
@@ -1805,6 +1854,10 @@ async function startDeploy(e, cardNum) {
     aws_access_key_id: val('aws_access_key_id'),
     aws_secret_access_key: val('aws_secret_access_key'),
     aws_region: val('region'),
+    azure_tenant_id: val('azure_tenant_id'),
+    azure_subscription_id: val('azure_subscription_id'),
+    azure_client_id: val('azure_client_id'),
+    azure_client_secret: val('azure_client_secret'),
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),

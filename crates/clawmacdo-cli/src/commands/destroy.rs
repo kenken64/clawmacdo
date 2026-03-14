@@ -12,6 +12,11 @@ pub struct DestroyParams {
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
     pub aws_region: String,
+    pub azure_tenant_id: String,
+    pub azure_subscription_id: String,
+    pub azure_client_id: String,
+    pub azure_client_secret: String,
+    pub azure_resource_group: String,
     pub name: String,
     pub yes: bool,
 }
@@ -30,9 +35,19 @@ pub async fn run(params: DestroyParams) -> Result<()> {
             }
         }
         "tencent" => run_tencent(params).await,
+        "azure" => {
+            #[cfg(feature = "azure")]
+            {
+                run_azure(params).await
+            }
+            #[cfg(not(feature = "azure"))]
+            {
+                bail!("Azure support not compiled in. Build with --features azure")
+            }
+        }
         _ => {
             let provider = &params.provider;
-            bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', or 'tencent'.")
+            bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', 'tencent', or 'azure'.")
         }
     }
 }
@@ -240,5 +255,88 @@ async fn run_tencent(params: DestroyParams) -> Result<()> {
     }
 
     println!("\nDestroy complete for '{}' ({ip}).", instance.name);
+    Ok(())
+}
+
+#[cfg(feature = "azure")]
+async fn run_azure(params: DestroyParams) -> Result<()> {
+    use clawmacdo_cloud::azure_cli::{self, AzureCliProvider};
+    use clawmacdo_cloud::CloudProvider;
+
+    azure_cli::ensure_az_cli()?;
+    azure_cli::az_login(
+        &params.azure_tenant_id,
+        &params.azure_client_id,
+        &params.azure_client_secret,
+    )?;
+    azure_cli::az_set_subscription(&params.azure_subscription_id)?;
+
+    let provider = AzureCliProvider::new(
+        String::new(), // region not needed for destroy
+        params.azure_resource_group.clone(),
+        params.azure_subscription_id.clone(),
+    );
+
+    println!("Fetching openclaw instances (Azure)...");
+    let instances = provider.list_instances("openclaw").await?;
+
+    if instances.is_empty() {
+        println!("No instances found in resource group '{}'.", params.azure_resource_group);
+    } else {
+        let instance = instances
+            .into_iter()
+            .find(|i| i.name == params.name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No openclaw instance found with name '{}' in resource group '{}'",
+                    params.name,
+                    params.azure_resource_group
+                )
+            })?;
+
+        println!(
+            "\nInstance to destroy:"
+        );
+        println!("  Name:   {}", instance.name);
+        println!(
+            "  IP:     {}",
+            instance.public_ip.as_deref().unwrap_or("N/A")
+        );
+        println!("  Status: {}", instance.status);
+
+        if !params.yes {
+            let confirmed = Confirm::new()
+                .with_prompt("Permanently destroy this Azure VM and its resource group?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+    }
+
+    println!(
+        "\nDeleting resource group '{}' (this removes all resources)...",
+        params.azure_resource_group
+    );
+    provider.delete_resource_group()?;
+    println!("Resource group deletion initiated (--no-wait).");
+
+    // Clean up local key
+    let hostname_suffix = params
+        .name
+        .strip_prefix("openclaw-")
+        .unwrap_or(&params.name);
+    let local_key = config::keys_dir()?.join(format!("clawmacdo_{hostname_suffix}"));
+    if local_key.exists() {
+        std::fs::remove_file(&local_key)?;
+        println!("Removed local key: {}", local_key.display());
+    }
+
+    println!(
+        "\nDestroy complete for '{}' (resource group: {}).",
+        params.name, params.azure_resource_group
+    );
     Ok(())
 }
