@@ -6,11 +6,16 @@ use clawmacdo_cloud::digitalocean::DoClient;
 use clawmacdo_cloud::lightsail_cli::LightsailCliProvider;
 use clawmacdo_cloud::tencent::TencentClient;
 use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
+use clawmacdo_db as db;
 use clawmacdo_provision::{self as provision, ProvisionOpts};
 use clawmacdo_ssh as ssh;
 use clawmacdo_ui::{progress, ui};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+
+/// Database handle type alias (shared with serve.rs).
+pub type Db = Arc<Mutex<rusqlite::Connection>>;
 
 /// Parameters for a deploy operation.
 pub struct DeployParams {
@@ -47,6 +52,67 @@ pub struct DeployParams {
     pub profile: String,
     pub non_interactive: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
+    pub db: Option<Db>,
+}
+
+// ── Step recording helpers ──────────────────────────────────────────────────
+
+const TOTAL_STEPS: i32 = 16;
+
+fn record_step_start(db: &Option<Db>, deploy_id: &str, step: i32, label: &str) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = db::insert_deploy_step(&conn, deploy_id, step, TOTAL_STEPS, label);
+        }
+    }
+}
+
+fn record_step_complete(db: &Option<Db>, deploy_id: &str, step: i32) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = db::complete_deploy_step(&conn, deploy_id, step);
+        }
+    }
+}
+
+fn record_step_failed(db: &Option<Db>, deploy_id: &str, step: i32, err: &str) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = db::fail_deploy_step(&conn, deploy_id, step, err);
+        }
+    }
+}
+
+fn record_step_skipped(db: &Option<Db>, deploy_id: &str, step: i32) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = db::skip_deploy_step(&conn, deploy_id, step);
+        }
+    }
+}
+
+fn make_step_callbacks(
+    step_db: &Option<Db>,
+    deploy_id: &str,
+) -> (
+    Option<provision::StepStartFn>,
+    Option<provision::StepDoneFn>,
+) {
+    let on_step: Option<provision::StepStartFn> = {
+        let db_clone = step_db.clone();
+        let did = deploy_id.to_string();
+        Some(Box::new(move |step: i32, label: &str| {
+            record_step_start(&db_clone, &did, step, label);
+        }))
+    };
+    let on_step_done: Option<provision::StepDoneFn> = {
+        let db_clone = step_db.clone();
+        let did = deploy_id.to_string();
+        Some(Box::new(move |step: i32| {
+            record_step_complete(&db_clone, &did, step);
+        }))
+    };
+    (on_step, on_step_done)
 }
 
 fn has_value(s: &str) -> bool {
@@ -186,8 +252,10 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let tx = &params.progress_tx;
+    let step_db = &params.db;
 
     // Step 1: Resolve parameters
+    record_step_start(step_db, &deploy_id, 1, "Resolving parameters");
     progress::emit(tx, "\n[Step 1/16] Resolving parameters...");
     let region = params.region.unwrap_or_else(|| {
         if params.non_interactive {
@@ -231,19 +299,23 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
                 .unwrap_or_else(|| "None".into())
         ),
     );
+    record_step_complete(step_db, &deploy_id, 1);
 
     let (anthropic_api_key, anthropic_setup_token) =
         split_anthropic_credential(&params.anthropic_key);
 
     // Step 2: Generate SSH key pair
+    record_step_start(step_db, &deploy_id, 2, "Generating SSH key pair");
     progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
     let keypair = ssh::generate_keypair(&deploy_id)?;
     progress::emit(
         tx,
         &format!("  Key saved: {}", keypair.private_key_path.display()),
     );
+    record_step_complete(step_db, &deploy_id, 2);
 
     // Step 3: Upload public key to DO
+    record_step_start(step_db, &deploy_id, 3, "Uploading SSH public key");
     progress::emit(
         tx,
         "\n[Step 3/16] Uploading SSH public key to DigitalOcean...",
@@ -261,8 +333,10 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
             key_info.id, key_info.fingerprint
         ),
     );
+    record_step_complete(step_db, &deploy_id, 3);
 
     // Step 4: Create droplet
+    record_step_start(step_db, &deploy_id, 4, "Creating droplet with cloud-init");
     progress::emit(tx, "\n[Step 4/16] Creating droplet with cloud-init...");
     if has_value(&anthropic_setup_token) {
         progress::emit(tx, "  Detected Anthropic setup token (sk-ant-oat...).");
@@ -282,6 +356,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         .context("Failed to create droplet")?;
     let droplet_id = droplet.id;
     progress::emit(tx, &format!("  Droplet created: ID {droplet_id}"));
+    record_step_complete(step_db, &deploy_id, 4);
 
     let result = deploy_steps_5_through_16(
         &do_client,
@@ -308,6 +383,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         &params.failover_2,
         &params.profile,
         &params.progress_tx,
+        &params.db,
     )
     .await;
 
@@ -340,8 +416,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let tx = &params.progress_tx;
+    let step_db = &params.db;
 
     // Step 1: Resolve parameters
+    record_step_start(step_db, &deploy_id, 1, "Resolving parameters");
     progress::emit(tx, "\n[Step 1/16] Resolving parameters...");
     let region = params
         .region
@@ -375,16 +453,25 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
 
     let (anthropic_api_key, anthropic_setup_token) =
         split_anthropic_credential(&params.anthropic_key);
+    record_step_complete(step_db, &deploy_id, 1);
 
     // Step 2: Generate SSH key pair
+    record_step_start(step_db, &deploy_id, 2, "Generating SSH key pair");
     progress::emit(tx, "\n[Step 2/16] Generating SSH key pair...");
     let keypair = ssh::generate_keypair(&deploy_id)?;
     progress::emit(
         tx,
         &format!("  Key saved: {}", keypair.private_key_path.display()),
     );
+    record_step_complete(step_db, &deploy_id, 2);
 
     // Step 3: Upload public key to Tencent Cloud
+    record_step_start(
+        step_db,
+        &deploy_id,
+        3,
+        "Uploading SSH public key to Tencent Cloud",
+    );
     progress::emit(
         tx,
         "\n[Step 3/16] Uploading SSH public key to Tencent Cloud...",
@@ -400,8 +487,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         .await
         .context("Failed to upload SSH key to Tencent Cloud")?;
     progress::emit(tx, &format!("  Key ID: {}", key_info.id));
+    record_step_complete(step_db, &deploy_id, 3);
 
     // Step 4: Create CVM instance
+    record_step_start(step_db, &deploy_id, 4, "Creating CVM instance");
     progress::emit(tx, "\n[Step 4/16] Creating CVM instance with cloud-init...");
     if has_value(&anthropic_setup_token) {
         progress::emit(tx, "  Detected Anthropic setup token (sk-ant-oat...).");
@@ -421,8 +510,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         .await
         .context("Failed to create CVM instance")?;
     progress::emit(tx, &format!("  Instance created: {instance_id}"));
+    record_step_complete(step_db, &deploy_id, 4);
 
     // Step 5: Wait for instance to be RUNNING
+    record_step_start(step_db, &deploy_id, 5, "Waiting for instance to be RUNNING");
     progress::emit(tx, "\n[Step 5/16] Waiting for instance to become active...");
     let sp = ui::spinner("[Step 5/16] Waiting for instance to become active...");
     let instance = tc_client
@@ -433,8 +524,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     let msg = format!("[Step 5/16] Instance active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
+    record_step_complete(step_db, &deploy_id, 5);
 
     // Step 6: Wait for SSH
+    record_step_start(step_db, &deploy_id, 6, "Waiting for SSH");
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
     ssh::wait_for_ssh(
@@ -446,8 +539,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     .context("SSH did not become available within 5 minutes")?;
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
+    record_step_complete(step_db, &deploy_id, 6);
 
     // Step 7: Wait for cloud-init
+    record_step_start(step_db, &deploy_id, 7, "Waiting for cloud-init");
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
     ssh::wait_for_cloud_init(
@@ -460,10 +555,12 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
+    record_step_complete(step_db, &deploy_id, 7);
 
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
     if let Some(bp) = backup_path.as_deref() {
+        record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
         let sp = ui::spinner("[Step 8/16] Uploading and restoring backup...");
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
@@ -479,12 +576,15 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
+        record_step_complete(step_db, &deploy_id, 8);
     } else {
+        record_step_skipped(step_db, &deploy_id, 8);
         progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
         backup_restored = None;
     }
 
     // Steps 9–14: Provision (identical SSH-based provisioning)
+    let (on_step, on_step_done) = make_step_callbacks(step_db, &deploy_id);
     let provision_opts = ProvisionOpts {
         anthropic_api_key: &anthropic_api_key,
         anthropic_setup_token: &anthropic_setup_token,
@@ -498,6 +598,8 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         hostname: &hostname,
         ssh_user: None,
         progress_tx: tx.clone(),
+        on_step,
+        on_step_done,
     };
     provision::run(&ip, &keypair.private_key_path, &provision_opts)
         .await
@@ -508,6 +610,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     // ~/.local/bin/openclaw (pnpm global). We detect and use whichever exists.
     // We also avoid the `sg docker -c` wrapper in ExecStart which causes exit 127/203
     // on some Ubuntu images where sg is not in the systemd service PATH.
+    record_step_start(step_db, &deploy_id, 15, "Starting OpenClaw gateway");
     progress::emit(
         tx,
         "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
@@ -594,7 +697,9 @@ SVCEOF\n\
     })
     .await?;
     if let Err(e) = start_result {
-        bail!("OpenClaw gateway start failed on Tencent instance: {e}");
+        let err_msg = format!("OpenClaw gateway start failed on Tencent instance: {e}");
+        record_step_failed(step_db, &deploy_id, 15, &err_msg);
+        bail!("{err_msg}");
     }
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
@@ -618,15 +723,23 @@ SVCEOF\n\
 
     // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{}'...", params.profile));
+    progress::emit(
+        tx,
+        &format!(
+            "[Step 15/16] Setting tools profile to '{}'...",
+            params.profile
+        ),
+    );
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
     tokio::task::spawn_blocking(move || {
         provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
     })
     .await??;
+    record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
+    record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
         id: deploy_id.to_string(),
@@ -647,6 +760,7 @@ SVCEOF\n\
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 16/16] Done!");
+    record_step_complete(step_db, &deploy_id, 16);
     ui::print_summary(&record);
     Ok(record)
 }
@@ -681,10 +795,17 @@ async fn deploy_steps_5_through_16(
     failover_2: &str,
     profile: &str,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
+    step_db: &Option<Db>,
 ) -> Result<DeployRecord> {
     let tx = progress_tx;
 
     // Step 5: Poll until droplet is active
+    record_step_start(
+        step_db,
+        deploy_id,
+        5,
+        "Waiting for droplet to become active",
+    );
     progress::emit(tx, "\n[Step 5/16] Waiting for droplet to become active...");
     let sp = ui::spinner("[Step 5/16] Waiting for droplet to become active...");
     let droplet = do_client
@@ -695,8 +816,10 @@ async fn deploy_steps_5_through_16(
     let msg = format!("[Step 5/16] Droplet active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
+    record_step_complete(step_db, deploy_id, 5);
 
     // Step 6: Wait for SSH
+    record_step_start(step_db, deploy_id, 6, "Waiting for SSH");
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
     ssh::wait_for_ssh(&ip, private_key_path, std::time::Duration::from_secs(300))
@@ -704,8 +827,10 @@ async fn deploy_steps_5_through_16(
         .context("SSH did not become available within 5 minutes")?;
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
+    record_step_complete(step_db, deploy_id, 6);
 
     // Step 7: Wait for cloud-init
+    record_step_start(step_db, deploy_id, 7, "Waiting for cloud-init to finish");
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
     ssh::wait_for_cloud_init(
@@ -718,8 +843,10 @@ async fn deploy_steps_5_through_16(
     .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
+    record_step_complete(step_db, deploy_id, 7);
 
     // Step 8: Upload & restore backup
+    record_step_start(step_db, deploy_id, 8, "Upload and restore backup");
     let backup_restored: Option<String>;
     if let Some(bp) = backup_path {
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
@@ -737,12 +864,15 @@ async fn deploy_steps_5_through_16(
         sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
+        record_step_complete(step_db, deploy_id, 8);
     } else {
         progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
         backup_restored = None;
+        record_step_skipped(step_db, deploy_id, 8);
     }
 
     // Steps 9-14: Provision
+    let (on_step, on_step_done) = make_step_callbacks(step_db, deploy_id);
     let provision_opts = ProvisionOpts {
         anthropic_api_key,
         anthropic_setup_token,
@@ -756,12 +886,15 @@ async fn deploy_steps_5_through_16(
         hostname,
         ssh_user: None,
         progress_tx: tx.clone(),
+        on_step,
+        on_step_done,
     };
     provision::run(&ip, private_key_path, &provision_opts)
         .await
         .context("Provision failed")?;
 
     // Step 15: Start gateway
+    record_step_start(step_db, deploy_id, 15, "Starting OpenClaw gateway");
     progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway...");
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway...");
     let home = config::OPENCLAW_HOME;
@@ -828,6 +961,7 @@ async fn deploy_steps_5_through_16(
     })
     .await?;
     if let Err(e) = start_result {
+        record_step_failed(step_db, deploy_id, 15, &format!("{e}"));
         bail!("OpenClaw gateway start failed: {e}");
     }
     sp.finish_with_message("[Step 15/16] Gateway started");
@@ -852,15 +986,20 @@ async fn deploy_steps_5_through_16(
 
     // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(profile);
-    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{profile}'..."));
+    progress::emit(
+        tx,
+        &format!("[Step 15/16] Setting tools profile to '{profile}'..."),
+    );
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
     })
     .await??;
+    record_step_complete(step_db, deploy_id, 15);
 
     // Step 16: Save DeployRecord
+    record_step_start(step_db, deploy_id, 16, "Saving deploy record");
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
         id: deploy_id.to_string(),
@@ -881,6 +1020,7 @@ async fn deploy_steps_5_through_16(
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 16/16] Done!");
+    record_step_complete(step_db, deploy_id, 16);
     ui::print_summary(&record);
     Ok(record)
 }
@@ -897,8 +1037,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let tx = &params.progress_tx;
+    let step_db = &params.db;
 
     // Step 1: Validate AWS credentials
+    record_step_start(step_db, &deploy_id, 1, "Validating AWS credentials");
     progress::emit(tx, "\n[Step 1/16] Validating AWS credentials and CLI...");
     if params.aws_access_key_id.is_empty() || params.aws_secret_access_key.is_empty() {
         bail!("AWS credentials required. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY");
@@ -912,12 +1054,16 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     // Initialize Lightsail provider — ensure AWS CLI is available first
     clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
     let lightsail = LightsailCliProvider::new(params.aws_region.clone());
+    record_step_complete(step_db, &deploy_id, 1);
 
     // Step 2: Generate SSH keypair
+    record_step_start(step_db, &deploy_id, 2, "Generating SSH keypair");
     progress::emit(tx, "\n[Step 2/16] Generating SSH keypair...");
     let keypair = clawmacdo_ssh::generate_keypair(&deploy_id)?;
+    record_step_complete(step_db, &deploy_id, 2);
 
     // Step 3: Upload SSH key to AWS Lightsail
+    record_step_start(step_db, &deploy_id, 3, "Uploading SSH key to AWS Lightsail");
     progress::emit(tx, "\n[Step 3/16] Uploading SSH key to AWS Lightsail...");
     let key_name = format!("clawmacdo-{deploy_id}");
     let key_info = lightsail
@@ -926,8 +1072,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         .context("Failed to upload SSH key")?;
 
     progress::emit(tx, &format!("  → SSH Key: {}", key_info.id));
+    record_step_complete(step_db, &deploy_id, 3);
 
     // Step 4: Resolve parameters
+    record_step_start(step_db, &deploy_id, 4, "Resolving parameters");
     progress::emit(tx, "\n[Step 4/16] Resolving parameters...");
     let region = &params.aws_region;
     let size = params.size.unwrap_or_else(|| "s-2vcpu-4gb".to_string());
@@ -945,12 +1093,16 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         tx,
         &format!("  → Region: {region}, Size: {size}, Name: {hostname}"),
     );
+    record_step_complete(step_db, &deploy_id, 4);
 
     // Step 5: Generate cloud-init user data
+    record_step_start(step_db, &deploy_id, 5, "Generating cloud-init user data");
     progress::emit(tx, "\n[Step 5/16] Generating cloud-init user data...");
     let user_data = cloud_init::generate_shell();
+    record_step_complete(step_db, &deploy_id, 5);
 
     // Step 6: Create Lightsail instance
+    record_step_start(step_db, &deploy_id, 6, "Creating Lightsail instance");
     progress::emit(tx, "\n[Step 6/16] Creating Lightsail instance...");
 
     let create_params = clawmacdo_cloud::cloud_provider::CreateInstanceParams {
@@ -966,8 +1118,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
 
     let instance_info = lightsail.create_instance(create_params).await?;
     progress::emit(tx, &format!("  → Instance ID: {}", instance_info.id));
+    record_step_complete(step_db, &deploy_id, 6);
 
     // Step 7: Wait for instance to become active
+    record_step_start(
+        step_db,
+        &deploy_id,
+        7,
+        "Waiting for instance to become active",
+    );
     progress::emit(tx, "\n[Step 7/16] Waiting for instance to become active...");
     let instance_info = lightsail
         .wait_for_active(&instance_info.id, 600) // 10 minute timeout
@@ -978,8 +1137,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         .as_ref()
         .context("Instance has no public IP")?;
     progress::emit(tx, &format!("  → IP: {ip}"));
+    record_step_complete(step_db, &deploy_id, 7);
 
     // Step 8: Wait for SSH (with retries)
+    record_step_start(step_db, &deploy_id, 8, "Waiting for SSH");
     progress::emit(tx, "\n[Step 8/16] Waiting for SSH...");
     let mut ssh_ready = false;
     let mut attempt: u32 = 0;
@@ -1039,15 +1200,18 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
             .await??;
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
+        record_step_complete(step_db, &deploy_id, 8);
     } else {
         progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
         backup_restored = None;
+        record_step_skipped(step_db, &deploy_id, 8);
     }
 
     let (anthropic_api_key, anthropic_setup_token) =
         split_anthropic_credential(&params.anthropic_key);
 
     // Steps 9-14: Provision via shared provisioning flow
+    let (on_step, on_step_done) = make_step_callbacks(step_db, &deploy_id);
     let provision_opts = ProvisionOpts {
         anthropic_api_key: &anthropic_api_key,
         anthropic_setup_token: &anthropic_setup_token,
@@ -1061,12 +1225,15 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         tailscale_auth_key: params.tailscale_auth_key.as_deref(),
         ssh_user: Some("ubuntu"),
         progress_tx: tx.clone(),
+        on_step,
+        on_step_done,
     };
     provision::run(ip, &keypair.private_key_path, &provision_opts)
         .await
         .context("Provision failed")?;
 
     // Step 15: Start gateway (Lightsail path — same as Tencent, uses ubuntu SSH user)
+    record_step_start(step_db, &deploy_id, 15, "Starting OpenClaw gateway");
     progress::emit(
         tx,
         "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
@@ -1152,9 +1319,12 @@ SVCEOF\n\
     })
     .await?;
     if let Err(e) = start_result {
-        bail!("OpenClaw gateway start failed on Lightsail instance: {e}");
+        let err_msg = format!("OpenClaw gateway start failed on Lightsail instance: {e}");
+        record_step_failed(step_db, &deploy_id, 15, &err_msg);
+        bail!("{err_msg}");
     }
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
+    record_step_complete(step_db, &deploy_id, 15);
 
     // Model setup (primary + failovers)
     let failovers = collect_failovers(
@@ -1175,7 +1345,13 @@ SVCEOF\n\
 
     // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{}'...", params.profile));
+    progress::emit(
+        tx,
+        &format!(
+            "[Step 15/16] Setting tools profile to '{}'...",
+            params.profile
+        ),
+    );
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
     tokio::task::spawn_blocking(move || {
@@ -1184,6 +1360,7 @@ SVCEOF\n\
     .await??;
 
     // Step 16: Save DeployRecord
+    record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
         id: deploy_id,
@@ -1204,6 +1381,7 @@ SVCEOF\n\
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 16/16] Done!");
+    record_step_complete(step_db, &record.id, 16);
     progress::emit(tx, "\n[🚀 Done!] Lightsail deployment complete!");
     ui::print_summary(&record);
     Ok(record)
@@ -1221,15 +1399,24 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let tx = &params.progress_tx;
+    let step_db = &params.db;
 
     // Step 1: Validate Azure credentials and CLI
+    record_step_start(
+        step_db,
+        &deploy_id,
+        1,
+        "Validating Azure credentials and CLI",
+    );
     progress::emit(tx, "\n[Step 1/16] Validating Azure credentials and CLI...");
     if params.azure_tenant_id.is_empty()
         || params.azure_subscription_id.is_empty()
         || params.azure_client_id.is_empty()
         || params.azure_client_secret.is_empty()
     {
-        bail!("Azure credentials required: tenant ID, subscription ID, client ID, and client secret");
+        bail!(
+            "Azure credentials required: tenant ID, subscription ID, client ID, and client secret"
+        );
     }
 
     azure_cli::ensure_az_cli()?;
@@ -1240,21 +1427,35 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     )?;
     azure_cli::az_set_subscription(&params.azure_subscription_id)?;
     progress::emit(tx, "  Azure CLI authenticated.");
+    record_step_complete(step_db, &deploy_id, 1);
 
     // Step 2: Generate SSH keypair
+    record_step_start(step_db, &deploy_id, 2, "Generating SSH keypair");
     progress::emit(tx, "\n[Step 2/16] Generating SSH keypair...");
     let keypair = ssh::generate_keypair(&deploy_id)?;
     progress::emit(
         tx,
         &format!("  Key saved: {}", keypair.private_key_path.display()),
     );
+    record_step_complete(step_db, &deploy_id, 2);
 
     // Step 3: Upload SSH key (no-op for Azure — passed inline to az vm create)
-    progress::emit(tx, "\n[Step 3/16] SSH key will be passed inline to Azure VM...");
+    record_step_start(
+        step_db,
+        &deploy_id,
+        3,
+        "SSH key will be passed inline to Azure VM",
+    );
+    progress::emit(
+        tx,
+        "\n[Step 3/16] SSH key will be passed inline to Azure VM...",
+    );
     let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
     progress::emit(tx, &format!("  Key name: {key_name}"));
+    record_step_complete(step_db, &deploy_id, 3);
 
     // Step 4: Resolve parameters and create VM
+    record_step_start(step_db, &deploy_id, 4, "Creating Azure VM with cloud-init");
     let region = params
         .region
         .unwrap_or_else(|| config::DEFAULT_AZURE_REGION.to_string());
@@ -1321,13 +1522,13 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
 
     let instance_info = azure.create_instance(create_params).await?;
     progress::emit(tx, &format!("  VM created: {}", instance_info.name));
+    record_step_complete(step_db, &deploy_id, 4);
 
     // Step 5: Wait for VM to become active
+    record_step_start(step_db, &deploy_id, 5, "Waiting for VM to become active");
     progress::emit(tx, "\n[Step 5/16] Waiting for VM to become active...");
     let sp = ui::spinner("[Step 5/16] Waiting for VM to become active...");
-    let instance_info = azure
-        .wait_for_active(&instance_info.name, 600)
-        .await?;
+    let instance_info = azure.wait_for_active(&instance_info.name, 600).await?;
     let ip = instance_info
         .public_ip
         .as_ref()
@@ -1336,8 +1537,10 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     let msg = format!("[Step 5/16] VM active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
+    record_step_complete(step_db, &deploy_id, 5);
 
     // Step 6: Wait for SSH (with retries — Azure VMs can take a while)
+    record_step_start(step_db, &deploy_id, 6, "Waiting for SSH");
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
     let mut ssh_ready = false;
@@ -1367,8 +1570,10 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     }
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
+    record_step_complete(step_db, &deploy_id, 6);
 
     // Step 7: Wait for cloud-init to complete (Azure uses azureuser)
+    record_step_start(step_db, &deploy_id, 7, "Waiting for cloud-init");
     progress::emit(tx, "\n[Step 7/16] Waiting for cloud-init to finish...");
     let sp = ui::spinner("[Step 7/16] Waiting for cloud-init to finish...");
     ssh::wait_for_cloud_init(
@@ -1381,10 +1586,12 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     .context("Cloud-init did not complete within 30 minutes")?;
     sp.finish_with_message("[Step 7/16] Cloud-init complete");
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
+    record_step_complete(step_db, &deploy_id, 7);
 
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
     if let Some(bp) = backup_path.as_deref() {
+        record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
@@ -1400,13 +1607,16 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
         tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, extract_cmd, "azureuser"))
             .await??;
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
+        record_step_complete(step_db, &deploy_id, 8);
         backup_restored = Some(bp.display().to_string());
     } else {
         progress::emit(tx, "\n[Step 8/16] No backup to restore, skipping.");
+        record_step_skipped(step_db, &deploy_id, 8);
         backup_restored = None;
     }
 
     // Steps 9-14: Provision via shared provisioning flow
+    let (on_step, on_step_done) = make_step_callbacks(step_db, &deploy_id);
     let provision_opts = ProvisionOpts {
         anthropic_api_key: &anthropic_api_key,
         anthropic_setup_token: &anthropic_setup_token,
@@ -1420,12 +1630,15 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
         tailscale_auth_key: params.tailscale_auth_key.as_deref(),
         ssh_user: Some("azureuser"),
         progress_tx: tx.clone(),
+        on_step,
+        on_step_done,
     };
     provision::run(&ip, &keypair.private_key_path, &provision_opts)
         .await
         .context("Provision failed")?;
 
     // Step 15: Start gateway (Azure path — same pattern as Lightsail, uses azureuser SSH user)
+    record_step_start(step_db, &deploy_id, 15, "Starting OpenClaw gateway");
     progress::emit(
         tx,
         "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
@@ -1512,7 +1725,9 @@ SVCEOF\n\
     })
     .await?;
     if let Err(e) = start_result {
-        bail!("OpenClaw gateway start failed on Azure VM: {e}");
+        let err_msg = format!("OpenClaw gateway start failed on Azure VM: {e}");
+        record_step_failed(step_db, &deploy_id, 15, &err_msg);
+        bail!("{err_msg}");
     }
     sp.finish_with_message("[Step 15/16] Gateway started (user service)");
     progress::emit(tx, "[Step 15/16] Gateway started (user service)");
@@ -1536,15 +1751,23 @@ SVCEOF\n\
 
     // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(tx, &format!("[Step 15/16] Setting tools profile to '{}'...", params.profile));
+    progress::emit(
+        tx,
+        &format!(
+            "[Step 15/16] Setting tools profile to '{}'...",
+            params.profile
+        ),
+    );
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
     tokio::task::spawn_blocking(move || {
         provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &profile_cmd, "azureuser")
     })
     .await??;
+    record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
+    record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
     progress::emit(tx, "\n[Step 16/16] Saving deploy record...");
     let record = DeployRecord {
         id: deploy_id,
@@ -1565,6 +1788,7 @@ SVCEOF\n\
     let record_path = record.save()?;
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 16/16] Done!");
+    record_step_complete(step_db, &record.id, 16);
     progress::emit(tx, "\n[🚀 Done!] Azure deployment complete!");
     ui::print_summary(&record);
     Ok(record)

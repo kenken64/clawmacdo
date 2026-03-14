@@ -396,6 +396,7 @@ async fn start_deploy_handler(
             profile: req.profile,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
+            db: Some(db_clone.clone()),
         };
 
         // Insert deployment record into SQLite

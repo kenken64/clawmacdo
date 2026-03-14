@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.9.0
+
+### Added
+- SQLite `deploy_steps` table to persist step-level deploy progress (WAL mode enabled)
+- `clawmacdo track <query>` CLI command — query by deploy ID, hostname, or IP
+- `--follow` mode: live-polling display that refreshes until deployment completes
+- `--json` mode: NDJSON output for programmatic consumption
+- Clap-based CLI with `track` and `serve` subcommands (replaces placeholder main)
+- Step recording helpers (`record_step_start`, `record_step_complete`, `record_step_failed`, `record_step_skipped`)
+- All 16 deploy steps instrumented with DB writes across DigitalOcean, Tencent, Lightsail, and Azure providers
+- Step callback system (`on_step`/`on_step_done`) in `ProvisionOpts` for steps 9-14
+- `get_deployment_by_id` and `find_deployment_by_query` lookup functions in clawmacdo-db
+
+### Changed
+- Web UI deploys now automatically persist step progress via shared DB handle
+
 ## v0.8.0
 
 ### Added
