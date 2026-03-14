@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [features]
 default = ["web-ui", "tencent-cloud", "lightsail", "azure"]
-web-ui = ["axum", "serde", "serde_json", "tokio-stream", "rusqlite"]
+web-ui = ["axum", "tokio-stream"]
 lightsail = ["clawmacdo-cloud/lightsail"]
 azure = ["clawmacdo-cloud/azure"]
 tencent-cloud = ["clawmacdo-cloud/tencent"]
@@ -32,11 +32,13 @@ tar = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 
+# Core dependencies used by track + deploy
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 # Optional dependencies (feature-gated)
 axum = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
 
 # Internal crates
