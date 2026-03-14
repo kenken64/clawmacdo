@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.1
+
+### Fixed
+- npm package now includes README.md on npmjs.com (copies repo README into package before publish)
+
 ## v0.9.0
 
 ### Added
