@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.1
+
+### Fixed
+- README "What's New" section now reflects v0.12.x (was stuck on v0.11.0)
+
 ## v0.12.0
 
 ### Added
