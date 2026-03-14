@@ -43,6 +43,9 @@ for pkg in "${PLATFORM_PACKAGES[@]}"; do
   echo "  ✓ Published $pkg"
 done
 
+# Copy repo README into root npm package so it shows on npmjs.com
+cp "$ROOT/README.md" "$NPM_DIR/clawmacdo/README.md"
+
 # Publish root package
 echo "→ Publishing clawmacdo..."
 (cd "$NPM_DIR/clawmacdo" && npm publish --access public $DRY_RUN)

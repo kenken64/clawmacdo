@@ -106,6 +106,9 @@ jobs:
             fi
           done
 
+          # Copy repo README into the root npm package so it shows on npmjs.com
+          cp README.md npm/clawmacdo/README.md
+
       - name: Sync versions from Cargo.toml
         run: |
           VERSION=$(grep -m1 'version' crates/clawmacdo-cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
