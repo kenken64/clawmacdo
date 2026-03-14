@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.11.0
+
+### Added
+- Preflight CLI checks at startup — auto-installs Azure CLI and AWS CLI if missing
+- Full-width web UI layout (`max-w-screen-2xl`) with compact hero section
+- Version badge in web UI header
+
+### Changed
+- Web UI mascot moved inline alongside provider description for a professional look
+- Header tagline updated to "Deploy OpenClaw to the Cloud"
+
 ## v0.10.0
 
 ### Fixed

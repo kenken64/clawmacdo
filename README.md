@@ -5,12 +5,13 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, or **Microsoft Azure** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.10.0
+## ✨ What's New in v0.11.0
 
-- **Dependency fix** — `serde_json` and `rusqlite` are now always available in the CLI crate (fixes builds without `web-ui` feature)
-- **Leaner feature flags** — `web-ui` now only gates `axum` and `tokio-stream`
+- **Preflight CLI checks** — Azure CLI and AWS CLI are verified at startup and auto-installed if missing
+- **Full-width professional web UI** — layout widened from 896px to 1536px max, compact hero section with inline mascot
+- **Version badge** — header now displays the current version
 
-### Previous highlights (v0.9.x)
+### Previous highlights (v0.9.x – v0.10.x)
 - **Deploy progress tracking** — All 16 deploy steps persisted to SQLite in real-time
 - **`clawmacdo track` command** — Query deploy progress by ID, hostname, or IP address
 - **Follow mode** (`--follow`) — Live-polling display that refreshes until deployment finishes
@@ -352,5 +353,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 14, 2026
-**Current version:** 0.10.0
+**Current version:** 0.11.0
 **Architecture version:** 2.0 (modular workspace)

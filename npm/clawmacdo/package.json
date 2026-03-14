@@ -1,6 +1,6 @@
 {
   "name": "clawmacdo",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "CLI tool for deploying OpenClaw to multiple cloud providers with pre-installed AI dev tools",
   "keywords": [
     "openclaw",
@@ -30,8 +30,8 @@
     "node": ">=16"
   },
   "optionalDependencies": {
-    "@clawmacdo/darwin-arm64": "0.10.0",
-    "@clawmacdo/linux-x64": "0.10.0",
-    "@clawmacdo/win32-x64": "0.10.0"
+    "@clawmacdo/darwin-arm64": "0.11.0",
+    "@clawmacdo/linux-x64": "0.11.0",
+    "@clawmacdo/win32-x64": "0.11.0"
   }
 }
