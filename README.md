@@ -5,7 +5,7 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.12.0
+## ✨ What's New in v0.12.1
 
 - **BytePlus Cloud** — 5th cloud provider added (`--provider=byteplus` or `bp`)
 - **BytePlus ECS client** — HMAC-SHA256 signed REST API with auto-provisioning of VPC, subnet, and security group
@@ -380,5 +380,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 15, 2026
-**Current version:** 0.12.0
+**Current version:** 0.12.1
 **Architecture version:** 2.0 (modular workspace)
