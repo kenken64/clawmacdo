@@ -3,18 +3,20 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, or **Tencent Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
+Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, or **Microsoft Azure** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ Latest Update (March 2026)
+## ✨ What's New in v0.9.0
 
-**🏗️ Major Refactor Complete:** ClawMacdo has been refactored from a monolithic structure into a **modular workspace architecture** with focused crates for better maintainability, testing, and performance.
+- **Deploy progress tracking** — All 16 deploy steps are now persisted to SQLite in real-time
+- **`clawmacdo track` command** — Query deploy progress by ID, hostname, or IP address
+- **Follow mode** (`--follow`) — Live-polling display that refreshes until deployment finishes
+- **JSON output** (`--json`) — NDJSON format for programmatic consumption
+- **Clap-based CLI** — Proper subcommand routing with `track` and `serve`
 
-### 🚀 New Architecture Benefits
-- **Modular design** - Each crate has a single responsibility
-- **Feature flags** - Build only what you need (minimal, web-ui, cloud providers)
-- **32% smaller binaries** - Optimized builds from 4.6MB → 3.1MB
-- **Faster compilation** - Incremental builds only rebuild changed crates
-- **Better testing** - Isolated crate testing
+### Previous highlights
+- **Modular workspace** — Each crate has a single responsibility with feature flags
+- **4 cloud providers** — DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure
+- **npm distribution** — `npm install -g clawmacdo`
 
 ## 🏗️ Project Structure
 
@@ -64,6 +66,7 @@ clawmacdo/
 | DigitalOcean | `--provider=digitalocean` (default) | `--do-token` | — |
 | AWS Lightsail | `--provider=lightsail` (or `aws`) | `--aws-access-key-id` + `--aws-secret-access-key` | [AWS CLI](https://aws.amazon.com/cli/) installed |
 | Tencent Cloud | `--provider=tencent` | `--tencent-secret-id` + `--tencent-secret-key` | — |
+| Microsoft Azure | `--provider=azure` (or `az`) | `--azure-tenant-id` + `--azure-subscription-id` + `--azure-client-id` + `--azure-client-secret` | [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/) installed |
 
 ## Download
 
@@ -76,6 +79,12 @@ Pre-built binaries for every release are available on the [Releases page](https:
 | macOS    | Apple Silicon (arm64) | `clawmacdo-darwin-arm64.tar.gz` |
 
 ## Installation
+
+### From npm (recommended)
+
+```bash
+npm install -g clawmacdo
+```
 
 ### From release binary
 
@@ -114,6 +123,7 @@ cargo build --release --no-default-features --features aws-only
 | `web-ui` | Browser-based deployment interface | ✅ |
 | `lightsail` | AWS Lightsail provider support (via AWS CLI) | ✅ |
 | `tencent-cloud` | Tencent Cloud provider support | ✅ |
+| `azure` | Microsoft Azure provider support (via Azure CLI) | ✅ |
 | `digitalocean` | DigitalOcean provider support | ✅ |
 | `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
@@ -170,6 +180,19 @@ clawmacdo deploy \
   --provider tencent \
   --customer-name "my-openclaw-hk" \
   --region ap-hongkong
+```
+
+### Track Deploy Progress
+
+```bash
+# Track by deploy ID, hostname, or IP
+clawmacdo track <deploy-id>
+
+# Follow mode — live refresh until complete
+clawmacdo track <deploy-id> --follow
+
+# JSON output (NDJSON)
+clawmacdo track <deploy-id> --json
 ```
 
 ### Web UI Mode
@@ -278,6 +301,10 @@ new-crate = { workspace = true }
 | `AWS_REGION` | AWS region (default: `us-east-1`) | For Lightsail deploys |
 | `TENCENT_SECRET_ID` | Tencent Cloud Secret ID | For Tencent deploys |
 | `TENCENT_SECRET_KEY` | Tencent Cloud Secret Key | For Tencent deploys |
+| `AZURE_TENANT_ID` | Azure AD tenant ID | For Azure deploys |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID | For Azure deploys |
+| `AZURE_CLIENT_ID` | Azure service principal client ID | For Azure deploys |
+| `AZURE_CLIENT_SECRET` | Azure service principal client secret | For Azure deploys |
 | `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
 | `OPENAI_API_KEY` | OpenAI API key | Optional |
 | `TELEGRAM_TOKEN` | Telegram bot token | Optional |
@@ -323,6 +350,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 10, 2026
+**Last updated:** March 14, 2026
+**Current version:** 0.9.0
 **Architecture version:** 2.0 (modular workspace)
-**Binary optimizations:** ✅ Applied (32% size reduction)
