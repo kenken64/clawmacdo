@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.8.0
+
+### Added
+- npm distribution packaging for cross-platform binary (`npm install -g clawmacdo`)
+- Platform-specific npm packages: `@clawmacdo/darwin-arm64`, `@clawmacdo/linux-x64`, `@clawmacdo/win32-x64`
+- TypeScript type definitions for programmatic binary path resolution
+- GitHub Actions workflow for automated npm publishing on release
+- Build and publish scripts (`scripts/npm-package.sh`, `scripts/npm-publish.sh`)
+- x-api-key middleware using verify_apikey and KEY_DB for API authentication
+- `verify_apikey` helper for API key verification
+- `gen_apikey.sh` script to create one-time API keys and store hashed values in SQLite
+- Security flaw evaluation report with functionality impact assessment
+
+### Fixed
+- Correct ROOT path resolution to repo root in API
+- Resolve verify script path and use project root cwd
+- Make openclaw_config_scan resource-friendly by targeting config files
+
+### Changed
+- Update .gitignore and .env.example with comprehensive entries
+
 ## v0.7.0
 
 ### Added
