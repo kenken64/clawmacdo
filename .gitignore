@@ -25,6 +25,9 @@ keys.db
 # Node
 node_modules/
 
+# npm platform package binaries (built by CI)
+npm/@clawmacdo/*/bin/
+
 # OS
 .DS_Store
 Thumbs.db

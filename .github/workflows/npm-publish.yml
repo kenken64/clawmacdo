@@ -1,0 +1,144 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            npm_pkg: linux-x64
+            binary_name: clawmacdo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            npm_pkg: darwin-arm64
+            binary_name: clawmacdo
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
+            npm_pkg: win32-x64
+            binary_name: clawmacdo.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-cargo-
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+          if echo "${{ matrix.target }}" | grep -q windows; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+          fi
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        run: |
+          if command -v strip >/dev/null 2>&1; then
+            strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+          fi
+
+      - name: Prepare npm package
+        run: |
+          mkdir -p npm/@clawmacdo/${{ matrix.npm_pkg }}/bin
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} \
+             npm/@clawmacdo/${{ matrix.npm_pkg }}/bin/${{ matrix.binary_name }}
+          chmod +x npm/@clawmacdo/${{ matrix.npm_pkg }}/bin/${{ matrix.binary_name }}
+
+      - name: Upload npm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.npm_pkg }}
+          path: npm/@clawmacdo/${{ matrix.npm_pkg }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble npm packages
+        run: |
+          # Copy built binaries into the npm package dirs
+          for pkg in darwin-arm64 linux-x64 win32-x64; do
+            if [ -d "artifacts/npm-${pkg}" ]; then
+              cp -r "artifacts/npm-${pkg}/bin" "npm/@clawmacdo/${pkg}/bin"
+              chmod +x npm/@clawmacdo/${pkg}/bin/*
+            fi
+          done
+
+      - name: Sync versions from Cargo.toml
+        run: |
+          VERSION=$(grep -m1 'version' crates/clawmacdo-cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "Publishing version: $VERSION"
+
+          for pkg_json in \
+            npm/clawmacdo/package.json \
+            npm/@clawmacdo/darwin-arm64/package.json \
+            npm/@clawmacdo/linux-x64/package.json \
+            npm/@clawmacdo/win32-x64/package.json; do
+            sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" "$pkg_json"
+            sed -i "s/\"@clawmacdo\/\(.*\)\": \".*\"/\"@clawmacdo\/\1\": \"$VERSION\"/" "$pkg_json"
+          done
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for pkg in darwin-arm64 linux-x64 win32-x64; do
+            pkg_dir="npm/@clawmacdo/${pkg}"
+            if [ -d "${pkg_dir}/bin" ] && [ -n "$(ls -A ${pkg_dir}/bin 2>/dev/null)" ]; then
+              echo "Publishing @clawmacdo/${pkg}..."
+              cd "$pkg_dir"
+              npm publish --access public
+              cd "$GITHUB_WORKSPACE"
+            else
+              echo "Skipping @clawmacdo/${pkg} (no binary)"
+            fi
+          done
+
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/clawmacdo
+          npm publish --access public
