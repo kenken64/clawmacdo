@@ -908,19 +908,20 @@ tailwind.config = {
 
 <!-- Header -->
 <header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-10">
-  <div class="max-w-4xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
+  <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
-    <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden xs:inline">Deploy OpenClaw to DigitalOcean</span>
+    <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
+    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.10.0</span>
   </div>
   <!-- Tab bar -->
-  <div class="max-w-4xl mx-auto px-4 sm:px-6 flex gap-0">
+  <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 flex gap-0">
     <button id="tab-deploy" onclick="switchTab('deploy')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors">Deploy</button>
     <button id="tab-deployments" onclick="switchTab('deployments')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Deployments</button>
   </div>
 </header>
 
-<main class="max-w-4xl mx-auto px-3 sm:px-6 py-6 sm:py-8">
+<main class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
 
 <!-- Dry-run banner (shared) -->
 <div id="dry-run-banner" class="hidden mb-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 rounded-lg px-4 py-2 text-sm font-medium">
@@ -930,20 +931,22 @@ tailwind.config = {
 <!-- ═══ Deploy view ═══ -->
 <div id="deploy-view">
 
-<!-- Mascot -->
-<div class="flex justify-center mb-6">
-  <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-xl shadow-lg max-w-xs sm:max-w-sm w-full">
-</div>
-
-<!-- Actions -->
-<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
-  <button type="button" onclick="addDeployCard()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
-    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-    Add Deployment
-  </button>
-  <button type="button" onclick="resetSavedDeployments()" class="w-full bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
-    Reset Saved Deployments
-  </button>
+<!-- Hero -->
+<div class="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 mb-8 bg-slate-900/50 border border-slate-800 rounded-xl p-4 sm:p-6">
+  <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-lg shadow-lg w-24 h-24 sm:w-32 sm:h-32 object-cover shrink-0">
+  <div class="flex-1 text-center sm:text-left">
+    <h2 class="text-xl sm:text-2xl font-bold text-slate-100 mb-1">Cloud Deployment Console</h2>
+    <p class="text-sm text-slate-400 mb-4">Provision OpenClaw instances across DigitalOcean, AWS Lightsail, Tencent Cloud, and Microsoft Azure.</p>
+    <div class="flex flex-col sm:flex-row gap-2">
+      <button type="button" onclick="addDeployCard()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        New Deployment
+      </button>
+      <button type="button" onclick="resetSavedDeployments()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+        Reset Saved
+      </button>
+    </div>
+  </div>
 </div>
 
 <!-- Deploy cards container -->
