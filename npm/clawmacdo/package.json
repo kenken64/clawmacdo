@@ -1,0 +1,37 @@
+{
+  "name": "clawmacdo",
+  "version": "0.7.0",
+  "description": "CLI tool for deploying OpenClaw to multiple cloud providers with pre-installed AI dev tools",
+  "keywords": [
+    "openclaw",
+    "deploy",
+    "cloud",
+    "digitalocean",
+    "aws",
+    "azure",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kenken64/clawmacdo.git"
+  },
+  "bin": {
+    "clawmacdo": "bin/clawmacdo"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "bin",
+    "index.js",
+    "index.d.ts"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@clawmacdo/darwin-arm64": "0.7.0",
+    "@clawmacdo/linux-x64": "0.7.0",
+    "@clawmacdo/win32-x64": "0.7.0"
+  }
+}
