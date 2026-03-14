@@ -5,18 +5,18 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.11.0
+## ✨ What's New in v0.12.0
 
-- **Preflight CLI checks** — Azure CLI and AWS CLI are verified at startup and auto-installed if missing
-- **Full-width professional web UI** — layout widened from 896px to 1536px max, compact hero section with inline mascot
-- **Version badge** — header now displays the current version
+- **BytePlus Cloud** — 5th cloud provider added (`--provider=byteplus` or `bp`)
+- **BytePlus ECS client** — HMAC-SHA256 signed REST API with auto-provisioning of VPC, subnet, and security group
+- **Web UI** — BytePlus dropdown, credential fields, region/size selectors
 
-### Previous highlights (v0.9.x – v0.10.x)
+### Previous highlights (v0.9.x – v0.11.x)
+- **Preflight CLI checks** — Azure CLI and AWS CLI verified at startup, auto-installed if missing
+- **Full-width professional web UI** — layout widened to 1536px max, compact hero with inline mascot
 - **Deploy progress tracking** — All 16 deploy steps persisted to SQLite in real-time
 - **`clawmacdo track` command** — Query deploy progress by ID, hostname, or IP address
 - **Follow mode** (`--follow`) — Live-polling display that refreshes until deployment finishes
-- **JSON output** (`--json`) — NDJSON format for programmatic consumption
-- **Clap-based CLI** — Proper subcommand routing with `track` and `serve`
 - **5 cloud providers** — DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, BytePlus Cloud
 - **npm distribution** — `npm install -g clawmacdo`
 
