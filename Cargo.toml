@@ -34,7 +34,7 @@ sha2 = "0.10"
 ssh2 = "0.9"
 tar = "0.4"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs", "sync"] }
 tokio-stream = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
