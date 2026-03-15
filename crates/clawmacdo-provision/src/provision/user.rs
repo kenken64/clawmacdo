@@ -163,6 +163,7 @@ exit 0"#,
     ssh_root_as_async(ip, key, &user_manager, ssh_user).await?;
 
     // If a backup was restored to /root/.openclaw, move it into the openclaw home.
+    // Also fix any hardcoded /root/ paths in openclaw.json (workspace, plugin install paths, etc.)
     let restore_backup = format!(
         r#"if [ -d /root/.openclaw ]; then \
 mkdir -p {home}/.openclaw && \
@@ -170,6 +171,11 @@ cp -a /root/.openclaw/. {home}/.openclaw/ && \
 chown -R {user}:{user} {home}/.openclaw && \
 chmod 700 {home}/.openclaw && \
 rm -rf /root/.openclaw; \
+fi && \
+if [ -f {home}/.openclaw/openclaw.json ]; then \
+sed -i 's|/root/.openclaw|{home}/.openclaw|g' {home}/.openclaw/openclaw.json && \
+sed -i 's|/root/|{home}/|g' {home}/.openclaw/openclaw.json && \
+chown {user}:{user} {home}/.openclaw/openclaw.json; \
 fi"#,
     );
     ssh_root_as_async(ip, key, &restore_backup, ssh_user).await?;

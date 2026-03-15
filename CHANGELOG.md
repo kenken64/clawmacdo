@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.14.0
+
+### Added
+- **`ark-api-key` subcommand** — generate temporary BytePlus ARK API keys from access/secret credentials with HMAC-SHA256 signing
+- **`ark-api-key --list`** — list available ARK inference endpoints directly from the CLI
+- **`ark-chat` subcommand** — send chat completion prompts to BytePlus ARK models (OpenAI-compatible API)
+- **`telegram-setup` subcommand** — configure Telegram bot token on a deployed instance via SSH
+- **`telegram-pair` subcommand** — approve Telegram pairing code to activate chat
+- **Web UI destroy with cloud cleanup** — Deployments tab "Destroy" button now destroys the cloud instance and deletes the local record, with provider-specific credential prompts
+- **Comprehensive usage guide** — `docs/clawmacdo_usage.md` with all CLI examples, curl commands, and sample responses
+
+### Fixed
+- **Web UI destroy handles missing cloud instances** — if the instance was already deleted from the cloud, the local record is still cleaned up (previously left orphaned)
+- **Detach mode improvements** — proper `setsid()` session detachment, stdout/stderr logging to deploy log file
+- **Empty `track` query** — returns most recent deployment instead of matching stale records with empty hostname
+- **`/root/.openclaw/workspace` permission error** — automatic path correction from `/root/` to `/home/openclaw/` during provisioning and backup restore
+
 ## v0.13.0
 
 ### Added

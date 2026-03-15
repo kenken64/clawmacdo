@@ -1,8 +1,11 @@
+pub mod ark;
 pub mod deploy;
+pub mod deploy_cmd;
 pub mod destroy;
 pub mod docker_fix;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]
 pub mod serve;
+pub mod telegram;
 pub mod track;
 pub mod whatsapp;

@@ -223,6 +223,38 @@ struct DeleteResponse {
     ok: bool,
 }
 
+#[derive(Deserialize)]
+struct DestroyDeploymentRequest {
+    #[serde(default)]
+    do_token: String,
+    #[serde(default)]
+    tencent_secret_id: String,
+    #[serde(default)]
+    tencent_secret_key: String,
+    #[serde(default)]
+    aws_region: String,
+    #[serde(default)]
+    azure_tenant_id: String,
+    #[serde(default)]
+    azure_subscription_id: String,
+    #[serde(default)]
+    azure_client_id: String,
+    #[serde(default)]
+    azure_client_secret: String,
+    #[serde(default)]
+    azure_resource_group: String,
+    #[serde(default)]
+    byteplus_access_key: String,
+    #[serde(default)]
+    byteplus_secret_key: String,
+}
+
+#[derive(Serialize)]
+struct DestroyDeploymentResponse {
+    ok: bool,
+    message: String,
+}
+
 #[derive(Serialize)]
 struct ConfigResponse {
     dry_run: bool,
@@ -252,6 +284,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/whatsapp/qr", post(fetch_whatsapp_qr_handler))
         .route("/api/deployments", get(list_deployments_handler))
         .route("/api/deployments/{id}", delete(delete_deployment_handler))
+        .route(
+            "/api/deployments/{id}/destroy",
+            post(destroy_deployment_handler),
+        )
         .route("/api/config", get(config_handler))
         .with_state(state);
 
@@ -356,6 +392,7 @@ async fn start_deploy_handler(
         let hostname_str = req.hostname.clone();
 
         let params = DeployParams {
+            deploy_id: Some(id.clone()),
             customer_name: customer_name.clone(),
             customer_email: customer_email.clone(),
             provider: req.provider,
@@ -814,6 +851,115 @@ async fn delete_deployment_handler(
             }),
         )
             .into_response(),
+    }
+}
+
+async fn destroy_deployment_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<DestroyDeploymentRequest>,
+) -> impl IntoResponse {
+    // Look up deployment to get provider and hostname
+    let (provider, hostname) = {
+        let conn = state.db.lock().unwrap();
+        match db::get_deployment_by_id(&conn, &id) {
+            Ok(Some(d)) => (
+                d.provider.unwrap_or_default(),
+                d.hostname.unwrap_or_default(),
+            ),
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(DestroyDeploymentResponse {
+                        ok: false,
+                        message: "Deployment not found.".into(),
+                    }),
+                )
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(DestroyDeploymentResponse {
+                        ok: false,
+                        message: format!("DB error: {e}"),
+                    }),
+                )
+            }
+        }
+    };
+
+    // Build destroy params and run
+    let destroy_params = crate::commands::destroy::DestroyParams {
+        provider: provider.clone(),
+        do_token: req.do_token,
+        tencent_secret_id: req.tencent_secret_id,
+        tencent_secret_key: req.tencent_secret_key,
+        aws_region: if req.aws_region.is_empty() {
+            "ap-southeast-1".to_string()
+        } else {
+            req.aws_region
+        },
+        azure_tenant_id: req.azure_tenant_id,
+        azure_subscription_id: req.azure_subscription_id,
+        azure_client_id: req.azure_client_id,
+        azure_client_secret: req.azure_client_secret,
+        azure_resource_group: req.azure_resource_group,
+        byteplus_access_key: req.byteplus_access_key,
+        byteplus_secret_key: req.byteplus_secret_key,
+        name: hostname.clone(),
+        yes: true, // skip interactive confirmation
+    };
+
+    let destroy_result = crate::commands::destroy::run(destroy_params).await;
+
+    let (cloud_ok, cloud_msg) = match &destroy_result {
+        Ok(_) => (
+            true,
+            format!("Instance '{hostname}' destroyed on {provider}."),
+        ),
+        Err(e) => {
+            let err_str = e.to_string().to_lowercase();
+            let not_found = err_str.contains("not found")
+                || err_str.contains("does not exist")
+                || err_str.contains("no instance")
+                || err_str.contains("404");
+            if not_found {
+                (
+                    true,
+                    format!("Instance '{hostname}' not found on {provider} (already deleted)."),
+                )
+            } else {
+                (false, format!("Failed to destroy instance: {e}"))
+            }
+        }
+    };
+
+    if cloud_ok {
+        // Clean up local DB record and JSON deploy file
+        {
+            let conn = state.db.lock().unwrap();
+            let _ = db::delete_deployment(&conn, &id);
+        }
+        if let Ok(deploys_dir) = config::deploys_dir() {
+            let json_path = deploys_dir.join(format!("{id}.json"));
+            let _ = std::fs::remove_file(json_path);
+        }
+
+        (
+            StatusCode::OK,
+            Json(DestroyDeploymentResponse {
+                ok: true,
+                message: format!("{cloud_msg} Local record deleted."),
+            }),
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(DestroyDeploymentResponse {
+                ok: false,
+                message: cloud_msg,
+            }),
+        )
     }
 }
 
@@ -2091,7 +2237,9 @@ async function loadDeployments(page) {
           '<td class="px-4 py-3 text-slate-400">' + esc(d.region || '-') + '</td>' +
           '<td class="px-4 py-3">' + statusBadge(d.status) + '</td>' +
           '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
-          '<td class="px-4 py-3"><button onclick="deleteDeployment(\'' + esc(d.id) + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Delete</button></td>';
+          '<td class="px-4 py-3">' +
+            '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
+          '</td>';
         tbody.appendChild(tr);
       }
     }
@@ -2111,13 +2259,117 @@ function deploymentsPage(delta) {
   loadDeployments();
 }
 
-async function deleteDeployment(id) {
-  if (!confirm('Delete this deployment record?')) return;
+function showDestroyModal(id, provider, hostname, ip) {
+  // Remove existing modal if any
+  const existing = document.getElementById('destroy-modal');
+  if (existing) existing.remove();
+
+  let credsHtml = '';
+  if (provider === 'digitalocean') {
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">DigitalOcean Token <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-do-token" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="dop_v1_...">' + eyeBtn() + '</div></div>';
+  } else if (provider === 'tencent') {
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretId <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKID...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretKey <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-key" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>';
+  } else if (provider === 'lightsail') {
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="destroy-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent"></div>';
+  } else if (provider === 'azure') {
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">Tenant ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-tenant" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Subscription ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-sub" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Client ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-client" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Client Secret <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-secret" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Resource Group <span class="text-red-400">*</span></label><input type="text" id="destroy-azure-rg" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent"></div>';
+  } else if (provider === 'byteplus') {
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-bp-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKLT...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Secret Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-bp-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>';
+  } else {
+    credsHtml = '<p class="text-slate-400 text-sm">Unknown provider "' + esc(provider) + '". Cannot destroy cloud instance.</p>';
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'destroy-modal';
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+  modal.innerHTML = `
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-red-400">Destroy Instance</h3>
+      </div>
+      <p class="text-sm text-slate-300 mb-1">This will <strong class="text-red-400">permanently destroy</strong> the cloud instance and delete the deployment record.</p>
+      <div class="bg-slate-800/50 rounded-lg p-3 mb-4 text-xs text-slate-400 space-y-1">
+        <div><span class="text-slate-500">Hostname:</span> <span class="text-slate-200">${esc(hostname || '-')}</span></div>
+        <div><span class="text-slate-500">IP:</span> <span class="text-slate-200">${esc(ip || '-')}</span></div>
+        <div><span class="text-slate-500">Provider:</span> <span class="text-slate-200">${esc(provider || '-')}</span></div>
+      </div>
+      <p class="text-sm text-slate-400 mb-3">Enter your cloud provider credentials to confirm:</p>
+      <div id="destroy-creds" class="mb-4">${credsHtml}</div>
+      <div id="destroy-status" class="text-sm mb-3 hidden"></div>
+      <div class="flex gap-3 justify-end">
+        <button onclick="closeDestroyModal()" class="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors">Cancel</button>
+        <button id="destroy-confirm-btn" onclick="confirmDestroy('${esc(id)}','${esc(provider)}')" class="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-lg transition-colors">Destroy Instance</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeDestroyModal(); });
+}
+
+function closeDestroyModal() {
+  const modal = document.getElementById('destroy-modal');
+  if (modal) modal.remove();
+}
+
+async function confirmDestroy(id, provider) {
+  const btn = document.getElementById('destroy-confirm-btn');
+  const status = document.getElementById('destroy-status');
+  btn.disabled = true;
+  btn.textContent = 'Destroying...';
+  status.className = 'text-sm mb-3 text-yellow-400';
+  status.textContent = 'Destroying cloud instance... this may take a moment.';
+  status.classList.remove('hidden');
+
+  const body = {};
+  if (provider === 'digitalocean') {
+    body.do_token = (document.getElementById('destroy-do-token') || {}).value || '';
+  } else if (provider === 'tencent') {
+    body.tencent_secret_id = (document.getElementById('destroy-tencent-id') || {}).value || '';
+    body.tencent_secret_key = (document.getElementById('destroy-tencent-key') || {}).value || '';
+  } else if (provider === 'lightsail') {
+    body.aws_region = (document.getElementById('destroy-aws-region') || {}).value || 'ap-southeast-1';
+  } else if (provider === 'azure') {
+    body.azure_tenant_id = (document.getElementById('destroy-azure-tenant') || {}).value || '';
+    body.azure_subscription_id = (document.getElementById('destroy-azure-sub') || {}).value || '';
+    body.azure_client_id = (document.getElementById('destroy-azure-client') || {}).value || '';
+    body.azure_client_secret = (document.getElementById('destroy-azure-secret') || {}).value || '';
+    body.azure_resource_group = (document.getElementById('destroy-azure-rg') || {}).value || '';
+  } else if (provider === 'byteplus') {
+    body.byteplus_access_key = (document.getElementById('destroy-bp-ak') || {}).value || '';
+    body.byteplus_secret_key = (document.getElementById('destroy-bp-sk') || {}).value || '';
+  }
+
   try {
-    await fetch('/api/deployments/' + encodeURIComponent(id), { method: 'DELETE' });
-    loadDeployments();
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/destroy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'text-sm mb-3 text-green-400';
+      status.textContent = data.message;
+      setTimeout(() => { closeDestroyModal(); loadDeployments(); }, 1500);
+    } else {
+      status.className = 'text-sm mb-3 text-red-400';
+      status.textContent = data.message || 'Destroy failed.';
+      btn.disabled = false;
+      btn.textContent = 'Destroy Instance';
+    }
   } catch (e) {
-    alert('Failed to delete: ' + e.message);
+    status.className = 'text-sm mb-3 text-red-400';
+    status.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Destroy Instance';
   }
 }
 
