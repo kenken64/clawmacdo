@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.15.0
+
+### Fixed
+- **Windows build failures** — dependencies were incorrectly scoped under `[target.'cfg(unix)'.dependencies]`, making reqwest, rusqlite, serde, axum, and all internal workspace crates invisible on Windows
+- **Missing `sync` feature on tokio** — `deploy.rs` and `serve.rs` use `tokio::sync::{mpsc, RwLock}` which requires the `sync` feature
+- **Missing `digitalocean` feature** — `deploy.rs` unconditionally imports `clawmacdo_cloud::digitalocean`, now properly gated with default feature
+
 ## v0.14.0
 
 ### Added
