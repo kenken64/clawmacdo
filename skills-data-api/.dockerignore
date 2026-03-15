@@ -1,0 +1,5 @@
+node_modules
+skills
+scrape-skills.sh
+download-skills.sh
+.DS_Store

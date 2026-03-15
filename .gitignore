@@ -40,6 +40,9 @@ Thumbs.db
 .vscode/
 *.iml
 
+# Skills data (downloaded SKILL.md files)
+skills-data-api/skills/
+
 # Misc
 *.bak
 *.log

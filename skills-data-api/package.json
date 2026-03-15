@@ -1,0 +1,18 @@
+{
+  "name": "skills-data-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "load-db": "bash load-mongo.sh"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Skills data API with MongoDB-backed keyword search",
+  "dependencies": {
+    "express": "^4.22.1",
+    "mongodb": "^6.21.0",
+    "multer": "^2.1.1"
+  }
+}
