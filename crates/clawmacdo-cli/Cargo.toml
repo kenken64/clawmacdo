@@ -14,7 +14,7 @@ web-ui = ["axum", "tokio-stream"]
 lightsail = ["clawmacdo-cloud/lightsail"]
 azure = ["clawmacdo-cloud/azure"]
 tencent-cloud = ["clawmacdo-cloud/tencent"]
-byteplus = ["clawmacdo-cloud/byteplus"]
+byteplus = ["clawmacdo-cloud/byteplus", "reqwest"]
 digitalocean-only = ["clawmacdo-cloud/digitalocean"]
 aws-only = ["lightsail"]
 minimal = []  # Minimal build without web UI
@@ -37,7 +37,7 @@ uuid = { workspace = true }
 libc = "0.2"
 
 # Core dependencies used by track + deploy
-reqwest = { workspace = true }
+reqwest = { workspace = true, optional = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

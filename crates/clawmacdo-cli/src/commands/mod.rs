@@ -1,3 +1,4 @@
+#[cfg(feature = "byteplus")]
 pub mod ark;
 pub mod deploy;
 pub mod deploy_cmd;
