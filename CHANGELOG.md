@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.13.0
+
+### Added
+- **BytePlus ARK** as default AI model provider when `--provider=byteplus` is selected
+- `BYTEPLUS_API_KEY` env var written to `.env` during provisioning
+- BytePlus ARK model config (`openclaw.json`) auto-configured with ARK API endpoint
+- `destroy` CLI subcommand for all providers (was previously missing from CLI)
+- BytePlus `destroy` handler with `--yes` flag for non-interactive cleanup
+- EIP (Elastic IP) allocation and association for BytePlus VPC instances
+
+### Fixed
+- **SSH heredoc syntax error**: `{ cmd ; } 2>&1` wrapping broke bash when commands contained heredocs; changed to `{ cmd\n} 2>&1`
+- **SSH connection drop at Step 10**: `ufw reload` killed active SSH sessions; now conditional (only when Docker installed) and runs detached via `nohup`
+- **Docker provision crash on BytePlus**: `docker.io` not available on BytePlus images; Docker configuration now skips gracefully when Docker is not installed
+- **Security group rule conflicts**: BytePlus returns `InvalidSecurityRule.Conflict` (409) for existing rules; now handled idempotently
+- **Missing public IP on BytePlus**: VPC instances get no public IP by default; EIP is now auto-allocated and associated
+- Removed debug `eprintln!` logging from BytePlus client
+- Dead `stderr_out` code cleaned up in `ssh::exec()`
+
 ## v0.12.2
 
 ### Fixed

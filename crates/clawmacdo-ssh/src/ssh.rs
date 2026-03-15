@@ -71,6 +71,14 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
     let tcp = TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(10))
         .map_err(|e| AppError::Ssh(format!("TCP connect to {ip}: {e}")))?;
 
+    // Enable TCP keepalive to detect silently dropped connections (e.g. after ufw reload).
+    // Without this, read_to_string can block for 300s on a dead connection.
+    let sock = socket2::SockRef::from(&tcp);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(15))
+        .with_interval(std::time::Duration::from_secs(5));
+    let _ = sock.set_tcp_keepalive(&keepalive);
+
     // Keep command I/O timeout long enough for package installs and service setup.
     let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(300)));
     let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(300)));
@@ -99,7 +107,7 @@ pub fn exec_as(
         .channel_session()
         .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
     channel
-        .exec(command)
+        .exec(&format!("{{ {command}\n}} 2>&1"))
         .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
     let mut output = String::new();
     channel
@@ -119,8 +127,12 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
         .channel_session()
         .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
 
+    // Merge stderr into stdout to avoid read deadlock.
+    // libssh2 read_to_string(stdout) blocks if remote wrote to stderr
+    // and the SSH window fills up, causing a deadlock.
+    // Use \n before } so heredocs inside the command don't break bash parsing.
     channel
-        .exec(command)
+        .exec(&format!("{{ {command}\n}} 2>&1"))
         .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
 
     let mut output = String::new();
@@ -128,26 +140,15 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
         .read_to_string(&mut output)
         .map_err(|e| AppError::Ssh(format!("Read output: {e}")))?;
 
-    let mut stderr_out = String::new();
-    channel
-        .stderr()
-        .read_to_string(&mut stderr_out)
-        .map_err(|e| AppError::Ssh(format!("Read stderr: {e}")))?;
-
     channel
         .wait_close()
         .map_err(|e| AppError::Ssh(format!("Wait close: {e}")))?;
 
     let exit_status = channel.exit_status().unwrap_or(-1);
     if exit_status != 0 {
-        let stderr_trimmed = stderr_out.trim();
-        let stdout_trimmed = output.trim();
-        let details = if !stderr_trimmed.is_empty() && !stdout_trimmed.is_empty() {
-            format!("stderr: {stderr_trimmed}\nstdout: {stdout_trimmed}")
-        } else if !stderr_trimmed.is_empty() {
-            format!("stderr: {stderr_trimmed}")
-        } else if !stdout_trimmed.is_empty() {
-            format!("stdout: {stdout_trimmed}")
+        let trimmed = output.trim();
+        let details = if !trimmed.is_empty() {
+            trimmed.to_string()
         } else {
             "no output captured".to_string()
         };

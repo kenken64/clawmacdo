@@ -37,6 +37,7 @@ pub struct DeployParams {
     pub azure_client_secret: String,
     pub byteplus_access_key: String,
     pub byteplus_secret_key: String,
+    pub byteplus_ark_api_key: String,
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
@@ -137,6 +138,7 @@ fn model_identifier(model: &str) -> Option<&'static str> {
         "anthropic" => Some("anthropic/claude-opus-4-6"),
         "openai" => Some("openai/gpt-5-mini"),
         "gemini" => Some("google/gemini-2.5-flash"),
+        "byteplus" => Some("byteplus/ark-code-latest"),
         _ => None,
     }
 }
@@ -197,6 +199,7 @@ fn collect_failovers<'a>(
     anthropic_key: &str,
     openai_key: &str,
     gemini_key: &str,
+    byteplus_ark_key: &str,
 ) -> Vec<&'a str> {
     let mut out = Vec::new();
     for fo in [failover_1, failover_2] {
@@ -207,6 +210,7 @@ fn collect_failovers<'a>(
             "anthropic" => has_value(anthropic_key),
             "openai" => has_value(openai_key),
             "gemini" => has_value(gemini_key),
+            "byteplus" => has_value(byteplus_ark_key),
             _ => false,
         };
         if keyed {
@@ -384,6 +388,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         &anthropic_setup_token,
         &params.openai_key,
         &params.gemini_key,
+        &params.byteplus_ark_api_key,
         &params.whatsapp_phone_number,
         &params.telegram_bot_token,
         params.enable_sandbox,
@@ -601,6 +606,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         anthropic_setup_token: &anthropic_setup_token,
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
+        byteplus_ark_api_key: &params.byteplus_ark_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -643,6 +649,33 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     } else {
         ""
     };
+    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    };
+    let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
+        format!(
+            "node -e 'const fs=require(\"fs\");\
+const p=\"{home}/.openclaw/openclaw.json\";\
+let cfg={{}};\
+try {{ cfg=JSON.parse(fs.readFileSync(p,\"utf8\")); }} catch(e) {{}}\
+cfg.models=cfg.models||{{}};\
+cfg.models.providers=cfg.models.providers||{{}};\
+cfg.models.providers.byteplus={{\
+\"baseUrl\":\"https://ark.ap-southeast.bytepluses.com/api/coding/v3\",\
+\"apiKey\":\"'\"$BYTEPLUS_API_KEY\"'\",\
+\"api\":\"openai-completions\",\
+\"models\":[{{\"id\":\"ark-code-latest\",\"name\":\"ark-code-latest\"}}]\
+}};\
+cfg.auth=cfg.auth||{{}};\
+cfg.auth.profiles=cfg.auth.profiles||{{}};\
+cfg.auth.profiles[\"byteplus:default\"]={{\"provider\":\"byteplus\",\"mode\":\"api_key\"}};\
+fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
+        )
+    } else {
+        "true".to_string()
+    };
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -659,11 +692,12 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
+         ({byteplus_ark_config_cmd}); \
          OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          mkdir -p {home}/.config/systemd/user; \
@@ -722,6 +756,7 @@ SVCEOF\n\
         &params.anthropic_key,
         &params.openai_key,
         &params.gemini_key,
+        &params.byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
@@ -847,7 +882,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
         &params.byteplus_secret_key,
         &region,
     )?;
-    let key_name = format!("clawmacdo_{}", &deploy_id[..8]);
+    let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
     let key_info = bp_client
         .import_key_pair(&key_name, &keypair.public_key_openssh)
         .await
@@ -955,6 +990,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
         anthropic_setup_token: &anthropic_setup_token,
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
+        byteplus_ark_api_key: &params.byteplus_ark_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -970,7 +1006,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
         .await
         .context("Provision failed")?;
 
-    // Step 15: Start gateway (BytePlus path — same as Tencent)
+    // Step 15: Start gateway (BytePlus path)
     record_step_start(step_db, &deploy_id, 15, "Starting OpenClaw gateway");
     progress::emit(
         tx,
@@ -993,6 +1029,35 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
     } else {
         ""
     };
+    // BytePlus ARK: use openclaw onboard --auth-choice byteplus-api-key
+    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    };
+    // Write BytePlus ARK provider config into openclaw.json (Coding Plan base URL)
+    let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
+        format!(
+            "node -e 'const fs=require(\"fs\");\
+const p=\"{home}/.openclaw/openclaw.json\";\
+let cfg={{}};\
+try {{ cfg=JSON.parse(fs.readFileSync(p,\"utf8\")); }} catch(e) {{}}\
+cfg.models=cfg.models||{{}};\
+cfg.models.providers=cfg.models.providers||{{}};\
+cfg.models.providers.byteplus={{\
+\"baseUrl\":\"https://ark.ap-southeast.bytepluses.com/api/coding/v3\",\
+\"apiKey\":\"'\"$BYTEPLUS_API_KEY\"'\",\
+\"api\":\"openai-completions\",\
+\"models\":[{{\"id\":\"ark-code-latest\",\"name\":\"ark-code-latest\"}}]\
+}};\
+cfg.auth=cfg.auth||{{}};\
+cfg.auth.profiles=cfg.auth.profiles||{{}};\
+cfg.auth.profiles[\"byteplus:default\"]={{\"provider\":\"byteplus\",\"mode\":\"api_key\"}};\
+fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
+        )
+    } else {
+        "true".to_string()
+    };
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -1009,11 +1074,12 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
+         ({byteplus_ark_config_cmd}); \
          OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          mkdir -p {home}/.config/systemd/user; \
@@ -1072,6 +1138,7 @@ SVCEOF\n\
         &params.anthropic_key,
         &params.openai_key,
         &params.gemini_key,
+        &params.byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
@@ -1146,6 +1213,7 @@ async fn deploy_steps_5_through_16(
     anthropic_setup_token: &str,
     openai_key: &str,
     gemini_key: &str,
+    byteplus_ark_api_key: &str,
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
     enable_sandbox: bool,
@@ -1239,6 +1307,7 @@ async fn deploy_steps_5_through_16(
         anthropic_setup_token,
         openai_key,
         gemini_key,
+        byteplus_ark_api_key,
         whatsapp_phone_number,
         telegram_bot_token,
         public_key_openssh,
@@ -1274,6 +1343,30 @@ async fn deploy_steps_5_through_16(
     } else {
         ""
     };
+    let byteplus_onboard_arg = if has_value(byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    };
+    let byteplus_ark_config_cmd = if has_value(byteplus_ark_api_key) {
+        format!(
+            "node -e 'const fs=require(\"fs\");\
+const p=\"{home}/.openclaw/openclaw.json\";\
+let cfg={{}};\
+try {{ cfg=JSON.parse(fs.readFileSync(p,\"utf8\")); }} catch(e) {{}}\
+cfg.models=cfg.models||{{}};\
+cfg.models.providers=cfg.models.providers||{{}};\
+cfg.models.providers.byteplus={{\
+\"baseUrl\":\"https://ark.ap-southeast.bytepluses.com/api/coding/v3\",\
+\"apiKey\":\"'\"$BYTEPLUS_API_KEY\"'\",\
+\"api\":\"openai-completions\",\
+\"models\":[{{\"id\":\"ark-code-latest\",\"name\":\"ark-code-latest\"}}]\
+}};\
+fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
+        )
+    } else {
+        "true".to_string()
+    };
     let sandbox_setup_cmd = if enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -1290,11 +1383,12 @@ async fn deploy_steps_5_through_16(
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
+         ({byteplus_ark_config_cmd}); \
          (openclaw daemon install --port 18789 --runtime node --force || true); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          if [ -f \"$SVC\" ]; then \
@@ -1335,6 +1429,7 @@ async fn deploy_steps_5_through_16(
         anthropic_api_key,
         openai_key,
         gemini_key,
+        byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(primary_model, &failovers);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
@@ -1578,6 +1673,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         anthropic_setup_token: &anthropic_setup_token,
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
+        byteplus_ark_api_key: &params.byteplus_ark_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -1615,6 +1711,33 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     } else {
         ""
     };
+    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    };
+    let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
+        format!(
+            "node -e 'const fs=require(\"fs\");\
+const p=\"{home}/.openclaw/openclaw.json\";\
+let cfg={{}};\
+try {{ cfg=JSON.parse(fs.readFileSync(p,\"utf8\")); }} catch(e) {{}}\
+cfg.models=cfg.models||{{}};\
+cfg.models.providers=cfg.models.providers||{{}};\
+cfg.models.providers.byteplus={{\
+\"baseUrl\":\"https://ark.ap-southeast.bytepluses.com/api/coding/v3\",\
+\"apiKey\":\"'\"$BYTEPLUS_API_KEY\"'\",\
+\"api\":\"openai-completions\",\
+\"models\":[{{\"id\":\"ark-code-latest\",\"name\":\"ark-code-latest\"}}]\
+}};\
+cfg.auth=cfg.auth||{{}};\
+cfg.auth.profiles=cfg.auth.profiles||{{}};\
+cfg.auth.profiles[\"byteplus:default\"]={{\"provider\":\"byteplus\",\"mode\":\"api_key\"}};\
+fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
+        )
+    } else {
+        "true".to_string()
+    };
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -1631,11 +1754,12 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
+         ({byteplus_ark_config_cmd}); \
          OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          mkdir -p {home}/.config/systemd/user; \
@@ -1694,6 +1818,7 @@ SVCEOF\n\
         &params.anthropic_key,
         &params.openai_key,
         &params.gemini_key,
+        &params.byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
@@ -1983,6 +2108,7 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
         anthropic_setup_token: &anthropic_setup_token,
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
+        byteplus_ark_api_key: &params.byteplus_ark_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -2021,6 +2147,33 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     } else {
         ""
     };
+    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    };
+    let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
+        format!(
+            "node -e 'const fs=require(\"fs\");\
+const p=\"{home}/.openclaw/openclaw.json\";\
+let cfg={{}};\
+try {{ cfg=JSON.parse(fs.readFileSync(p,\"utf8\")); }} catch(e) {{}}\
+cfg.models=cfg.models||{{}};\
+cfg.models.providers=cfg.models.providers||{{}};\
+cfg.models.providers.byteplus={{\
+\"baseUrl\":\"https://ark.ap-southeast.bytepluses.com/api/coding/v3\",\
+\"apiKey\":\"'\"$BYTEPLUS_API_KEY\"'\",\
+\"api\":\"openai-completions\",\
+\"models\":[{{\"id\":\"ark-code-latest\",\"name\":\"ark-code-latest\"}}]\
+}};\
+cfg.auth=cfg.auth||{{}};\
+cfg.auth.profiles=cfg.auth.profiles||{{}};\
+cfg.auth.profiles[\"byteplus:default\"]={{\"provider\":\"byteplus\",\"mode\":\"api_key\"}};\
+fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
+        )
+    } else {
+        "true".to_string()
+    };
     let sandbox_setup_cmd = if params.enable_sandbox {
         format!(
             "if [ -f {home}/.openclaw/openclaw.json ]; then \
@@ -2037,11 +2190,12 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
+         ({byteplus_ark_config_cmd}); \
          OC_BIN=$(command -v openclaw 2>/dev/null || echo /usr/bin/openclaw); \
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          mkdir -p {home}/.config/systemd/user; \
@@ -2100,6 +2254,7 @@ SVCEOF\n\
         &params.anthropic_key,
         &params.openai_key,
         &params.gemini_key,
+        &params.byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");

@@ -52,6 +52,7 @@ struct DeployRequest {
     customer_email: String,
     #[serde(default = "default_provider")]
     provider: String,
+    #[serde(default)]
     do_token: String,
     #[serde(default)]
     tencent_secret_id: String,
@@ -75,6 +76,8 @@ struct DeployRequest {
     byteplus_access_key: String,
     #[serde(default)]
     byteplus_secret_key: String,
+    #[serde(default)]
+    byteplus_ark_api_key: String,
     #[serde(default)]
     anthropic_key: String,
     #[serde(default)]
@@ -308,6 +311,7 @@ async fn start_deploy_handler(
         "anthropic" => !req.anthropic_key.trim().is_empty(),
         "openai" => !req.openai_key.trim().is_empty(),
         "gemini" => !req.gemini_key.trim().is_empty(),
+        "byteplus" => !req.byteplus_ark_api_key.trim().is_empty(),
         _ => false,
     };
     if !primary_key_present {
@@ -367,6 +371,7 @@ async fn start_deploy_handler(
             azure_client_secret: req.azure_client_secret,
             byteplus_access_key: req.byteplus_access_key,
             byteplus_secret_key: req.byteplus_secret_key,
+            byteplus_ark_api_key: req.byteplus_ark_api_key,
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
@@ -1007,11 +1012,12 @@ function eyeBtn() {
 }
 
 const MODEL_DEFS = {
-  anthropic: { keyField: 'anthropic_key', label: 'Anthropic Key / Setup Token', placeholder: 'sk-ant-api-... or sk-ant-oat-...' },
-  openai:    { keyField: 'openai_key',    label: 'OpenAI API Key',              placeholder: 'sk-...' },
-  gemini:    { keyField: 'gemini_key',    label: 'Gemini API Key',              placeholder: 'AI...' },
+  anthropic: { keyField: 'anthropic_key',        label: 'Anthropic Key / Setup Token', placeholder: 'sk-ant-api-... or sk-ant-oat-...' },
+  openai:    { keyField: 'openai_key',           label: 'OpenAI API Key',              placeholder: 'sk-...' },
+  gemini:    { keyField: 'gemini_key',           label: 'Gemini API Key',              placeholder: 'AI...' },
+  byteplus:  { keyField: 'byteplus_ark_api_key', label: 'BytePlus ARK API Key',        placeholder: 'AKLT...' },
 };
-const ALL_MODELS = ['anthropic', 'openai', 'gemini'];
+const ALL_MODELS = ['anthropic', 'openai', 'gemini', 'byteplus'];
 
 function syncModelSelectors(n) {
   const container = document.getElementById('model-selectors-' + n);
@@ -1578,6 +1584,12 @@ function toggleProvider(select, n) {
       <option value="ecs.c3i.xlarge">ecs.c3i.xlarge (4 vCPU, 8 GB)</option>
       <option value="ecs.g3i.xlarge">ecs.g3i.xlarge (4 vCPU, 16 GB)</option>
     `;
+    // Auto-select BytePlus ARK as default AI model
+    const modelContainer = document.getElementById('model-selectors-' + n);
+    if (modelContainer) {
+      const pSel = modelContainer.querySelector('[data-role=primary]');
+      if (pSel) { pSel.value = 'byteplus'; pSel.dispatchEvent(new Event('change')); }
+    }
   } else {
     doCreds.style.display = 'block';
     doCreds.querySelectorAll('input').forEach(i => i.required = true);
@@ -1890,6 +1902,7 @@ async function startDeploy(e, cardNum) {
     azure_client_secret: val('azure_client_secret'),
     byteplus_access_key: val('byteplus_access_key'),
     byteplus_secret_key: val('byteplus_secret_key'),
+    byteplus_ark_api_key: val('byteplus_ark_api_key'),
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),

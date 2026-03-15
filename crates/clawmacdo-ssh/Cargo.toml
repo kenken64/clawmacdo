@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-ssh"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2021"
 description = "SSH/SCP operations and key management for ClawMacdo"
 
@@ -8,6 +8,7 @@ description = "SSH/SCP operations and key management for ClawMacdo"
 anyhow = { workspace = true }
 base64 = { workspace = true }
 dirs = { workspace = true }
+socket2 = "0.5"
 ssh2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

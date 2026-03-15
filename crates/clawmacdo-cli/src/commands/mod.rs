@@ -1,4 +1,5 @@
 pub mod deploy;
+pub mod destroy;
 pub mod docker_fix;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]

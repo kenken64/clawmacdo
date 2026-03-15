@@ -14,6 +14,7 @@ pub async fn provision(
     anthropic_setup_token: &str,
     openai_key: &str,
     gemini_key: &str,
+    byteplus_ark_api_key: &str,
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
     ssh_user: &str,
@@ -38,6 +39,7 @@ ANTHROPIC_API_KEY={anthropic_api_key}
 ANTHROPIC_SETUP_TOKEN={anthropic_setup_token}
 OPENAI_API_KEY={openai_key}
 GEMINI_API_KEY={gemini_key}
+BYTEPLUS_API_KEY={byteplus_ark_api_key}
 WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}
 TELEGRAM_BOT_TOKEN={telegram_bot_token}
 ENVEOF
