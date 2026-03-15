@@ -5,8 +5,13 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.13.0
+## ✨ What's New in v0.15.0
 
+- **Windows builds fixed** — Dependencies were incorrectly scoped under unix-only target, now all platforms build correctly
+- **Native Windows MSVC builds** — Switched from cross-compilation to native `x86_64-pc-windows-msvc` builds on `windows-latest`
+- **`digitalocean` feature flag** — DigitalOcean provider now properly gated as a default feature
+
+### Previous highlights (v0.13.x – v0.14.x)
 - **`ark-api-key`** — Generate temporary BytePlus ARK API keys from access/secret credentials, or list endpoints with `--list`
 - **`ark-chat`** — Send prompts to BytePlus ARK models directly from the CLI
 - **`telegram-setup` / `telegram-pair`** — Configure and pair Telegram bots on deployed instances via SSH
@@ -14,7 +19,7 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 - **Detach mode improvements** — Proper `setsid()` session detachment, stdout/stderr logging to file
 - **Workspace path fix** — Automatic `/root/` → `/home/openclaw/` path correction during provisioning
 
-### Previous highlights (v0.9.x – v0.12.x)
+### Earlier highlights (v0.9.x – v0.12.x)
 - **BytePlus Cloud** — 5th cloud provider added (`--provider=byteplus` or `bp`)
 - **BytePlus ECS client** — HMAC-SHA256 signed REST API with auto-provisioning of VPC, subnet, and security group
 - **Preflight CLI checks** — Azure CLI and AWS CLI verified at startup, auto-installed if missing
@@ -80,11 +85,11 @@ clawmacdo/
 
 Pre-built binaries for every release are available on the [Releases page](https://github.com/kenken64/clawmacdo/releases):
 
-| Platform | Architecture | File |
-|----------|-------------|------|
-| Windows  | x86_64      | `clawmacdo-windows-amd64.zip` |
-| Linux    | x86_64      | `clawmacdo-linux-amd64.tar.gz` |
-| macOS    | Apple Silicon (arm64) | `clawmacdo-darwin-arm64.tar.gz` |
+| Platform | Architecture | Full Build | Minimal Build |
+|----------|-------------|------------|---------------|
+| Linux    | x86_64      | `clawmacdo-linux-amd64-full.tar.gz` | `clawmacdo-linux-amd64-minimal.tar.gz` |
+| macOS    | Apple Silicon (arm64) | `clawmacdo-darwin-arm64-full.tar.gz` | `clawmacdo-darwin-arm64-minimal.tar.gz` |
+| Windows  | x86_64      | `clawmacdo-windows-amd64-full.zip` | `clawmacdo-windows-amd64-minimal.zip` |
 
 ## Installation
 
