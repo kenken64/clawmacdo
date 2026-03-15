@@ -21,6 +21,9 @@ pub type Db = Arc<Mutex<rusqlite::Connection>>;
 
 /// Parameters for a deploy operation.
 pub struct DeployParams {
+    /// Pre-assigned deploy ID (used by detach mode and serve.rs).
+    /// When `None`, each provider generates its own UUID.
+    pub deploy_id: Option<String>,
     #[allow(dead_code)]
     pub customer_name: String,
     pub customer_email: String,
@@ -265,7 +268,10 @@ pub async fn run(params: DeployParams) -> Result<DeployRecord> {
 
 async fn run_do(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .deploy_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tx = &params.progress_tx;
     let step_db = &params.db;
 
@@ -430,7 +436,10 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
 
 async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .deploy_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tx = &params.progress_tx;
     let step_db = &params.db;
 
@@ -694,6 +703,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
@@ -818,7 +828,10 @@ SVCEOF\n\
 #[cfg(feature = "byteplus")]
 async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .deploy_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tx = &params.progress_tx;
     let step_db = &params.db;
 
@@ -1076,6 +1089,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
@@ -1385,6 +1399,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
@@ -1491,7 +1506,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     use std::env;
 
     config::ensure_dirs()?;
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .deploy_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tx = &params.progress_tx;
     let step_db = &params.db;
 
@@ -1756,6 +1774,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \
@@ -1883,7 +1902,10 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     use clawmacdo_cloud::CloudProvider;
 
     config::ensure_dirs()?;
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .deploy_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tx = &params.progress_tx;
     let step_db = &params.db;
 
@@ -2192,6 +2214,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
          (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
+         (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
            (openclaw models auth setup-token --provider anthropic --token \"$ANTHROPIC_SETUP_TOKEN\" >/dev/null 2>&1 || true); \
          fi; \

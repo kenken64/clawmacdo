@@ -271,7 +271,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "clawmacdo-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -288,6 +288,8 @@ dependencies = [
  "dialoguer",
  "dotenvy",
  "flate2",
+ "libc",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -299,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-cloud"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -318,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-core"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -332,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-db"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "clawmacdo-core",
@@ -345,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-provision"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "clawmacdo-core",
@@ -358,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-ssh"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -372,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "clawmacdo-ui"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "axum",

@@ -258,6 +258,31 @@ pub fn get_deployment_by_id(conn: &Connection, id: &str) -> Result<Option<Deploy
 }
 
 pub fn find_deployment_by_query(conn: &Connection, query: &str) -> Result<Option<DeploymentRow>> {
+    // Empty query → return most recent deployment
+    if query.is_empty() {
+        let mut stmt = conn.prepare(
+            "SELECT id, customer_name, customer_email, provider, hostname, ip_address, region, size, status, created_at
+             FROM deployments ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |row| {
+            Ok(DeploymentRow {
+                id: row.get(0)?,
+                customer_name: row.get(1)?,
+                customer_email: row.get(2)?,
+                provider: row.get(3)?,
+                hostname: row.get(4)?,
+                ip_address: row.get(5)?,
+                region: row.get(6)?,
+                size: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+        return match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        };
+    }
     // Try exact ID match first, then hostname, then IP
     if let Some(row) = get_deployment_by_id(conn, query)? {
         return Ok(Some(row));

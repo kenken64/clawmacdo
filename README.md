@@ -5,13 +5,18 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.12.2
+## ✨ What's New in v0.13.0
 
+- **`ark-api-key`** — Generate temporary BytePlus ARK API keys from access/secret credentials, or list endpoints with `--list`
+- **`ark-chat`** — Send prompts to BytePlus ARK models directly from the CLI
+- **`telegram-setup` / `telegram-pair`** — Configure and pair Telegram bots on deployed instances via SSH
+- **Web UI destroy** — Destroy cloud instances directly from the Deployments tab with provider-specific credential prompts
+- **Detach mode improvements** — Proper `setsid()` session detachment, stdout/stderr logging to file
+- **Workspace path fix** — Automatic `/root/` → `/home/openclaw/` path correction during provisioning
+
+### Previous highlights (v0.9.x – v0.12.x)
 - **BytePlus Cloud** — 5th cloud provider added (`--provider=byteplus` or `bp`)
 - **BytePlus ECS client** — HMAC-SHA256 signed REST API with auto-provisioning of VPC, subnet, and security group
-- **Web UI** — BytePlus dropdown, credential fields, region/size selectors
-
-### Previous highlights (v0.9.x – v0.11.x)
 - **Preflight CLI checks** — Azure CLI and AWS CLI verified at startup, auto-installed if missing
 - **Full-width professional web UI** — layout widened to 1536px max, compact hero with inline mascot
 - **Deploy progress tracking** — All 16 deploy steps persisted to SQLite in real-time
@@ -133,6 +138,8 @@ cargo build --release --no-default-features --features aws-only
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
 
 ## Usage
+
+> **Full CLI reference with all examples, curl commands, and sample responses:** [docs/clawmacdo_usage.md](docs/clawmacdo_usage.md)
 
 ### Deploy OpenClaw to DigitalOcean
 
@@ -379,6 +386,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 15, 2026
-**Current version:** 0.12.2
+**Last updated:** March 16, 2026
+**Current version:** 0.14.0
 **Architecture version:** 2.0 (modular workspace)

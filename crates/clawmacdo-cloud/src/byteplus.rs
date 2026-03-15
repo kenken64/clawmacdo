@@ -11,6 +11,8 @@ const ECS_SERVICE: &str = "ecs";
 const ECS_VERSION: &str = "2020-04-01";
 const VPC_SERVICE: &str = "vpc";
 const VPC_VERSION: &str = "2020-04-01";
+const ARK_SERVICE: &str = "ark";
+const ARK_VERSION: &str = "2024-01-01";
 const DEFAULT_ZONE_SUFFIX: &str = "a";
 
 pub struct BytePlusClient {
@@ -102,9 +104,13 @@ impl BytePlusClient {
     }
 
     /// Resolve endpoint host per the official SDK's DefaultEndpointProvider:
+    /// - ARK service: `open.byteplusapi.com` (region-agnostic gateway)
     /// - Bootstrap regions (ap-southeast-2, ap-southeast-3): `{service}.{region}.byteplusapi.com`
     /// - All other regions: `open.ap-southeast-1.byteplusapi.com`
     fn host_for_service(&self, service: &str) -> String {
+        if service == ARK_SERVICE {
+            return "open.byteplusapi.com".to_string();
+        }
         match self.region.as_str() {
             "ap-southeast-2" | "ap-southeast-3" => {
                 format!("{service}.{}.byteplusapi.com", self.region)
@@ -139,7 +145,23 @@ impl BytePlusClient {
         payload: &str,
         method: &str,
     ) -> Result<serde_json::Value, AppError> {
-        let endpoint = self.endpoint_for_service(service);
+        self.signed_request_with_host(service, action, version, payload, method, None)
+            .await
+    }
+
+    async fn signed_request_with_host(
+        &self,
+        service: &str,
+        action: &str,
+        version: &str,
+        payload: &str,
+        method: &str,
+        host_override: Option<&str>,
+    ) -> Result<serde_json::Value, AppError> {
+        let endpoint = match host_override {
+            Some(h) => format!("https://{h}"),
+            None => self.endpoint_for_service(service),
+        };
         let now = Utc::now();
         let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date = now.format("%Y%m%d").to_string();
@@ -266,6 +288,86 @@ impl BytePlusClient {
     ) -> Result<serde_json::Value, AppError> {
         self.signed_request(VPC_SERVICE, action, VPC_VERSION, payload, "GET")
             .await
+    }
+
+    async fn ark_request(
+        &self,
+        action: &str,
+        payload: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        self.signed_request(ARK_SERVICE, action, ARK_VERSION, payload, "POST")
+            .await
+    }
+
+    /// Generate a temporary ARK API key scoped to the given resource IDs.
+    ///
+    /// Uses the `GetApiKey` management API to exchange AK/SK credentials for a
+    /// scoped bearer token usable with ARK inference endpoints.
+    ///
+    /// * `resource_type` — `"endpoint"` or `"bot"`
+    /// * `resource_ids` — list of endpoint/bot IDs the key is scoped to
+    /// * `duration_seconds` — TTL in seconds (max 2,592,000 = 30 days)
+    pub async fn get_api_key(
+        &self,
+        resource_type: &str,
+        resource_ids: &[String],
+        duration_seconds: u64,
+    ) -> Result<(String, u64), AppError> {
+        let payload = serde_json::json!({
+            "DurationSeconds": duration_seconds,
+            "ResourceType": resource_type,
+            "ResourceIds": resource_ids,
+        });
+
+        let resp = self.ark_request("GetApiKey", &payload.to_string()).await?;
+
+        let result = resp
+            .get("Result")
+            .ok_or_else(|| AppError::BytePlus("GetApiKey response missing Result field".into()))?;
+
+        let api_key = result
+            .get("ApiKey")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AppError::BytePlus("GetApiKey response missing ApiKey".into()))?
+            .to_string();
+
+        let expired_time = result
+            .get("ExpiredTime")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        Ok((api_key, expired_time))
+    }
+
+    /// List ARK inference endpoints.
+    ///
+    /// Returns the raw Items array from the ListEndpoints response.
+    pub async fn list_endpoints(&self) -> Result<Vec<serde_json::Value>, AppError> {
+        let ark_host = format!("ark.{}.byteplusapi.com", self.region);
+        let payload = serde_json::json!({
+            "PageSize": 100,
+            "PageNumber": 1,
+        });
+
+        let resp = self
+            .signed_request_with_host(
+                ARK_SERVICE,
+                "ListEndpoints",
+                ARK_VERSION,
+                &payload.to_string(),
+                "POST",
+                Some(&ark_host),
+            )
+            .await?;
+
+        let items = resp
+            .get("Result")
+            .and_then(|r| r.get("Items"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(items)
     }
 
     /// Import an SSH key pair into BytePlus ECS.
@@ -716,7 +818,7 @@ impl BytePlusClient {
     /// Terminate (destroy) an instance.
     pub async fn terminate_instance(&self, instance_id: &str) -> Result<(), AppError> {
         let payload = serde_json::json!({
-            "InstanceIds": [instance_id]
+            "InstanceId": instance_id
         });
         self.ecs_request("DeleteInstance", &payload.to_string())
             .await?;
