@@ -17,6 +17,8 @@ pub struct DestroyParams {
     pub azure_client_id: String,
     pub azure_client_secret: String,
     pub azure_resource_group: String,
+    pub byteplus_access_key: String,
+    pub byteplus_secret_key: String,
     pub name: String,
     pub yes: bool,
 }
@@ -45,9 +47,19 @@ pub async fn run(params: DestroyParams) -> Result<()> {
                 bail!("Azure support not compiled in. Build with --features azure")
             }
         }
+        "byteplus" | "bp" => {
+            #[cfg(feature = "byteplus")]
+            {
+                run_byteplus(params).await
+            }
+            #[cfg(not(feature = "byteplus"))]
+            {
+                bail!("BytePlus support not compiled in. Build with --features byteplus")
+            }
+        }
         _ => {
             let provider = &params.provider;
-            bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', 'tencent', or 'azure'.")
+            bail!("Unknown provider '{provider}'. Use 'digitalocean', 'lightsail', 'tencent', 'azure', or 'byteplus'.")
         }
     }
 }
@@ -281,7 +293,10 @@ async fn run_azure(params: DestroyParams) -> Result<()> {
     let instances = provider.list_instances("openclaw").await?;
 
     if instances.is_empty() {
-        println!("No instances found in resource group '{}'.", params.azure_resource_group);
+        println!(
+            "No instances found in resource group '{}'.",
+            params.azure_resource_group
+        );
     } else {
         let instance = instances
             .into_iter()
@@ -294,9 +309,7 @@ async fn run_azure(params: DestroyParams) -> Result<()> {
                 )
             })?;
 
-        println!(
-            "\nInstance to destroy:"
-        );
+        println!("\nInstance to destroy:");
         println!("  Name:   {}", instance.name);
         println!(
             "  IP:     {}",
@@ -338,5 +351,98 @@ async fn run_azure(params: DestroyParams) -> Result<()> {
         "\nDestroy complete for '{}' (resource group: {}).",
         params.name, params.azure_resource_group
     );
+    Ok(())
+}
+
+#[cfg(feature = "byteplus")]
+async fn run_byteplus(params: DestroyParams) -> Result<()> {
+    use clawmacdo_cloud::byteplus::BytePlusClient;
+
+    let client = BytePlusClient::new(
+        &params.byteplus_access_key,
+        &params.byteplus_secret_key,
+        config::DEFAULT_BYTEPLUS_REGION,
+    )?;
+
+    println!("Fetching instances (BytePlus ECS)...");
+    let instances = if params.name.is_empty() {
+        client.list_all_instances().await?
+    } else {
+        client.list_openclaw_instances().await?
+    };
+
+    if instances.is_empty() {
+        println!("No instances found.");
+        return Ok(());
+    }
+
+    if params.name.is_empty() {
+        // Destroy all instances
+        println!("Found {} instance(s):", instances.len());
+        for inst in &instances {
+            let ip = inst.public_ip.as_deref().unwrap_or("N/A");
+            println!("  {} | {} | {} | {ip}", inst.id, inst.name, inst.status);
+        }
+
+        if !params.yes {
+            let confirmed = Confirm::new()
+                .with_prompt("Permanently destroy ALL these instances?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+
+        for inst in &instances {
+            println!("\nTerminating '{}' (ID {})...", inst.name, inst.id);
+            client.terminate_instance(&inst.id).await?;
+            println!("  Terminated.");
+        }
+    } else {
+        let instance = instances
+            .into_iter()
+            .find(|i| i.name == params.name || i.id == params.name)
+            .ok_or_else(|| {
+                anyhow::anyhow!("No openclaw instance found with name/id '{}'", params.name)
+            })?;
+
+        let ip = instance.public_ip.as_deref().unwrap_or("N/A");
+        println!("\nInstance to destroy:");
+        println!("  Name:   {}", instance.name);
+        println!("  ID:     {}", instance.id);
+        println!("  IP:     {ip}");
+        println!("  Status: {}", instance.status);
+
+        if !params.yes {
+            let confirmed = Confirm::new()
+                .with_prompt("Permanently destroy this instance?")
+                .default(false)
+                .interact()?;
+            if !confirmed {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+
+        println!("\nTerminating '{}' (ID {})...", instance.name, instance.id);
+        client.terminate_instance(&instance.id).await?;
+        println!("Instance terminated.");
+
+        // Clean up local key
+        let hostname_suffix = instance
+            .name
+            .strip_prefix("openclaw-")
+            .unwrap_or(&instance.name);
+        let local_key = config::keys_dir()?.join(format!("clawmacdo_{hostname_suffix}"));
+        if local_key.exists() {
+            std::fs::remove_file(&local_key)?;
+            println!("Removed local key: {}", local_key.display());
+        }
+
+        println!("\nDestroy complete for '{}' ({ip}).", instance.name);
+    }
+
     Ok(())
 }

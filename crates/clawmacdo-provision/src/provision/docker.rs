@@ -3,12 +3,23 @@ use clawmacdo_core::config::OPENCLAW_USER;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
 
-/// Step 10: Configure Docker daemon and add openclaw to docker group.
+/// Step 11: Configure Docker daemon and add openclaw to docker group.
 /// Docker CE is already installed and running from cloud-init.
 /// This step writes daemon.json for hardening and restarts docker.
-/// Translated from openclaw-ansible daemon.json.j2 + docker-linux.yml.
-/// PProvision.
+/// On images where Docker is not available (e.g. BytePlus), this step is skipped.
 pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppError> {
+    // Check if Docker is installed; skip entirely if not
+    let check = ssh_root_as_async(
+        ip,
+        key,
+        "command -v docker >/dev/null 2>&1 && echo yes || echo no",
+        ssh_user,
+    )
+    .await?;
+    if check.trim() == "no" {
+        return Ok(());
+    }
+
     // Write /etc/docker/daemon.json
     let daemon_json = r#"mkdir -p /etc/docker && cat > /etc/docker/daemon.json << 'DJEOF'
 {

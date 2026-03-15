@@ -12,7 +12,6 @@ const ECS_VERSION: &str = "2020-04-01";
 const VPC_SERVICE: &str = "vpc";
 const VPC_VERSION: &str = "2020-04-01";
 const DEFAULT_ZONE_SUFFIX: &str = "a";
-const DEFAULT_IMAGE_ID: &str = "image_ubuntu_2404_64_20G";
 
 pub struct BytePlusClient {
     client: Client,
@@ -35,6 +34,62 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
+/// URI-encode a string per SigV4 rules (unreserved chars are not encoded).
+fn uri_encode(s: &str) -> String {
+    let mut result = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                result.push(b as char);
+            }
+            _ => {
+                result.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    result
+}
+
+/// Flatten a JSON object into dot-notation query parameters (BytePlus GET style).
+/// e.g. `{"TagFilters": [{"Key": "app", "Values": ["openclaw"]}]}`
+/// becomes `TagFilters.1.Key=app&TagFilters.1.Values.1=openclaw`
+fn flatten_to_query_params(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    prefix: &str,
+    params: &mut Vec<(String, String)>,
+) {
+    for (key, value) in obj {
+        let full_key = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            serde_json::Value::String(s) => params.push((full_key, s.clone())),
+            serde_json::Value::Number(n) => params.push((full_key, n.to_string())),
+            serde_json::Value::Bool(b) => params.push((full_key, b.to_string())),
+            serde_json::Value::Array(arr) => {
+                for (i, item) in arr.iter().enumerate() {
+                    let idx_key = format!("{full_key}.{}", i + 1);
+                    match item {
+                        serde_json::Value::String(s) => params.push((idx_key, s.clone())),
+                        serde_json::Value::Number(n) => params.push((idx_key, n.to_string())),
+                        serde_json::Value::Bool(b) => params.push((idx_key, b.to_string())),
+                        serde_json::Value::Object(inner) => {
+                            flatten_to_query_params(inner, &idx_key, params);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            serde_json::Value::Object(inner) => {
+                flatten_to_query_params(inner, &full_key, params);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl BytePlusClient {
     pub fn new(access_key: &str, secret_key: &str, region: &str) -> Result<Self, AppError> {
         let client = Client::builder().build()?;
@@ -46,15 +101,23 @@ impl BytePlusClient {
         })
     }
 
-    fn host_for_service(&self, _service: &str) -> String {
-        "open.byteplusapi.com".to_string()
+    /// Resolve endpoint host per the official SDK's DefaultEndpointProvider:
+    /// - Bootstrap regions (ap-southeast-2, ap-southeast-3): `{service}.{region}.byteplusapi.com`
+    /// - All other regions: `open.ap-southeast-1.byteplusapi.com`
+    fn host_for_service(&self, service: &str) -> String {
+        match self.region.as_str() {
+            "ap-southeast-2" | "ap-southeast-3" => {
+                format!("{service}.{}.byteplusapi.com", self.region)
+            }
+            _ => "open.ap-southeast-1.byteplusapi.com".to_string(),
+        }
     }
 
-    fn endpoint_for_service(&self, _service: &str) -> String {
-        "https://open.byteplusapi.com".to_string()
+    fn endpoint_for_service(&self, service: &str) -> String {
+        format!("https://{}", self.host_for_service(service))
     }
 
-    /// Build HMAC-SHA256 authorization header and send POST request.
+    /// Build HMAC-SHA256 authorization header and send a signed request.
     ///
     /// BytePlus signing is similar to AWS SigV4:
     /// - Auth prefix: `HMAC-SHA256`
@@ -62,26 +125,61 @@ impl BytePlusClient {
     /// - Timestamp header: `X-Date: YYYYMMDDThhmmssZ`
     /// - API version/action via query params: `?Action={action}&Version={version}`
     /// - Credential scope: `{date}/{region}/{service}/request`
-    /// - Signed headers: `content-type;host;x-date`
+    ///
+    /// `method` should be `"GET"` or `"POST"`:
+    /// - GET: payload JSON is flattened into query params, body is empty.
+    /// - POST: payload JSON is sent as body with `Content-Type: application/json`.
+    ///
+    /// Per official SDK, only `x-date` is signed.
     async fn signed_request(
         &self,
         service: &str,
         action: &str,
         version: &str,
         payload: &str,
+        method: &str,
     ) -> Result<serde_json::Value, AppError> {
-        let host = self.host_for_service(service);
         let endpoint = self.endpoint_for_service(service);
         let now = Utc::now();
         let x_date = now.format("%Y%m%dT%H%M%SZ").to_string();
         let date = now.format("%Y%m%d").to_string();
 
-        let query_string = format!("Action={action}&Version={version}");
+        let is_get = method == "GET";
+
+        // Build query parameters — Action & Version are always present
+        let mut query_params: Vec<(String, String)> = vec![
+            ("Action".to_string(), action.to_string()),
+            ("Version".to_string(), version.to_string()),
+        ];
+
+        let body_content = if is_get {
+            // For GET: flatten JSON payload into query params, body is empty
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(map) = obj.as_object() {
+                    flatten_to_query_params(map, "", &mut query_params);
+                }
+            }
+            String::new()
+        } else {
+            // For POST: JSON body
+            payload.to_string()
+        };
+
+        // Sort query params alphabetically for canonical query string
+        query_params.sort_by(|a, b| a.0.cmp(&b.0));
+        let query_string = query_params
+            .iter()
+            .map(|(k, v)| format!("{}={}", uri_encode(k), uri_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
 
         // Step 1: Canonical request
-        let hashed_payload = sha256_hex(payload.as_bytes());
+        // Per official SDK: only x-date is signed (no host, no content-type)
+        let hashed_payload = sha256_hex(body_content.as_bytes());
+        let canonical_headers = format!("x-date:{x_date}\n");
+        let signed_headers = "x-date";
         let canonical_request = format!(
-            "POST\n/\n{query_string}\ncontent-type:application/json\nhost:{host}\nx-date:{x_date}\n\ncontent-type;host;x-date\n{hashed_payload}"
+            "{method}\n/\n{query_string}\n{canonical_headers}\n{signed_headers}\n{hashed_payload}"
         );
 
         // Step 2: String to sign
@@ -100,24 +198,30 @@ impl BytePlusClient {
         let signature = hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()));
 
         let authorization = format!(
-            "HMAC-SHA256 Credential={}/{}, SignedHeaders=content-type;host;x-date, Signature={}",
+            "HMAC-SHA256 Credential={}/{}, SignedHeaders={signed_headers}, Signature={}",
             self.access_key, credential_scope, signature
         );
 
         let url = format!("{endpoint}/?{query_string}");
-        let resp = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Host", &host)
+
+        let builder = if is_get {
+            self.client.get(&url)
+        } else {
+            self.client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .body(body_content)
+        };
+
+        let resp = builder
             .header("X-Date", &x_date)
             .header("Authorization", &authorization)
-            .body(payload.to_string())
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
+        let status = resp.status();
+
+        if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(AppError::BytePlus(format!(
                 "{action} failed ({status}): {text}"
@@ -151,7 +255,7 @@ impl BytePlusClient {
         action: &str,
         payload: &str,
     ) -> Result<serde_json::Value, AppError> {
-        self.signed_request(ECS_SERVICE, action, ECS_VERSION, payload)
+        self.signed_request(ECS_SERVICE, action, ECS_VERSION, payload, "POST")
             .await
     }
 
@@ -160,7 +264,7 @@ impl BytePlusClient {
         action: &str,
         payload: &str,
     ) -> Result<serde_json::Value, AppError> {
-        self.signed_request(VPC_SERVICE, action, VPC_VERSION, payload)
+        self.signed_request(VPC_SERVICE, action, VPC_VERSION, payload, "GET")
             .await
     }
 
@@ -309,56 +413,122 @@ impl BytePlusClient {
             .vpc_request("DescribeSecurityGroups", &list_payload.to_string())
             .await?;
 
-        if let Some(sgs) = resp["Result"]["SecurityGroups"].as_array() {
-            for sg in sgs {
-                if let Some(sg_id) = sg["SecurityGroupId"].as_str() {
-                    return Ok(sg_id.to_string());
-                }
-            }
-        }
+        let sg_id = if let Some(sg_id) = resp["Result"]["SecurityGroups"]
+            .as_array()
+            .and_then(|sgs| sgs.first())
+            .and_then(|sg| sg["SecurityGroupId"].as_str())
+        {
+            sg_id.to_string()
+        } else {
+            // Create security group
+            let create_payload = serde_json::json!({
+                "VpcId": vpc_id,
+                "SecurityGroupName": "openclaw-sg",
+                "Description": "OpenClaw security group",
+                "Tags": [{
+                    "Key": "app",
+                    "Value": "openclaw"
+                }]
+            });
+            let resp = self
+                .vpc_request("CreateSecurityGroup", &create_payload.to_string())
+                .await?;
 
-        // Create security group
-        let create_payload = serde_json::json!({
-            "VpcId": vpc_id,
-            "SecurityGroupName": "openclaw-sg",
-            "Description": "OpenClaw security group - SSH + HTTP/HTTPS + Gateway",
-            "Tags": [{
-                "Key": "app",
-                "Value": "openclaw"
-            }]
-        });
-        let resp = self
-            .vpc_request("CreateSecurityGroup", &create_payload.to_string())
-            .await?;
+            let id = resp["Result"]["SecurityGroupId"]
+                .as_str()
+                .ok_or_else(|| {
+                    AppError::BytePlus(
+                        "Missing SecurityGroupId in CreateSecurityGroup response".into(),
+                    )
+                })?
+                .to_string();
 
-        let sg_id = resp["Result"]["SecurityGroupId"]
-            .as_str()
-            .ok_or_else(|| {
-                AppError::BytePlus("Missing SecurityGroupId in CreateSecurityGroup response".into())
-            })?
-            .to_string();
+            // Wait for security group to become available
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            id
+        };
 
-        // Add ingress rules
+        // Always ensure ingress rules exist (idempotent — duplicates return an error we ignore)
         for (port, desc) in [
-            ("22/22", "SSH"),
-            ("80/80", "HTTP"),
-            ("443/443", "HTTPS"),
-            ("18789/18789", "OpenClaw Gateway"),
+            (22, "SSH"),
+            (80, "HTTP"),
+            (443, "HTTPS"),
+            (18789, "OpenClaw Gateway"),
         ] {
             let rule_payload = serde_json::json!({
                 "SecurityGroupId": sg_id,
                 "Direction": "ingress",
                 "Protocol": "tcp",
-                "PortStart": port.split('/').next().unwrap().parse::<i32>().unwrap(),
-                "PortEnd": port.split('/').next_back().unwrap().parse::<i32>().unwrap(),
+                "PortStart": port,
+                "PortEnd": port,
                 "CidrIp": "0.0.0.0/0",
                 "Description": desc
             });
-            self.vpc_request("AuthorizeSecurityGroupIngress", &rule_payload.to_string())
-                .await?;
+            match self
+                .vpc_request("AuthorizeSecurityGroupIngress", &rule_payload.to_string())
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    let msg = format!("{e}");
+                    // Ignore "already exists" / conflict errors
+                    if !msg.contains("SecurityGroupRuleAlreadyExists")
+                        && !msg.contains("InvalidSecurityGroupRule.Duplicate")
+                        && !msg.contains("InvalidSecurityRule.Conflict")
+                        && !msg.contains("already exists")
+                        && !msg.contains("Conflict")
+                    {
+                        return Err(e);
+                    }
+                }
+            }
         }
 
         Ok(sg_id)
+    }
+
+    /// Query DescribeImages to find the latest Ubuntu image.
+    async fn find_ubuntu_image(&self) -> Result<String, AppError> {
+        let payload = serde_json::json!({
+            "OsType": "Linux",
+            "Visibility": "public",
+            "MaxResults": 100
+        });
+        let resp = self
+            .ecs_request("DescribeImages", &payload.to_string())
+            .await?;
+
+        let images = resp["Result"]["Images"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        // Prefer Ubuntu 24.04, then 22.04, then any Ubuntu
+        let mut best: Option<(i32, String)> = None;
+        for img in &images {
+            let name = img["ImageName"].as_str().unwrap_or("");
+            let id = img["ImageId"].as_str().unwrap_or("");
+            let name_lower = name.to_lowercase();
+            if !name_lower.contains("ubuntu") || id.is_empty() {
+                continue;
+            }
+
+            let priority = if name_lower.contains("24.04") {
+                3
+            } else if name_lower.contains("22.04") {
+                2
+            } else if name_lower.contains("20.04") {
+                1
+            } else {
+                0
+            };
+            if best.as_ref().is_none_or(|(p, _)| priority > *p) {
+                best = Some((priority, id.to_string()));
+            }
+        }
+
+        best.map(|(_, id)| id)
+            .ok_or_else(|| AppError::BytePlus("No Ubuntu image found via DescribeImages".into()))
     }
 
     /// Create an ECS instance.
@@ -375,12 +545,15 @@ impl BytePlusClient {
         let subnet_id = self.ensure_subnet(&vpc_id).await?;
         let sg_id = self.ensure_security_group(&vpc_id).await?;
 
+        // Find the correct Ubuntu image dynamically
+        let image_id = self.find_ubuntu_image().await?;
+
         let zone_id = format!("{}{DEFAULT_ZONE_SUFFIX}", self.region);
 
         let payload = serde_json::json!({
             "InstanceName": name,
             "InstanceTypeId": instance_type,
-            "ImageId": DEFAULT_IMAGE_ID,
+            "ImageId": image_id,
             "ZoneId": zone_id,
             "SystemVolume": {
                 "VolumeType": "ESSD_PL0",
@@ -499,6 +672,47 @@ impl BytePlusClient {
             .collect())
     }
 
+    /// List all ECS instances (no tag filter).
+    pub async fn list_all_instances(&self) -> Result<Vec<InstanceInfo>, AppError> {
+        let payload = serde_json::json!({
+            "MaxResults": 100
+        });
+
+        let resp = self
+            .ecs_request("DescribeInstances", &payload.to_string())
+            .await?;
+
+        let instances = resp["Result"]["Instances"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(instances
+            .iter()
+            .map(|inst| {
+                let id = inst["InstanceId"].as_str().unwrap_or("").to_string();
+                let name = inst["InstanceName"].as_str().unwrap_or("").to_string();
+                let status = inst["Status"].as_str().unwrap_or("UNKNOWN").to_string();
+                let public_ip = inst["EipAddress"]["IpAddress"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        inst["NetworkInterfaces"]
+                            .as_array()
+                            .and_then(|nics| nics.first())
+                            .and_then(|nic| nic["PrimaryIpAddress"].as_str())
+                    })
+                    .map(|s| s.to_string());
+                InstanceInfo {
+                    id,
+                    name,
+                    status,
+                    public_ip,
+                }
+            })
+            .collect())
+    }
+
     /// Terminate (destroy) an instance.
     pub async fn terminate_instance(&self, instance_id: &str) -> Result<(), AppError> {
         let payload = serde_json::json!({
@@ -509,13 +723,55 @@ impl BytePlusClient {
         Ok(())
     }
 
-    /// Poll until instance is RUNNING and has a public IP.
+    /// Allocate a new Elastic IP address.
+    pub async fn allocate_eip(&self) -> Result<(String, String), AppError> {
+        let payload = serde_json::json!({
+            "BillingType": 2,
+            "Bandwidth": 10,
+            "Name": "openclaw-eip",
+            "Description": "OpenClaw EIP"
+        });
+        let resp = self
+            .vpc_request("AllocateEipAddress", &payload.to_string())
+            .await?;
+        let allocation_id = resp["Result"]["AllocationId"]
+            .as_str()
+            .ok_or_else(|| {
+                AppError::BytePlus("Missing AllocationId in AllocateEipAddress response".into())
+            })?
+            .to_string();
+        let eip_address = resp["Result"]["EipAddress"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        Ok((allocation_id, eip_address))
+    }
+
+    /// Associate an EIP with an ECS instance.
+    pub async fn associate_eip(
+        &self,
+        allocation_id: &str,
+        instance_id: &str,
+    ) -> Result<(), AppError> {
+        let payload = serde_json::json!({
+            "AllocationId": allocation_id,
+            "InstanceId": instance_id,
+            "InstanceType": "EcsInstance"
+        });
+        self.vpc_request("AssociateEipAddress", &payload.to_string())
+            .await?;
+        Ok(())
+    }
+
+    /// Poll until instance is RUNNING, then allocate and associate an EIP.
     pub async fn wait_for_running(
         &self,
         instance_id: &str,
         timeout: std::time::Duration,
     ) -> Result<InstanceInfo, AppError> {
         let start = std::time::Instant::now();
+
+        // First wait for instance to be RUNNING
         loop {
             if start.elapsed() > timeout {
                 return Err(AppError::Timeout(
@@ -525,14 +781,31 @@ impl BytePlusClient {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
             match self.describe_instance(instance_id).await {
-                Ok(info) => {
-                    if info.status == "RUNNING" && info.public_ip.is_some() {
-                        return Ok(info);
-                    }
-                }
+                Ok(info) if info.status == "RUNNING" => break,
+                Ok(_) => continue,
                 Err(_) => continue,
             }
         }
+
+        // Allocate and associate an EIP for public internet access
+        let (allocation_id, eip_address) = self.allocate_eip().await?;
+
+        // Wait a moment for EIP to be ready
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        self.associate_eip(&allocation_id, instance_id).await?;
+
+        // Wait for the EIP to appear on the instance
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        // Re-describe to get the updated info with the EIP
+        let mut info = self.describe_instance(instance_id).await?;
+        if info.public_ip.is_none() || info.public_ip.as_deref() == Some("") {
+            // Use the EIP address we just allocated
+            info.public_ip = Some(eip_address);
+        }
+
+        Ok(info)
     }
 }
 
