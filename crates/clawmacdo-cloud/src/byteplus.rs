@@ -46,12 +46,12 @@ impl BytePlusClient {
         })
     }
 
-    fn host_for_service(&self, service: &str) -> String {
-        format!("open.{service}.byteplusapi.com")
+    fn host_for_service(&self, _service: &str) -> String {
+        "open.byteplusapi.com".to_string()
     }
 
-    fn endpoint_for_service(&self, service: &str) -> String {
-        format!("https://open.{service}.byteplusapi.com")
+    fn endpoint_for_service(&self, _service: &str) -> String {
+        "https://open.byteplusapi.com".to_string()
     }
 
     /// Build HMAC-SHA256 authorization header and send POST request.
