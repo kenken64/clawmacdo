@@ -918,7 +918,7 @@ tailwind.config = {
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
-    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.12.1</span>
+    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.12.2</span>
   </div>
   <!-- Tab bar -->
   <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 flex gap-0">

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.12.2
+
+### Fixed
+- BytePlus API endpoint corrected to `open.byteplusapi.com` (was using non-existent `open.ecs.byteplusapi.com`)
+
 ## v0.12.1
 
 ### Fixed
