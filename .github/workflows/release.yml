@@ -77,7 +77,19 @@ jobs:
           sudo apt-get install -y libssl-dev pkg-config
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin clawmacdo ${{ matrix.features }}
+        shell: bash
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          JOBS_FLAG=""
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            JOBS_FLAG="--jobs 1"
+          fi
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --target ${{ matrix.target }} $JOBS_FLAG ${{ matrix.features }}
+          else
+            cargo build --release --target ${{ matrix.target }} $JOBS_FLAG
+          fi
 
       - name: Strip binary (Linux/macOS)
         if: ${{ !contains(matrix.target, 'windows') }}
