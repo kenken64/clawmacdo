@@ -39,6 +39,36 @@ pub fn ensure_aws_cli() -> Result<(), AppError> {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    } else if cfg!(target_os = "windows") {
+        // Try winget first (built into Windows 10/11)
+        let via_winget = Command::new("winget")
+            .args([
+                "install", "-e", "--id", "Amazon.AWSCLI",
+                "--silent",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+            ])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if via_winget {
+            true
+        } else {
+            // Fallback: download and run the official MSI via PowerShell
+            Command::new("powershell")
+                .args([
+                    "-NoProfile", "-NonInteractive", "-Command",
+                    "Invoke-WebRequest -Uri https://awscli.amazonaws.com/AWSCLIV2.msi \
+                       -OutFile \"$env:TEMP\\AWSCLIV2.msi\"; \
+                     Start-Process msiexec.exe \
+                       -ArgumentList '/i',(\"$env:TEMP\\AWSCLIV2.msi\"),'/quiet','/norestart' \
+                       -Wait; \
+                     Remove-Item \"$env:TEMP\\AWSCLIV2.msi\" -Force",
+                ])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
     } else {
         false
     };

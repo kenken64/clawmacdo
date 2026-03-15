@@ -919,20 +919,20 @@ tailwind.config = {
 
 <!-- Header -->
 <header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-10">
-  <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
+  <div class="w-full px-4 sm:px-8 lg:px-12 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
     <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.12.2</span>
   </div>
   <!-- Tab bar -->
-  <div class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 flex gap-0">
+  <div class="w-full px-4 sm:px-8 lg:px-12 flex gap-0">
     <button id="tab-deploy" onclick="switchTab('deploy')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors">Deploy</button>
     <button id="tab-deployments" onclick="switchTab('deployments')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Deployments</button>
   </div>
 </header>
 
-<main class="max-w-screen-2xl mx-auto px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
+<main class="w-full px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
 
 <!-- Dry-run banner (shared) -->
 <div id="dry-run-banner" class="hidden mb-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 rounded-lg px-4 py-2 text-sm font-medium">
@@ -949,11 +949,11 @@ tailwind.config = {
     <h2 class="text-xl sm:text-2xl font-bold text-slate-100 mb-1">Cloud Deployment Console</h2>
     <p class="text-sm text-slate-400 mb-4">Provision OpenClaw instances across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
     <div class="flex flex-col sm:flex-row gap-2">
-      <button type="button" onclick="addDeployCard()" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
+      <button type="button" onclick="addDeployCard()" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         New Deployment
       </button>
-      <button type="button" onclick="resetSavedDeployments()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+      <button type="button" onclick="resetSavedDeployments()" class="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
         Reset Saved
       </button>
     </div>
