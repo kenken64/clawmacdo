@@ -655,7 +655,9 @@ Telegram pairing approved. Send a message to your bot to start chatting.
 
 ## tailscale-funnel
 
-Set up Tailscale Funnel on a deployed OpenClaw instance for public HTTPS access. Performs a full 6-step setup: install Tailscale, connect with auth key, enable Funnel, retrieve public URL, configure `openclaw.json` (`controlUi.allowedOrigins` + `trustedProxies`), and auto-approve pending devices.
+Set up Tailscale Funnel on a deployed OpenClaw instance for public HTTPS access. Performs a full 6-step setup: install Tailscale, connect with auth key, enable Funnel, retrieve public URL, configure `openclaw.json` (`controlUi.allowedOrigins`, `trustedProxies`, and `dangerouslyDisableDeviceAuth`), and auto-approve pending devices.
+
+> **v0.19.0:** Funnel setup now sets `controlUi.dangerouslyDisableDeviceAuth: true` so browser connections via the Funnel URL skip the mandatory device pairing screen. Combined with the one-click "Open" button in the web UI, users can access the webchat without any manual token paste or pairing approval.
 
 ### Syntax
 
@@ -709,11 +711,14 @@ Restarting OpenClaw gateway...
   No pending devices found.
 
 Tailscale Funnel setup complete!
-Public URL: https://openclaw-ff54485d.tail12345.ts.net
-Webchat:    https://openclaw-ff54485d.tail12345.ts.net/chat?token=<auth-token>
+Public URL:      https://openclaw-ff54485d.tail12345.ts.net
+Gateway Token:   58f553f0976101d33e4b9ca74ea92883e8ca390a1e3ecda9
 
-Note: If you connect from a new browser, approve it with:
-  clawmacdo device-approve --instance 128.199.123.45
+To connect: open the URL above, click Settings (gear icon),
+paste the Gateway Token, and save.
+
+Note: Device pairing is automatically disabled for Funnel connections.
+      Use the web UI "Open" button for one-click access (auto-injects the token).
 ```
 
 ---
@@ -782,7 +787,9 @@ Funnel disabled.
 
 ## device-approve
 
-Approve all pending OpenClaw webchat device pairing requests on a deployed instance. Useful when new browsers connect to the webchat via Tailscale Funnel and need device approval.
+Approve all pending OpenClaw webchat device pairing requests on a deployed instance.
+
+> **v0.19.0:** With `dangerouslyDisableDeviceAuth` enabled (set automatically during Funnel setup), browser connections via the Control UI no longer require device pairing. This command is still useful for CLI or non-browser clients that need manual approval.
 
 ### Syntax
 
@@ -1255,6 +1262,7 @@ Press Ctrl+C to stop.
 - **Deploy tab** — Deploy new OpenClaw instances to any of the 5 supported cloud providers
 - **Deployments tab** — View all deployments, destroy instances, toggle Tailscale Funnel on/off
 - **Funnel toggle** — Each deployment row has an On/Off button to enable/disable Tailscale Funnel, showing the public URL when active
+- **One-click Funnel access** — When Funnel is enabled, an "Open" button appears that opens the webchat in a new tab with the gateway token pre-injected (no manual paste or device pairing needed)
 - **Logout** — `/logout` clears the session cookie and redirects to the login page
 
 ---
@@ -1459,7 +1467,8 @@ curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/funnel \
 {
   "ok": true,
   "message": "Funnel enabled at https://openclaw-ff54485d.tail12345.ts.net",
-  "funnel_url": "https://openclaw-ff54485d.tail12345.ts.net"
+  "funnel_url": "https://openclaw-ff54485d.tail12345.ts.net/auth.html#58f553f0976101d3...",
+  "gateway_token": "58f553f0976101d33e4b9ca74ea92883e8ca390a1e3ecda9"
 }
 ```
 
@@ -1469,6 +1478,25 @@ curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/funnel \
 {
   "ok": true,
   "message": "Funnel disabled."
+}
+```
+
+### POST /api/deployments/{id}/devices/approve
+
+Approve all pending device pairing requests on a deployment. Moves entries from `devices/pending.json` to `devices/paired.json` via SSH.
+
+> **Note:** With `dangerouslyDisableDeviceAuth` enabled (set by Funnel setup in v0.19.0), browser connections skip pairing automatically. This endpoint is primarily for CLI or non-browser clients.
+
+```bash
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/devices/approve \
+  -H "x-api-key: <YOUR_API_KEY>"
+```
+
+**Response:**
+
+```json
+{
+  "approved": 2
 }
 ```
 
