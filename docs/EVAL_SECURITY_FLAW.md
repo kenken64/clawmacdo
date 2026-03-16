@@ -1,21 +1,59 @@
 # Security Flaw Evaluation Report
 
-**Project:** ClawMacToDO  
-**Date:** 2026-03-14  
-**Auditor:** GitHub Copilot (automated static analysis)  
+**Project:** ClawMacToDO
+**Date:** 2026-03-14
+**Last Updated:** 2026-03-16
+**Auditor:** GitHub Copilot (automated static analysis)
 **Scope:** Full Rust codebase (`crates/`), shell scripts (`scripts/`), and web server (`web/`)
 
 ---
 
 ## Summary
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 4     |
-| HIGH     | 12    |
-| MEDIUM   | 6     |
-| LOW      | 8     |
-| **Total** | **30** |
+| Severity | Count | Fixed | Remaining |
+|----------|-------|-------|-----------|
+| CRITICAL | 4     | 3     | 1         |
+| HIGH     | 12    | 0     | 12        |
+| MEDIUM   | 6     | 0     | 6         |
+| LOW      | 8     | 0     | 8         |
+| **Total** | **30** | **3** | **27**   |
+
+---
+
+## Remediation Status (as of v0.16.0)
+
+| ID | Severity | Status | Fix Description |
+|----|----------|--------|-----------------|
+| CRIT-01 | CRITICAL | OPEN | Web server still has zero authentication |
+| CRIT-02 | CRITICAL | **FIXED in v0.16.0** | SSH host key verification via TOFU with `~/.clawmacdo/known_hosts` |
+| CRIT-03 | CRITICAL | **FIXED in v0.16.0** | `.env` file written via SCP binary transfer instead of shell heredoc |
+| CRIT-04 | CRITICAL | **FIXED in v0.16.0** | `PermitRootLogin prohibit-password` in cloud-init + post-provision enforcement |
+| HIGH-01 | HIGH | OPEN | Manual shell escaping still in use |
+| HIGH-02 | HIGH | OPEN | No hostname validation regex |
+| HIGH-03 | HIGH | OPEN | Secrets still passed as command-line arguments |
+| HIGH-04 | HIGH | OPEN | tar extraction has no `--no-same-owner` or path filtering |
+| HIGH-05 | HIGH | OPEN | Docker group membership grants root equivalent |
+| HIGH-06 | HIGH | OPEN | Sudoers wildcard rules unchanged |
+| HIGH-07 | HIGH | OPEN | Backup path not canonicalized or validated |
+| HIGH-08 | HIGH | OPEN | ssh_key_path not restricted to keys directory |
+| HIGH-09 | HIGH | OPEN | EnvironmentFile still leaks all API keys |
+| HIGH-10 | HIGH | OPEN | unwrap() still present on cloud API data |
+| HIGH-11 | HIGH | OPEN | env::set_var() still used for AWS credentials |
+| HIGH-12 | HIGH | OPEN | SSH security group still opens to 0.0.0.0/0 |
+| MED-01 | MEDIUM | OPEN | Lightsail tags still use format!() |
+| MED-02 | MEDIUM | OPEN | IP field not validated in HTTP requests |
+| MED-03 | MEDIUM | OPEN | gen_apikey.sh shell-to-Python injection |
+| MED-04 | MEDIUM | OPEN | security_api.js predictable paths |
+| MED-05 | MEDIUM | OPEN | Public key written via shell interpolation |
+| MED-06 | MEDIUM | OPEN | scan.rs expect() panics |
+| LOW-01 | LOW | OPEN | SCP uploads still use 0o644 |
+| LOW-02 | LOW | OPEN | SSH key permissions not set on Windows |
+| LOW-03 | LOW | OPEN | curl \| bash without integrity check |
+| LOW-04 | LOW | OPEN | SQLite database uses default permissions |
+| LOW-05 | LOW | OPEN | Deploy record JSON uses default permissions |
+| LOW-06 | LOW | OPEN | Tailwind CDN loaded without SRI |
+| LOW-07 | LOW | OPEN | Error messages leak internal state |
+| LOW-08 | LOW | OPEN | Symlink-following in extension copy |
 
 ---
 
@@ -58,7 +96,7 @@ Add an authentication middleware (API key or session-based auth). Bind to `127.0
 
 ---
 
-### CRIT-02: No SSH host key verification (MITM)
+### CRIT-02: No SSH host key verification (MITM) — FIXED in v0.16.0
 
 | Field | Value |
 |-------|-------|
@@ -66,36 +104,23 @@ Add an authentication middleware (API key or session-based auth). Bind to `127.0
 | **Lines** | 64–87 |
 | **Function** | `connect_as()` |
 | **CWE** | CWE-295 (Improper Certificate Validation) |
+| **Status** | **FIXED** |
 
-**Description:**  
+**Description:**
 The SSH `connect_as()` function establishes TCP, performs handshake, and authenticates without ever verifying the remote host's key against a known_hosts file. Every SSH connection in the application goes through this function.
 
-**Affected code (lines 64–87):**
-```rust
-fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Session, AppError> {
-    // ... TCP connect ...
-    sess.handshake()
-        .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
-    sess.userauth_pubkey_file(username, None, private_key_path, None)
-        .map_err(|e| AppError::Ssh(format!("SSH auth to {ip}: {e}")))?;
-    // ← No host key verification anywhere
-    Ok(sess)
-}
-```
-
-**Callers (all vulnerable):**
-- `connect()` (line 61) — used by `exec()`, `scp_upload()`, `scp_download()`
-- `connect_as()` (line 97) — used by `exec_as()`, `scp_upload_as()`
-
-**Impact:**  
-An attacker performing a network-level MITM can intercept all SSH traffic, capturing API keys, secrets, and gaining the ability to execute arbitrary commands on the remote server.
-
-**Recommendation:**  
-Use `sess.host_key()` to retrieve the server's host key after handshake and verify it against a local store. Optionally do TOFU (trust on first use) and save the fingerprint for later verification.
+**Fix Applied:**
+Implemented Trust On First Use (TOFU) host key verification:
+- `load_known_hosts()` reads SSH host keys from `~/.clawmacdo/known_hosts`
+- `save_known_host()` saves new host keys on first connection
+- `verify_host_key()` verifies host key matches known entry before authentication is sent
+- Host key extracted via `sess.host_key()` and base64-encoded for storage/comparison
+- Mismatches return `AppError::HostKeyMismatch` with actionable error message including IP, expected, and actual key values
+- Verification occurs **before** `userauth_pubkey_file()` — credentials are never sent to an unverified host
 
 ---
 
-### CRIT-03: API keys interpolated into shell heredoc — command injection
+### CRIT-03: API keys interpolated into shell heredoc — command injection — FIXED in v0.16.0
 
 | Field | Value |
 |-------|-------|
@@ -103,40 +128,21 @@ Use `sess.host_key()` to retrieve the server's host key after handshake and veri
 | **Lines** | 35–48 |
 | **Function** | `provision()` |
 | **CWE** | CWE-78 (OS Command Injection) |
+| **Status** | **FIXED** |
 
-**Description:**  
+**Description:**
 User-supplied API keys are string-interpolated into a heredoc sent over SSH. Although the heredoc delimiter `'ENVEOF'` is quoted (disabling `$` expansion), if any key value contains a line consisting solely of the string `ENVEOF`, the heredoc terminates early and all subsequent content is interpreted as shell commands running as root.
 
-**Affected code (lines 35–48):**
-```rust
-let write_env = format!(
-    r#"cat > {cd}/.env << 'ENVEOF'
-ANTHROPIC_API_KEY={anthropic_api_key}
-ANTHROPIC_SETUP_TOKEN={anthropic_setup_token}
-OPENAI_API_KEY={openai_key}
-GEMINI_API_KEY={gemini_key}
-WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}
-TELEGRAM_BOT_TOKEN={telegram_bot_token}
-ENVEOF
-chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
-);
-ssh_root_as_async(ip, key, &write_env, ssh_user).await?;
-```
-
-**Data flow:**  
-HTTP request body (`DeployRequest.anthropic_key`, etc.) → `DeployParams` → `ProvisionOpts` → `openclaw::provision()` → SSH exec as root.
-
-No sanitization occurs at any step.
-
-**Impact:**  
-Arbitrary remote code execution as root on the provisioned server by sending a crafted API key through the web UI or CLI.
-
-**Recommendation:**  
-Write the `.env` file via SCP instead of shell heredoc. Alternatively, validate API keys against a strict pattern (e.g., `^[A-Za-z0-9_-]+$`) before interpolation, or use a randomized heredoc delimiter that cannot appear in the values.
+**Fix Applied:**
+The `.env` file is now written via `ssh::scp_upload_bytes()` instead of shell heredoc:
+- API keys are assembled into a string in Rust, converted to raw bytes
+- Uploaded via SCP binary transfer to `/tmp/.env_upload` with mode `0o600`
+- Moved to final location with `mv` command + `chmod 600` + `chown openclaw:openclaw`
+- Keys never enter a shell command string, completely eliminating heredoc delimiter injection and shell escaping issues
 
 ---
 
-### CRIT-04: Cloud-init forces `PermitRootLogin yes` permanently
+### CRIT-04: Cloud-init forces `PermitRootLogin yes` permanently — FIXED in v0.16.0
 
 | Field | Value |
 |-------|-------|
@@ -144,29 +150,15 @@ Write the `.env` file via SCP instead of shell heredoc. Alternatively, validate 
 | **Lines** | 49–54 (YAML), 100–105 (shell) |
 | **Function** | `generate()`, `generate_shell()` |
 | **CWE** | CWE-250 (Execution with Unnecessary Privileges) |
+| **Status** | **FIXED** |
 
-**Description:**  
+**Description:**
 Both cloud-init variants force-enable root SSH login and are never reverted after provisioning completes.
 
-**Affected code (lines 49–54):**
-```yaml
-- sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-- sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf
-- mkdir -p /root/.ssh && chmod 700 /root/.ssh
-- cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys
-- systemctl restart sshd || systemctl restart ssh
-```
-
-**Shell variant (lines 100–105):**
-```bash
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-```
-
-**Impact:**  
-Every deployed server permanently allows root login from the internet. Combined with the `0.0.0.0/0` security groups (CRIT-02), this creates a large attack surface.
-
-**Recommendation:**  
-Add a post-provisioning step that disables root login (`PermitRootLogin prohibit-password` or `no`) and forces SSH through the `openclaw` user. Alternatively, configure `PermitRootLogin forced-commands-only`.
+**Fix Applied (defense-in-depth):**
+1. **Cloud-init now sets secure default:** `PermitRootLogin prohibit-password` instead of `yes` — allows pubkey-only root login (no password auth) during initial provisioning
+2. **Post-provisioning hardening enforcement** in `provision/mod.rs`: After all provisioning steps complete, explicitly converts any remaining `PermitRootLogin yes` to `prohibit-password`, applies to both main config and `.d/` fragments, and restarts sshd to apply changes immediately
+3. Defense-in-depth: cloud-init sets the baseline, post-provision enforcement ensures it wasn't accidentally modified during provisioning
 
 ---
 
