@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.18.0
+
+### Added
+- **`tailscale-funnel` subcommand** — full Tailscale Funnel setup: install Tailscale, connect with auth key, enable Funnel, configure `openclaw.json` (`controlUi.allowedOrigins` + `trustedProxies`), auto-approve pending devices, and print public webchat URL with auth token
+- **`funnel-on` / `funnel-off` subcommands** — toggle Tailscale Funnel on/off via SSH
+- **`device-approve` subcommand** — auto-approve all pending OpenClaw webchat device pairing requests
+- **`skill-upload` subcommand** — upload a local SKILL.md to the Railway skills API and SCP it to the OpenClaw instance (with backup)
+- **`skill-download` subcommand** — download a customer SKILL.md from the Railway skills API
+- **`skill-push` subcommand** — push a SKILL.md from the Railway API directly to the instance via SCP (with backup)
+- **User-skills API endpoints** — `POST/GET/DELETE /api/user-skills/:deploymentId` and `/info` for per-deployment custom SKILL.md management, protected with `x-api-key` (`USER_SKILLS_API_KEY`)
+- **Web UI Funnel toggle** — Deployments tab now has a Funnel column with on/off toggle button that shows the public URL
+- **Web UI logout** — `/logout` endpoint and logout link in the header
+
+### Fixed
+- **Deployments tab 401 after PIN login** — `api_key_middleware` now also accepts a valid PIN session cookie, so browser fetch calls to `/api/*` work after logging in
+- **PIN login error not showing** — removed HTML5 validation (`required`, `pattern`) so invalid PINs reach the server and display the error message
+
 ## v0.17.0
 
 ### Security

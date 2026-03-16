@@ -5,15 +5,21 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.17.0
+## ✨ What's New in v0.18.0
 
-- **Web UI security hardening (CRIT-01)** — API key authentication for all `/api/*` endpoints, 6-digit PIN login for web pages, CORS middleware, per-IP rate limiting (60 req/min), and localhost-only binding by default
-- **All 4 CRITICAL security findings now resolved** — CRIT-01 (auth), CRIT-02 (SSH MITM), CRIT-03 (injection), CRIT-04 (root login)
+- **Tailscale Funnel** — `tailscale-funnel` subcommand: install Tailscale, enable Funnel, configure `openclaw.json`, auto-approve devices, and print public webchat URL
+- **Funnel toggle** — `funnel-on` / `funnel-off` CLI commands and web UI Deployments tab toggle button
+- **Device approval** — `device-approve` subcommand to auto-approve all pending webchat pairing requests
+- **Customer skill management** — `skill-upload`, `skill-download`, `skill-push` subcommands for per-deployment SKILL.md via Railway skills API + SCP to instances
+- **User-skills API** — REST endpoints for per-deployment SKILL.md with API key protection and auto-backup
+- **Web UI fixes** — Deployments tab works after PIN login; logout button; PIN error message displays correctly
+
+### Previous highlights (v0.17.x)
+- **Web UI security hardening (CRIT-01)** — API key auth, 6-digit PIN login, CORS, rate limiting, localhost-only binding
+- **All 4 CRITICAL security findings resolved**
 
 ### Previous highlights (v0.16.x)
-
-- **BytePlus destroy cleanup** — Automatically release EIP and delete VPC/subnet/security-group when destroying BytePlus instances
-- **BytePlus deploy form improvements** — Auto-default primary AI model to "byteplus"; ARK API key generation from web UI
+- **BytePlus destroy cleanup** — Auto-release EIP and delete VPC/subnet/security-group
 - **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers
 
 ### Previous highlights (v0.14.x – v0.15.x)
@@ -362,6 +368,8 @@ new-crate = { workspace = true }
 | `CLAWMACDO_API_KEY` | API key protecting `/api/*` endpoints | Optional (Web UI) |
 | `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
 | `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
+| `SKILLS_API_URL` | Railway skills API base URL | For skill commands |
+| `USER_SKILLS_API_KEY` | API key for user-skills endpoints | For skill commands |
 
 ## Architecture Notes
 
@@ -404,5 +412,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 16, 2026
-**Current version:** 0.17.0
+**Current version:** 0.18.0
 **Architecture version:** 2.0 (modular workspace)

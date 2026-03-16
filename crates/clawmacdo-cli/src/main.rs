@@ -498,9 +498,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::FunnelOn { instance, port } => {
             commands::tailscale_funnel::funnel_on(&instance, port).await
         }
-        Commands::FunnelOff { instance } => {
-            commands::tailscale_funnel::funnel_off(&instance).await
-        }
+        Commands::FunnelOff { instance } => commands::tailscale_funnel::funnel_off(&instance).await,
         Commands::TailscaleFunnel {
             instance,
             auth_key,
