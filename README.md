@@ -84,6 +84,7 @@ clawmacdo/
 - **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
+- **Snapshot restore**: create a DigitalOcean droplet from a snapshot by name, with deploy record saved to SQLite for web UI visibility
 - **Destroy**: delete an instance by name with confirmation, clean up SSH keys (cloud + local)
 - **Status**: list all openclaw-tagged instances with IPs
 - **List backups**: show local backup archives with sizes and dates
