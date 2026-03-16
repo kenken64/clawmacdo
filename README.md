@@ -221,11 +221,14 @@ clawmacdo deploy \
 export BYTEPLUS_ACCESS_KEY="your_access_key"
 export BYTEPLUS_SECRET_KEY="your_secret_key"
 
-# Deploy to Singapore region
+# Deploy with BytePlus ARK as primary AI model
 clawmacdo deploy \
   --provider byteplus \
   --customer-name "my-openclaw-bp" \
-  --region ap-southeast-1
+  --region ap-southeast-1 \
+  --primary-model byteplus \
+  --byteplus-ark-api-key "$BYTEPLUS_ARK_API_KEY" \
+  --anthropic-key "$ANTHROPIC_API_KEY"
 ```
 
 #### BytePlus Instance Sizes
@@ -236,6 +239,70 @@ clawmacdo deploy \
 | `ecs.g3i.large` *(default)* | 2 | 8 GB | General purpose |
 | `ecs.c3i.xlarge` | 4 | 8 GB | Compute-optimized |
 | `ecs.g3i.xlarge` | 4 | 16 GB | General purpose |
+
+### AI Model Configuration
+
+Set a primary AI model and optional failovers for the deployed instance. Supported models: `anthropic`, `openai`, `gemini`, `byteplus`.
+
+```bash
+# Anthropic as primary (default)
+clawmacdo deploy --provider do --customer-email "user@example.com" \
+  --primary-model anthropic --anthropic-key "$ANTHROPIC_API_KEY"
+
+# BytePlus ARK as primary with Anthropic failover
+clawmacdo deploy --provider bp --customer-email "user@example.com" \
+  --primary-model byteplus --failover-1 anthropic \
+  --byteplus-ark-api-key "$BYTEPLUS_ARK_API_KEY" \
+  --anthropic-key "$ANTHROPIC_API_KEY"
+
+# Multi-model failover chain
+clawmacdo deploy --provider do --customer-email "user@example.com" \
+  --primary-model anthropic --failover-1 openai --failover-2 gemini \
+  --anthropic-key "$ANTHROPIC_API_KEY" \
+  --openai-key "$OPENAI_API_KEY" --gemini-key "$GEMINI_API_KEY"
+```
+
+| Model | `--primary-model` value | Model identifier | Required flag |
+|-------|------------------------|------------------|---------------|
+| Anthropic Claude | `anthropic` | `anthropic/claude-opus-4-6` | `--anthropic-key` |
+| OpenAI | `openai` | `openai/gpt-5-mini` | `--openai-key` |
+| Google Gemini | `gemini` | `google/gemini-2.5-flash` | `--gemini-key` |
+| BytePlus ARK | `byteplus` | `byteplus/ark-code-latest` | `--byteplus-ark-api-key` |
+
+### ARK API Key Management
+
+Generate temporary BytePlus ARK API keys or list available endpoints.
+
+```bash
+# List available ARK endpoints
+clawmacdo ark-api-key --list
+
+# Generate a 7-day API key for an endpoint
+clawmacdo ark-api-key \
+  --resource-ids ep-20260315233753-58rpv
+
+# Generate a 30-day key for multiple endpoints
+clawmacdo ark-api-key \
+  --resource-ids ep-abc123,ep-def456 \
+  --duration 2592000
+```
+
+### ARK Chat
+
+Send chat prompts directly to BytePlus ARK model endpoints from the CLI.
+
+```bash
+# Direct usage
+clawmacdo ark-chat \
+  --api-key "$ARK_API_KEY" \
+  --endpoint-id ep-20260315233753-58rpv \
+  "Hello, what model are you?"
+
+# Using environment variables
+export ARK_API_KEY="your_ark_api_key"
+export ARK_ENDPOINT_ID="ep-20260315233753-58rpv"
+clawmacdo ark-chat "Explain quantum computing in 3 sentences."
+```
 
 ### Track Deploy Progress
 
@@ -290,15 +357,20 @@ clawmacdo deploy --restore-from ~/.openclaw/backups/openclaw-2024-03-09_14-30-15
 clawmacdo deploy \
   --provider digitalocean \
   --customer-name "production-openclaw" \
+  --customer-email "admin@company.com" \
   --size s-2vcpu-4gb \
   --region nyc1 \
-  --restore-from ~/openclaw-backup.tar.gz \
-  --claude-api-key "$CLAUDE_API_KEY" \
-  --openai-api-key "$OPENAI_API_KEY" \
-  --whatsapp-phone "+1234567890" \
-  --telegram-token "$TELEGRAM_TOKEN" \
+  --primary-model anthropic \
+  --failover-1 openai \
+  --failover-2 gemini \
+  --anthropic-key "$ANTHROPIC_API_KEY" \
+  --openai-key "$OPENAI_API_KEY" \
+  --gemini-key "$GEMINI_API_KEY" \
+  --telegram-bot-token "$TELEGRAM_TOKEN" \
+  --whatsapp-phone-number "+1234567890" \
   --tailscale \
-  --tailscale-auth-key "$TAILSCALE_AUTH"
+  --tailscale-auth-key "$TAILSCALE_AUTH" \
+  --backup ~/openclaw-backup.tar.gz
 ```
 
 ### Quick Status Check
@@ -362,6 +434,9 @@ new-crate = { workspace = true }
 | `AZURE_CLIENT_SECRET` | Azure service principal client secret | For Azure deploys |
 | `BYTEPLUS_ACCESS_KEY` | BytePlus Access Key | For BytePlus deploys |
 | `BYTEPLUS_SECRET_KEY` | BytePlus Secret Key | For BytePlus deploys |
+| `BYTEPLUS_ARK_API_KEY` | BytePlus ARK API key (for AI model inference) | For BytePlus ARK model |
+| `ARK_API_KEY` | ARK bearer token for `ark-chat` | For `ark-chat` |
+| `ARK_ENDPOINT_ID` | ARK endpoint ID for `ark-chat` | For `ark-chat` |
 | `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
 | `OPENAI_API_KEY` | OpenAI API key | Optional |
 | `TELEGRAM_TOKEN` | Telegram bot token | Optional |

@@ -1535,5 +1535,33 @@ Every deployment tracks 16 steps in order:
 | `~/.clawmacdo/keys/` | SSH key pairs (per deployment) |
 | `~/.clawmacdo/deploys/` | Deploy record JSON files |
 | `~/.clawmacdo/backups/` | Backup archives |
+| `~/.clawmacdo/known_hosts` | SSH host key fingerprints (TOFU) |
 | `~/.clawmacdo/deploy-<id>.log` | Detach mode deploy log |
 | `~/.clawmacdo/clawmacdo.db` | SQLite tracking database |
+
+---
+
+## Security Hardening
+
+ClawMacdo applies several security measures during provisioning.
+
+### SSH Host Key Verification (TOFU)
+
+All SSH connections verify the remote server's host key using Trust On First Use. On the first connection to a new IP, the host key is saved to `~/.clawmacdo/known_hosts`. Subsequent connections compare the presented key against the stored one.
+
+If a server is rebuilt at the same IP (e.g. after `destroy` + `deploy`), the host key will change and SSH connections will fail with:
+
+```
+SSH host key mismatch for 128.199.123.45: expected <old_key> but got <new_key>.
+If the server was rebuilt, remove the old entry from ~/.clawmacdo/known_hosts
+```
+
+**To resolve:** Delete the offending line from `~/.clawmacdo/known_hosts` and reconnect.
+
+### Credential Delivery via SCP
+
+API keys and secrets (Anthropic, OpenAI, Gemini, Telegram, WhatsApp) are written to the remote `.env` file via SCP — not via shell heredoc. This prevents shell injection attacks through crafted credential values.
+
+### Root Login Restricted to Pubkey
+
+Provisioned servers set `PermitRootLogin prohibit-password` in `sshd_config`. This allows SSH key-based root access (required by ClawMacdo's provisioning flow) while blocking password-based root login from the internet.
