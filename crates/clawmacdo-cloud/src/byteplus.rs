@@ -825,6 +825,203 @@ impl BytePlusClient {
         Ok(())
     }
 
+    /// Get the EIP allocation ID associated with an instance (if any).
+    pub async fn describe_instance_eip(
+        &self,
+        instance_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        let payload = serde_json::json!({
+            "InstanceIds": [instance_id]
+        });
+        let resp = self
+            .ecs_request("DescribeInstances", &payload.to_string())
+            .await?;
+
+        let alloc_id = resp["Result"]["Instances"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|inst| inst["EipAddress"]["AllocationId"].as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        Ok(alloc_id)
+    }
+
+    /// Disassociate an EIP from its instance.
+    pub async fn disassociate_eip(&self, allocation_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({
+            "AllocationId": allocation_id,
+            "InstanceType": "EcsInstance"
+        });
+        match self
+            .vpc_request("DisassociateEipAddress", &payload.to_string())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("not found")
+                    || msg.contains("NotFound")
+                    || msg.contains("InvalidEip")
+                {
+                    Ok(()) // Already disassociated
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Release (delete) an EIP.
+    pub async fn release_eip(&self, allocation_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({
+            "AllocationId": allocation_id
+        });
+        match self
+            .vpc_request("ReleaseEipAddress", &payload.to_string())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("not found")
+                    || msg.contains("NotFound")
+                    || msg.contains("InvalidEip")
+                {
+                    Ok(()) // Already released
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Find the openclaw-tagged VPC and return its ID (if any).
+    pub async fn find_openclaw_vpc(&self) -> Result<Option<String>, AppError> {
+        let payload = serde_json::json!({
+            "MaxResults": 100,
+            "TagFilters": [{ "Key": "app", "Values": ["openclaw"] }]
+        });
+        let resp = self
+            .vpc_request("DescribeVpcs", &payload.to_string())
+            .await?;
+
+        Ok(resp["Result"]["Vpcs"]
+            .as_array()
+            .and_then(|vpcs| vpcs.first())
+            .and_then(|vpc| vpc["VpcId"].as_str())
+            .map(|s| s.to_string()))
+    }
+
+    /// Delete a security group by ID (ignores "in use" or "not found" errors).
+    pub async fn delete_security_group(&self, sg_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({ "SecurityGroupId": sg_id });
+        match self
+            .vpc_request("DeleteSecurityGroup", &payload.to_string())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("InUse")
+                    || msg.contains("DependencyViolation")
+                    || msg.contains("NotFound")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Delete a subnet by ID (ignores "in use" or "not found" errors).
+    pub async fn delete_subnet(&self, subnet_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({ "SubnetId": subnet_id });
+        match self.vpc_request("DeleteSubnet", &payload.to_string()).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("InUse")
+                    || msg.contains("DependencyViolation")
+                    || msg.contains("NotFound")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Delete a VPC by ID (ignores "in use" or "not found" errors).
+    pub async fn delete_vpc(&self, vpc_id: &str) -> Result<(), AppError> {
+        let payload = serde_json::json!({ "VpcId": vpc_id });
+        match self.vpc_request("DeleteVpc", &payload.to_string()).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("InUse")
+                    || msg.contains("DependencyViolation")
+                    || msg.contains("NotFound")
+                {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Clean up VPC resources (security groups, subnets, then VPC) for an openclaw-tagged VPC.
+    /// Errors are logged but do not fail the overall operation (best-effort cleanup).
+    pub async fn cleanup_vpc_resources(&self) {
+        let vpc_id = match self.find_openclaw_vpc().await {
+            Ok(Some(id)) => id,
+            _ => return,
+        };
+
+        // Delete security groups in the VPC
+        let sg_payload = serde_json::json!({
+            "VpcId": &vpc_id,
+            "MaxResults": 100,
+            "TagFilters": [{ "Key": "app", "Values": ["openclaw"] }]
+        });
+        if let Ok(resp) = self
+            .vpc_request("DescribeSecurityGroups", &sg_payload.to_string())
+            .await
+        {
+            if let Some(sgs) = resp["Result"]["SecurityGroups"].as_array() {
+                for sg in sgs {
+                    if let Some(sg_id) = sg["SecurityGroupId"].as_str() {
+                        let _ = self.delete_security_group(sg_id).await;
+                    }
+                }
+            }
+        }
+
+        // Delete subnets in the VPC
+        let subnet_payload = serde_json::json!({ "VpcId": &vpc_id, "MaxResults": 100 });
+        if let Ok(resp) = self
+            .vpc_request("DescribeSubnets", &subnet_payload.to_string())
+            .await
+        {
+            if let Some(subnets) = resp["Result"]["Subnets"].as_array() {
+                for subnet in subnets {
+                    if let Some(subnet_id) = subnet["SubnetId"].as_str() {
+                        let _ = self.delete_subnet(subnet_id).await;
+                    }
+                }
+            }
+        }
+
+        // Wait for dependent resources to be cleaned up
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // Delete the VPC itself
+        let _ = self.delete_vpc(&vpc_id).await;
+    }
+
     /// Allocate a new Elastic IP address.
     pub async fn allocate_eip(&self) -> Result<(String, String), AppError> {
         let payload = serde_json::json!({

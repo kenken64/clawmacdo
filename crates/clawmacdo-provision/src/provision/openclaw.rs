@@ -1,6 +1,7 @@
 use crate::provision::commands::{ssh_as_openclaw_with_user_async, ssh_root_as_async};
 use clawmacdo_core::config::{OPENCLAW_HOME, OPENCLAW_USER};
 use clawmacdo_core::error::AppError;
+use clawmacdo_ssh as ssh;
 use std::path::Path;
 
 /// Create directory structure, write .env, install OpenClaw via pnpm.
@@ -32,20 +33,43 @@ chown -R {user}:{user} {cd}"#,
     );
     ssh_root_as_async(ip, key, &mkdirs, ssh_user).await?;
 
-    // Write .env with provider credentials (chmod 600 for security)
-    let write_env = format!(
-        r#"cat > {cd}/.env << 'ENVEOF'
-ANTHROPIC_API_KEY={anthropic_api_key}
-ANTHROPIC_SETUP_TOKEN={anthropic_setup_token}
-OPENAI_API_KEY={openai_key}
-GEMINI_API_KEY={gemini_key}
-BYTEPLUS_API_KEY={byteplus_ark_api_key}
-WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}
-TELEGRAM_BOT_TOKEN={telegram_bot_token}
-ENVEOF
-chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"#,
+    // Write .env with provider credentials via SCP (avoids shell heredoc injection)
+    let env_content = format!(
+        "ANTHROPIC_API_KEY={anthropic_api_key}\n\
+         ANTHROPIC_SETUP_TOKEN={anthropic_setup_token}\n\
+         OPENAI_API_KEY={openai_key}\n\
+         GEMINI_API_KEY={gemini_key}\n\
+         BYTEPLUS_API_KEY={byteplus_ark_api_key}\n\
+         WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}\n\
+         TELEGRAM_BOT_TOKEN={telegram_bot_token}\n",
     );
-    ssh_root_as_async(ip, key, &write_env, ssh_user).await?;
+    let scp_user = if ssh_user == "root" { "root" } else { ssh_user };
+    let key_owned = key.to_path_buf();
+    let ip_owned = ip.to_string();
+    let scp_user_owned = scp_user.to_string();
+    let env_bytes = env_content.into_bytes();
+    tokio::task::spawn_blocking(move || {
+        ssh::scp_upload_bytes(
+            &ip_owned,
+            &key_owned,
+            &env_bytes,
+            "/tmp/.env_upload",
+            0o600,
+            &scp_user_owned,
+        )
+    })
+    .await
+    .map_err(|e| AppError::Ssh(format!("spawn_blocking join: {e}")))??;
+
+    ssh_root_as_async(
+        ip,
+        key,
+        &format!(
+            "mv /tmp/.env_upload {cd}/.env && chmod 600 {cd}/.env && chown {user}:{user} {cd}/.env"
+        ),
+        ssh_user,
+    )
+    .await?;
 
     // Configure Claude Code with enhanced settings and better error handling
     let claude_cfg = format!(

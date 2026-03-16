@@ -397,9 +397,20 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
 
         for inst in &instances {
             println!("\nTerminating '{}' (ID {})...", inst.name, inst.id);
+            // Release EIP before terminating
+            if let Ok(Some(alloc_id)) = client.describe_instance_eip(&inst.id).await {
+                println!("  Releasing EIP ({alloc_id})...");
+                let _ = client.disassociate_eip(&alloc_id).await;
+                let _ = client.release_eip(&alloc_id).await;
+            }
             client.terminate_instance(&inst.id).await?;
             println!("  Terminated.");
         }
+
+        // Clean up VPC resources (security groups, subnets, VPC)
+        println!("\nCleaning up VPC resources...");
+        client.cleanup_vpc_resources().await;
+        println!("VPC cleanup complete.");
     } else {
         let instance = instances
             .into_iter()
@@ -427,8 +438,22 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
         }
 
         println!("\nTerminating '{}' (ID {})...", instance.name, instance.id);
+
+        // Release EIP before terminating
+        if let Ok(Some(alloc_id)) = client.describe_instance_eip(&instance.id).await {
+            println!("  Releasing EIP ({alloc_id})...");
+            let _ = client.disassociate_eip(&alloc_id).await;
+            let _ = client.release_eip(&alloc_id).await;
+            println!("  EIP released.");
+        }
+
         client.terminate_instance(&instance.id).await?;
         println!("Instance terminated.");
+
+        // Clean up VPC resources (security groups, subnets, VPC)
+        println!("Cleaning up VPC resources...");
+        client.cleanup_vpc_resources().await;
+        println!("VPC cleanup complete.");
 
         // Clean up local key
         let hostname_suffix = instance

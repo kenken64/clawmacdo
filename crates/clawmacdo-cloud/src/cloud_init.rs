@@ -53,9 +53,9 @@ runcmd:
   # --- Enable Docker ---
   - systemctl enable --now docker
 
-  # --- Enable root SSH login (needed for providers which default to a non-root user) ---
-  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+  # --- Enable root SSH pubkey login (needed for providers which default to a non-root user) ---
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
   - mkdir -p /root/.ssh && chmod 700 /root/.ssh
   - cp /home/{admin_user}/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
   - chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true
@@ -109,9 +109,9 @@ corepack enable
 # --- Enable Docker ---
 systemctl enable --now docker
 
-# --- Enable root SSH login ---
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+# --- Enable root SSH pubkey login ---
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
 mkdir -p /root/.ssh && chmod 700 /root/.ssh
 cp /home/{admin_user}/.ssh/authorized_keys /root/.ssh/authorized_keys 2>/dev/null || true
 chmod 600 /root/.ssh/authorized_keys 2>/dev/null || true

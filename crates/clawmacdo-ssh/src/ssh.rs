@@ -5,6 +5,11 @@ use std::io::Read;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use std::collections::HashMap;
+use std::fs;
+
 /// Generated SSH key pair paths
 pub struct KeyPair {
     pub private_key_path: PathBuf,
@@ -55,8 +60,84 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
     })
 }
 
+/// Load known host keys from `~/.clawmacdo/known_hosts`.
+/// Returns a map of `ip -> (base64_key, key_type_name)`.
+fn load_known_hosts() -> Result<HashMap<String, (String, String)>, AppError> {
+    let path = config::known_hosts_path()?;
+    let mut map = HashMap::new();
+    if let Ok(contents) = fs::read_to_string(&path) {
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.splitn(3, ' ').collect();
+            if parts.len() == 3 {
+                map.insert(
+                    parts[0].to_string(),
+                    (parts[1].to_string(), parts[2].to_string()),
+                );
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Save a host key to `~/.clawmacdo/known_hosts` (TOFU).
+fn save_known_host(ip: &str, key_b64: &str, key_type: &str) -> Result<(), AppError> {
+    let path = config::known_hosts_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let entry = format!("{ip} {key_b64} {key_type}\n");
+    // Atomic-ish append: read existing, append, write back
+    let mut contents = fs::read_to_string(&path).unwrap_or_default();
+    contents.push_str(&entry);
+    fs::write(&path, contents)?;
+    Ok(())
+}
+
+/// Remove a known host entry (e.g. when a server is destroyed and IP may be reused).
+pub fn remove_known_host(ip: &str) -> Result<(), AppError> {
+    let path = config::known_hosts_path()?;
+    if let Ok(contents) = fs::read_to_string(&path) {
+        let filtered: String = contents
+            .lines()
+            .filter(|line| !line.starts_with(&format!("{ip} ")))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(&path, filtered)?;
+    }
+    Ok(())
+}
+
+/// Verify the remote host key using Trust On First Use (TOFU).
+/// On first connection to an IP, the key is saved. On subsequent connections,
+/// the key is compared — a mismatch returns an error.
+fn verify_host_key(sess: &Session, ip: &str) -> Result<(), AppError> {
+    let (key_bytes, key_type) = sess
+        .host_key()
+        .ok_or_else(|| AppError::Ssh(format!("No host key returned by {ip}")))?;
+
+    let key_b64 = BASE64.encode(key_bytes);
+    let key_type_name = format!("{key_type:?}");
+
+    let known = load_known_hosts()?;
+    if let Some((stored_b64, _stored_type)) = known.get(ip) {
+        if *stored_b64 != key_b64 {
+            return Err(AppError::HostKeyMismatch {
+                ip: ip.to_string(),
+                expected: stored_b64.clone(),
+                actual: key_b64,
+            });
+        }
+    } else {
+        save_known_host(ip, &key_b64, &key_type_name)?;
+    }
+    Ok(())
+}
+
 /// Connect to a remote host via SSH using a private key file.
-/// CConnect.
 fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
     connect_as(ip, private_key_path, "root")
 }
@@ -88,6 +169,9 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
     sess.set_tcp_stream(tcp);
     sess.handshake()
         .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
+
+    // Verify host key before sending credentials (TOFU)
+    verify_host_key(&sess, ip)?;
 
     sess.userauth_pubkey_file(username, None, private_key_path, None)
         .map_err(|e| AppError::Ssh(format!("SSH auth to {ip}: {e}")))?;
@@ -224,6 +308,43 @@ pub fn scp_upload(
         .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
 
     // Signal EOF
+    remote_file
+        .send_eof()
+        .map_err(|e| AppError::Ssh(format!("SCP send_eof: {e}")))?;
+    remote_file
+        .wait_eof()
+        .map_err(|e| AppError::Ssh(format!("SCP wait_eof: {e}")))?;
+    remote_file
+        .close()
+        .map_err(|e| AppError::Ssh(format!("SCP close: {e}")))?;
+    remote_file
+        .wait_close()
+        .map_err(|e| AppError::Ssh(format!("SCP wait_close: {e}")))?;
+
+    Ok(())
+}
+
+/// Upload in-memory bytes to the remote host via SCP as a specific user.
+/// Avoids writing to a local temp file.
+pub fn scp_upload_bytes(
+    ip: &str,
+    private_key_path: &Path,
+    data: &[u8],
+    remote_path: &str,
+    mode: i32,
+    username: &str,
+) -> Result<(), AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+
+    let mut remote_file = sess
+        .scp_send(Path::new(remote_path), mode, data.len() as u64, None)
+        .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
+
+    use std::io::Write;
+    remote_file
+        .write_all(data)
+        .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
+
     remote_file
         .send_eof()
         .map_err(|e| AppError::Ssh(format!("SCP send_eof: {e}")))?;

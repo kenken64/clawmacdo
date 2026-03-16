@@ -7,6 +7,7 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{delete, get, post};
 use axum::Router;
+use chrono::TimeZone;
 use clawmacdo_core::config;
 use clawmacdo_db as db;
 use clawmacdo_provision::provision::commands::{
@@ -255,6 +256,53 @@ struct DestroyDeploymentResponse {
     message: String,
 }
 
+#[derive(Deserialize)]
+struct ArkApiKeyRequest {
+    #[serde(default)]
+    access_key: String,
+    #[serde(default)]
+    secret_key: String,
+    #[serde(default = "default_resource_type")]
+    resource_type: String,
+    #[serde(default)]
+    resource_ids: Vec<String>,
+    #[serde(default = "default_duration")]
+    duration_seconds: u64,
+}
+
+fn default_resource_type() -> String {
+    "endpoint".to_string()
+}
+
+fn default_duration() -> u64 {
+    2_592_000 // 30 days
+}
+
+#[derive(Serialize)]
+struct ArkApiKeyResponse {
+    ok: bool,
+    api_key: String,
+    expires: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ArkListEndpointsRequest {
+    #[serde(default)]
+    access_key: String,
+    #[serde(default)]
+    secret_key: String,
+}
+
+#[derive(Serialize)]
+struct ArkListEndpointsResponse {
+    ok: bool,
+    endpoints: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[derive(Serialize)]
 struct ConfigResponse {
     dry_run: bool,
@@ -289,6 +337,8 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             post(destroy_deployment_handler),
         )
         .route("/api/config", get(config_handler))
+        .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
+        .route("/api/ark/api-key", post(ark_api_key_handler))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
@@ -969,6 +1019,161 @@ async fn config_handler() -> impl IntoResponse {
     })
 }
 
+#[cfg(feature = "byteplus")]
+async fn ark_list_endpoints_handler(Json(req): Json<ArkListEndpointsRequest>) -> impl IntoResponse {
+    use clawmacdo_cloud::byteplus::BytePlusClient;
+
+    if req.access_key.is_empty() || req.secret_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ArkListEndpointsResponse {
+                ok: false,
+                endpoints: vec![],
+                error: Some("access_key and secret_key are required.".into()),
+            }),
+        );
+    }
+
+    let client = match BytePlusClient::new(&req.access_key, &req.secret_key, "ap-southeast-1") {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ArkListEndpointsResponse {
+                    ok: false,
+                    endpoints: vec![],
+                    error: Some(format!("Client init failed: {e}")),
+                }),
+            )
+        }
+    };
+
+    match client.list_endpoints().await {
+        Ok(endpoints) => (
+            StatusCode::OK,
+            Json(ArkListEndpointsResponse {
+                ok: true,
+                endpoints,
+                error: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ArkListEndpointsResponse {
+                ok: false,
+                endpoints: vec![],
+                error: Some(format!("Failed to list endpoints: {e}")),
+            }),
+        ),
+    }
+}
+
+#[cfg(not(feature = "byteplus"))]
+async fn ark_list_endpoints_handler(
+    Json(_req): Json<ArkListEndpointsRequest>,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ArkListEndpointsResponse {
+            ok: false,
+            endpoints: vec![],
+            error: Some("BytePlus support not compiled in.".into()),
+        }),
+    )
+}
+
+#[cfg(feature = "byteplus")]
+async fn ark_api_key_handler(Json(req): Json<ArkApiKeyRequest>) -> impl IntoResponse {
+    use clawmacdo_cloud::byteplus::BytePlusClient;
+
+    if req.access_key.is_empty() || req.secret_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ArkApiKeyResponse {
+                ok: false,
+                api_key: String::new(),
+                expires: String::new(),
+                error: Some("access_key and secret_key are required.".into()),
+            }),
+        );
+    }
+
+    if req.resource_ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ArkApiKeyResponse {
+                ok: false,
+                api_key: String::new(),
+                expires: String::new(),
+                error: Some("resource_ids is required (at least one endpoint ID).".into()),
+            }),
+        );
+    }
+
+    let client = match BytePlusClient::new(&req.access_key, &req.secret_key, "ap-southeast-1") {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ArkApiKeyResponse {
+                    ok: false,
+                    api_key: String::new(),
+                    expires: String::new(),
+                    error: Some(format!("Client init failed: {e}")),
+                }),
+            )
+        }
+    };
+
+    match client
+        .get_api_key(&req.resource_type, &req.resource_ids, req.duration_seconds)
+        .await
+    {
+        Ok((api_key, expired_time)) => {
+            let expires = if expired_time > 0 {
+                chrono::Utc
+                    .timestamp_opt(expired_time as i64, 0)
+                    .single()
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                    .unwrap_or_else(|| expired_time.to_string())
+            } else {
+                "unknown".to_string()
+            };
+            (
+                StatusCode::OK,
+                Json(ArkApiKeyResponse {
+                    ok: true,
+                    api_key,
+                    expires,
+                    error: None,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ArkApiKeyResponse {
+                ok: false,
+                api_key: String::new(),
+                expires: String::new(),
+                error: Some(format!("Failed to generate API key: {e}")),
+            }),
+        ),
+    }
+}
+
+#[cfg(not(feature = "byteplus"))]
+async fn ark_api_key_handler(Json(_req): Json<ArkApiKeyRequest>) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ArkApiKeyResponse {
+            ok: false,
+            api_key: String::new(),
+            expires: String::new(),
+            error: Some("BytePlus support not compiled in.".into()),
+        }),
+    )
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Resolve the SSH username from the provider string.
@@ -1204,7 +1409,11 @@ function syncModelSelectors(n) {
   const pDef = MODEL_DEFS[primary];
   html += '<div data-field="' + pDef.keyField + '">';
   html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + pDef.label + ' <span class="field-required-indicator text-red-400">*</span></label>';
-  html += '<div class="relative"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn() + '</div></div>';
+  html += '<div class="relative flex gap-2"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn();
+  if (primary === 'byteplus') {
+    html += '<button type="button" onclick="generateArkKey(' + n + ')" class="shrink-0 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors" title="Generate ARK API Key from BytePlus credentials">Generate</button>';
+  }
+  html += '</div></div>';
   html += '</div>';
 
   // Failover 1
@@ -1599,6 +1808,90 @@ document.addEventListener('input', function(e) {
   }
 });
 
+async function generateArkKey(n) {
+  const card = document.getElementById('deploy-card-' + n);
+  if (!card) return;
+
+  const akInput = card.querySelector('[name="byteplus_access_key"]');
+  const skInput = card.querySelector('[name="byteplus_secret_key"]');
+  const arkInput = card.querySelector('[name="byteplus_ark_api_key"]');
+  if (!akInput || !skInput || !arkInput) { alert('BytePlus credential fields not found.'); return; }
+
+  const ak = akInput.value.trim();
+  const sk = skInput.value.trim();
+  if (!ak || !sk) { alert('Please enter BytePlus Access Key and Secret Key first.'); return; }
+
+  // Step 1: List endpoints to get the first endpoint ID
+  const genBtn = card.querySelector('button[onclick*="generateArkKey"]');
+  const origText = genBtn ? genBtn.textContent : '';
+  if (genBtn) { genBtn.textContent = 'Listing...'; genBtn.disabled = true; }
+
+  try {
+    const listResp = await fetch('/api/ark/endpoints', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_key: ak, secret_key: sk })
+    });
+    const listData = await listResp.json();
+
+    if (!listData.ok || !listData.endpoints || listData.endpoints.length === 0) {
+      alert('No ARK endpoints found. Create one in the BytePlus ARK console first.' + (listData.error ? '\\n' + listData.error : ''));
+      return;
+    }
+
+    // Let user pick if multiple endpoints
+    let endpointId;
+    if (listData.endpoints.length === 1) {
+      endpointId = listData.endpoints[0].Id || listData.endpoints[0].EndpointId;
+    } else {
+      let msg = 'Select an endpoint:\\n';
+      listData.endpoints.forEach((ep, i) => {
+        const id = ep.Id || ep.EndpointId || '-';
+        const name = ep.Name || ep.EndpointName || '-';
+        const model = (ep.ModelReference && (ep.ModelReference.ModelId || ep.ModelReference.FoundationModel)) || ep.Model || '-';
+        msg += (i + 1) + '. ' + name + ' (' + id + ') - ' + model + '\\n';
+      });
+      const choice = prompt(msg + '\\nEnter number (1-' + listData.endpoints.length + '):');
+      if (!choice) return;
+      const idx = parseInt(choice) - 1;
+      if (idx < 0 || idx >= listData.endpoints.length) { alert('Invalid selection.'); return; }
+      const ep = listData.endpoints[idx];
+      endpointId = ep.Id || ep.EndpointId;
+    }
+
+    if (!endpointId) { alert('Could not determine endpoint ID.'); return; }
+
+    // Step 2: Generate API key
+    if (genBtn) genBtn.textContent = 'Generating...';
+
+    const keyResp = await fetch('/api/ark/api-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        access_key: ak,
+        secret_key: sk,
+        resource_type: 'endpoint',
+        resource_ids: [endpointId],
+        duration_seconds: 2592000
+      })
+    });
+    const keyData = await keyResp.json();
+
+    if (!keyData.ok) {
+      alert('Failed to generate API key: ' + (keyData.error || 'Unknown error'));
+      return;
+    }
+
+    arkInput.value = keyData.api_key;
+    arkInput.type = 'text';
+    alert('ARK API Key generated!\\nExpires: ' + keyData.expires);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  } finally {
+    if (genBtn) { genBtn.textContent = origText; genBtn.disabled = false; }
+  }
+}
+
 function syncTailscaleKeyRequirement(form) {
   const tailscaleToggle = form.querySelector('[name="tailscale"]');
   const tailscaleKeyInput = form.querySelector('[name="tailscale_auth_key"]');
@@ -1733,8 +2026,8 @@ function toggleProvider(select, n) {
     // Auto-select BytePlus ARK as default AI model
     const modelContainer = document.getElementById('model-selectors-' + n);
     if (modelContainer) {
-      const pSel = modelContainer.querySelector('[data-role=primary]');
-      if (pSel) { pSel.value = 'byteplus'; pSel.dispatchEvent(new Event('change')); }
+      const pSel = modelContainer.querySelector('[data-model-slot=primary]');
+      if (pSel) { pSel.value = 'byteplus'; syncModelSelectors(n); }
     }
   } else {
     doCreds.style.display = 'block';
