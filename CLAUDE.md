@@ -52,3 +52,10 @@ Use Semantic Versioning (SemVer: MAJOR.MINOR.PATCH). When asked to bump the vers
 - Keep `Cargo.toml` and `Cargo.lock` package version in sync for releases.
 - Ensure `README.md` and `CHANGELOG.md` reflect user-facing changes.
 - Validate release flow on CI before publishing binaries/tags.
+
+## Documentation Rule
+
+**Every codebase change must include a README.md update.** When adding features, fixing bugs, changing commands, modifying APIs, or altering behavior:
+1. Update the relevant `README.md` (root or sub-project like `skills-data-api/README.md`) to reflect the change.
+2. This includes: new CLI subcommands, new/changed endpoints, new cloud providers, new configuration options, changed usage examples, and any user-facing differences.
+3. Do not commit code changes without verifying the README is up to date.
