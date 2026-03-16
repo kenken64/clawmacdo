@@ -13,6 +13,13 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [destroy](#destroy) — Destroy a deployed instance
 - [telegram-setup](#telegram-setup) — Configure Telegram bot on an instance
 - [telegram-pair](#telegram-pair) — Approve Telegram pairing code
+- [tailscale-funnel](#tailscale-funnel) — Set up Tailscale Funnel for public HTTPS access
+- [funnel-on](#funnel-on) — Enable Tailscale Funnel on an instance
+- [funnel-off](#funnel-off) — Disable Tailscale Funnel on an instance
+- [device-approve](#device-approve) — Approve pending webchat device pairing requests
+- [skill-upload](#skill-upload) — Upload a SKILL.md to the skills API and instance
+- [skill-download](#skill-download) — Download a SKILL.md from the skills API
+- [skill-push](#skill-push) — Push a SKILL.md from the skills API to the instance
 - [ark-api-key](#ark-api-key) — Generate BytePlus ARK API key or list endpoints
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [serve](#serve) — Start the web UI server
@@ -646,6 +653,291 @@ Telegram pairing approved. Send a message to your bot to start chatting.
 
 ---
 
+## tailscale-funnel
+
+Set up Tailscale Funnel on a deployed OpenClaw instance for public HTTPS access. Performs a full 6-step setup: install Tailscale, connect with auth key, enable Funnel, retrieve public URL, configure `openclaw.json` (`controlUi.allowedOrigins` + `trustedProxies`), and auto-approve pending devices.
+
+### Syntax
+
+```
+clawmacdo tailscale-funnel --instance <QUERY> --auth-key <TAILSCALE_AUTH_KEY> [--port <PORT>]
+```
+
+### Examples
+
+```bash
+# By deploy ID
+clawmacdo tailscale-funnel \
+  --instance a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  --auth-key "tskey-auth-abc123..."
+
+# By hostname with custom port
+clawmacdo tailscale-funnel \
+  --instance my-instance.openclaw.dev \
+  --auth-key "tskey-auth-abc123..." \
+  --port 8080
+
+# By IP address (using env var)
+export TAILSCALE_AUTH_KEY="tskey-auth-abc123..."
+clawmacdo tailscale-funnel \
+  --instance 128.199.123.45
+```
+
+### Sample Output
+
+```
+Setting up Tailscale Funnel on 128.199.123.45...
+
+[1/6] Installing Tailscale...
+  Tailscale installed successfully.
+[2/6] Connecting Tailscale...
+  Tailscale connected.
+[3/6] Enabling Tailscale Funnel on port 18789...
+  Available on the internet:
+[4/6] Retrieving Funnel public URL...
+  https://openclaw-ff54485d.tail12345.ts.net:
+  |-- / proxy http://127.0.0.1:18789
+
+  Public URL: https://openclaw-ff54485d.tail12345.ts.net
+[5/6] Updating openclaw.json (allowedOrigins + trustedProxies)...
+  allowedOrigins: ["https://openclaw-ff54485d.tail12345.ts.net"]
+  trustedProxies: ["127.0.0.1/8","::1/128"]
+
+Restarting OpenClaw gateway...
+  gateway: active
+[6/6] Approving all pending devices...
+  No pending devices found.
+
+Tailscale Funnel setup complete!
+Public URL: https://openclaw-ff54485d.tail12345.ts.net
+Webchat:    https://openclaw-ff54485d.tail12345.ts.net/chat?token=<auth-token>
+
+Note: If you connect from a new browser, approve it with:
+  clawmacdo device-approve --instance 128.199.123.45
+```
+
+---
+
+## funnel-on
+
+Enable Tailscale Funnel on a deployed instance. Requires Tailscale to be already installed and connected (see `tailscale-funnel`).
+
+### Syntax
+
+```
+clawmacdo funnel-on --instance <QUERY> [--port <PORT>]
+```
+
+### Examples
+
+```bash
+# Default port (18789)
+clawmacdo funnel-on --instance my-instance.openclaw.dev
+
+# Custom port
+clawmacdo funnel-on --instance 128.199.123.45 --port 8080
+```
+
+### Sample Output
+
+```
+Enabling Tailscale Funnel on 128.199.123.45 (port 18789)...
+
+  Available on the internet:
+https://openclaw-ff54485d.tail12345.ts.net:
+|-- / proxy http://127.0.0.1:18789
+
+Funnel enabled.
+```
+
+---
+
+## funnel-off
+
+Disable Tailscale Funnel on a deployed instance.
+
+### Syntax
+
+```
+clawmacdo funnel-off --instance <QUERY>
+```
+
+### Examples
+
+```bash
+clawmacdo funnel-off --instance my-instance.openclaw.dev
+clawmacdo funnel-off --instance 128.199.123.45
+clawmacdo funnel-off --instance a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+### Sample Output
+
+```
+Disabling Tailscale Funnel on 128.199.123.45...
+
+Funnel disabled.
+```
+
+---
+
+## device-approve
+
+Approve all pending OpenClaw webchat device pairing requests on a deployed instance. Useful when new browsers connect to the webchat via Tailscale Funnel and need device approval.
+
+### Syntax
+
+```
+clawmacdo device-approve --instance <QUERY>
+```
+
+### Examples
+
+```bash
+clawmacdo device-approve --instance my-instance.openclaw.dev
+clawmacdo device-approve --instance 128.199.123.45
+```
+
+### Sample Output
+
+```
+Approving all pending devices on 128.199.123.45...
+
+  Approved device abc12345-6789-4def-abcd-ef1234567890
+  Approved device def67890-1234-4abc-5678-901234567890
+
+Approved 2 device(s).
+```
+
+---
+
+## skill-upload
+
+Upload a local SKILL.md to the Railway skills API and deploy it to the OpenClaw instance via SCP. Backs up the existing SKILL.md on both the API server and the instance before overwriting.
+
+### Syntax
+
+```
+clawmacdo skill-upload --instance <QUERY> --file <PATH> --api-url <URL> --api-key <KEY>
+```
+
+### Examples
+
+```bash
+# Using CLI flags
+clawmacdo skill-upload \
+  --instance my-instance.openclaw.dev \
+  --file ./SKILL.md \
+  --api-url "https://skills-api.example.com" \
+  --api-key "sk-my-secret-key"
+
+# Using environment variables
+export SKILLS_API_URL="https://skills-api.example.com"
+export USER_SKILLS_API_KEY="sk-my-secret-key"
+
+clawmacdo skill-upload \
+  --instance a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  --file ~/skills/SKILL.md
+```
+
+### Sample Output
+
+```
+Uploading SKILL.md (2048 bytes) for deployment a1b2c3d4...
+
+[1/3] Uploading to skills API...
+  Uploaded to Railway volume.
+  Previous version backed up on server.
+[2/3] Backing up existing SKILL.md on instance 128.199.123.45...
+  Existing SKILL.md backed up.
+[3/3] Uploading SKILL.md to instance via SCP...
+  SKILL.md deployed to instance.
+
+Done! SKILL.md uploaded to both Railway and instance 128.199.123.45.
+```
+
+---
+
+## skill-download
+
+Download a customer SKILL.md from the Railway skills API to a local file.
+
+### Syntax
+
+```
+clawmacdo skill-download --instance <QUERY> [--output <PATH>] --api-url <URL> --api-key <KEY>
+```
+
+### Examples
+
+```bash
+# Download to default path (./SKILL.md)
+clawmacdo skill-download \
+  --instance my-instance.openclaw.dev \
+  --api-url "https://skills-api.example.com" \
+  --api-key "sk-my-secret-key"
+
+# Download to a custom path
+export SKILLS_API_URL="https://skills-api.example.com"
+export USER_SKILLS_API_KEY="sk-my-secret-key"
+
+clawmacdo skill-download \
+  --instance a1b2c3d4-e5f6-7890-abcd-ef1234567890 \
+  --output ~/skills/downloaded-SKILL.md
+```
+
+### Sample Output
+
+```
+Downloading SKILL.md for deployment a1b2c3d4...
+
+Downloaded SKILL.md (2048 bytes) to ./SKILL.md
+```
+
+---
+
+## skill-push
+
+Push an existing SKILL.md from the Railway skills API directly to the OpenClaw instance. Downloads from the API and SCPs it to the instance, backing up the existing file.
+
+### Syntax
+
+```
+clawmacdo skill-push --instance <QUERY> --api-url <URL> --api-key <KEY>
+```
+
+### Examples
+
+```bash
+# Using CLI flags
+clawmacdo skill-push \
+  --instance my-instance.openclaw.dev \
+  --api-url "https://skills-api.example.com" \
+  --api-key "sk-my-secret-key"
+
+# Using environment variables
+export SKILLS_API_URL="https://skills-api.example.com"
+export USER_SKILLS_API_KEY="sk-my-secret-key"
+
+clawmacdo skill-push --instance 128.199.123.45
+```
+
+### Sample Output
+
+```
+Pushing SKILL.md from Railway to instance 128.199.123.45...
+
+[1/3] Downloading from skills API...
+  Downloaded 2048 bytes.
+[2/3] Backing up existing SKILL.md on instance...
+  Existing SKILL.md backed up.
+[3/3] Uploading to instance via SCP...
+  SKILL.md deployed to instance.
+
+Done! SKILL.md pushed to instance 128.199.123.45.
+```
+
+---
+
 ## ark-api-key
 
 Generate a temporary BytePlus ARK API key from access/secret key credentials, or list available endpoints.
@@ -919,18 +1211,51 @@ clawmacdo serve [--port <PORT>]
 ### Examples
 
 ```bash
-# Default port (3456)
+# Default port (3456), localhost only
 clawmacdo serve
 
 # Custom port
 clawmacdo serve --port 8080
+
+# Allow remote access
+CLAWMACDO_BIND=0.0.0.0 clawmacdo serve
+
+# With authentication
+CLAWMACDO_API_KEY="my-secret-key" CLAWMACDO_PIN="482617" clawmacdo serve
+
+# Full production setup
+CLAWMACDO_API_KEY="my-secret-key" \
+  CLAWMACDO_PIN="482617" \
+  CLAWMACDO_BIND="0.0.0.0" \
+  clawmacdo serve --port 3456
 ```
 
 **Sample Output:**
 
 ```
-ClawMacdo Web UI running at http://localhost:3456
+ClawMacToDO web UI running at http://127.0.0.1:3456
+  (localhost only — set CLAWMACDO_BIND=0.0.0.0 to allow remote access)
+  PIN protection enabled (CLAWMACDO_PIN)
+  API key protection enabled (CLAWMACDO_API_KEY)
+Press Ctrl+C to stop.
 ```
+
+### Security
+
+| Feature | Env Variable | Description |
+|---------|-------------|-------------|
+| API key | `CLAWMACDO_API_KEY` | Required for all `/api/*` endpoints (via `x-api-key` header or valid PIN session cookie) |
+| PIN login | `CLAWMACDO_PIN` | 6-digit PIN for web UI login. Sets an HttpOnly session cookie on success |
+| Bind address | `CLAWMACDO_BIND` | Bind interface. Default: `127.0.0.1` (localhost only). Set to `0.0.0.0` for remote access |
+| Rate limiting | — | 60 requests/minute per IP address |
+| CORS | — | Restricted to configured origins |
+
+### Web UI Features
+
+- **Deploy tab** — Deploy new OpenClaw instances to any of the 5 supported cloud providers
+- **Deployments tab** — View all deployments, destroy instances, toggle Tailscale Funnel on/off
+- **Funnel toggle** — Each deployment row has an On/Off button to enable/disable Tailscale Funnel, showing the public URL when active
+- **Logout** — `/logout` clears the session cookie and redirects to the login page
 
 ---
 
@@ -970,11 +1295,34 @@ All credentials can be set via environment variables instead of CLI flags.
 | `ARK_API_KEY` | ark-chat | BytePlus ARK bearer token |
 | `ARK_ENDPOINT_ID` | ark-chat | ARK endpoint ID |
 
+### Tailscale
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `TAILSCALE_AUTH_KEY` | tailscale-funnel | Tailscale auth key (`tskey-auth-...`) |
+
+### Skills API
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `SKILLS_API_URL` | skill-upload, skill-download, skill-push | Base URL of the Railway skills API |
+| `USER_SKILLS_API_KEY` | skill-upload, skill-download, skill-push | API key for user-skills endpoints |
+
+### Web UI Server
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `CLAWMACDO_API_KEY` | serve | API key for `/api/*` endpoint authentication |
+| `CLAWMACDO_PIN` | serve | 6-digit PIN for web UI login |
+| `CLAWMACDO_BIND` | serve | Bind address (default: `127.0.0.1`) |
+
 ---
 
 ## Web UI API Endpoints
 
-When running `clawmacdo serve`, the following REST API endpoints are available:
+When running `clawmacdo serve`, the following REST API endpoints are available.
+
+> **Authentication:** When `CLAWMACDO_API_KEY` is set, all `/api/*` endpoints require either an `x-api-key` header or a valid PIN session cookie. Rate limited to 60 requests/minute per IP.
 
 ### POST /api/deploy
 
@@ -1084,6 +1432,43 @@ curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/destroy \
 {
   "success": true,
   "message": "Instance destroyed and record removed."
+}
+```
+
+### POST /api/deployments/{id}/funnel
+
+Toggle Tailscale Funnel on or off for a deployment.
+
+```bash
+# Enable Funnel
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/funnel \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <YOUR_API_KEY>" \
+  -d '{"action": "on", "port": 18789}'
+
+# Disable Funnel
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/funnel \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <YOUR_API_KEY>" \
+  -d '{"action": "off"}'
+```
+
+**Response (on):**
+
+```json
+{
+  "ok": true,
+  "message": "Funnel enabled at https://openclaw-ff54485d.tail12345.ts.net",
+  "funnel_url": "https://openclaw-ff54485d.tail12345.ts.net"
+}
+```
+
+**Response (off):**
+
+```json
+{
+  "ok": true,
+  "message": "Funnel disabled."
 }
 ```
 
