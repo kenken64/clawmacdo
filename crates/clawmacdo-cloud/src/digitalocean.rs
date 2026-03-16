@@ -97,6 +97,29 @@ struct ListSshKeysResponse {
     ssh_keys: Vec<AccountSshKey>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnapshotInfo {
+    pub id: String,
+    pub name: String,
+    pub regions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ListSnapshotsResponse {
+    snapshots: Vec<SnapshotInfo>,
+}
+
+#[derive(Serialize)]
+struct CreateDropletFromSnapshotRequest<'a> {
+    name: &'a str,
+    region: &'a str,
+    size: &'a str,
+    image: u64,
+    ssh_keys: Vec<u64>,
+    tags: Vec<&'a str>,
+    backups: bool,
+}
+
 impl DropletInfo {
     /// PPublic ip.
     pub fn public_ip(&self) -> Option<String> {
@@ -335,6 +358,68 @@ impl DoClient {
 
         let parsed: ListSshKeysResponse = resp.json().await?;
         Ok(parsed.ssh_keys)
+    }
+
+    /// List all droplet snapshots.
+    pub async fn list_snapshots(&self) -> Result<Vec<SnapshotInfo>, AppError> {
+        let resp = self
+            .client
+            .get(format!("{API_BASE}/snapshots?resource_type=droplet"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "List snapshots failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: ListSnapshotsResponse = resp.json().await?;
+        Ok(parsed.snapshots)
+    }
+
+    /// Create a droplet from a snapshot image ID.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_droplet_from_snapshot(
+        &self,
+        name: &str,
+        region: &str,
+        size: &str,
+        snapshot_id: u64,
+        ssh_key_id: u64,
+        enable_backups: bool,
+        customer_email: &str,
+    ) -> Result<DropletInfo, AppError> {
+        let email_tag = format!("email:{customer_email}");
+        let body = CreateDropletFromSnapshotRequest {
+            name,
+            region,
+            size,
+            image: snapshot_id,
+            ssh_keys: vec![ssh_key_id],
+            tags: vec![config::DROPLET_TAG, &email_tag],
+            backups: enable_backups,
+        };
+
+        let resp = self
+            .client
+            .post(format!("{API_BASE}/droplets"))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "Create droplet from snapshot failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: CreateDropletResponse = resp.json().await?;
+        Ok(parsed.droplet)
     }
 
     /// Delete an SSH key by ID.

@@ -311,6 +311,22 @@ enum Commands {
         /// The prompt to send
         prompt: String,
     },
+    /// Restore a DigitalOcean droplet from a snapshot
+    #[cfg(feature = "digitalocean")]
+    DoRestore {
+        /// DigitalOcean API token
+        #[arg(long, env = "DO_TOKEN")]
+        do_token: String,
+        /// Name of the snapshot to restore from
+        #[arg(long)]
+        snapshot_name: String,
+        /// Region override (default: sgp1)
+        #[arg(long)]
+        region: Option<String>,
+        /// Instance size override (default: s-2vcpu-4gb)
+        #[arg(long)]
+        size: Option<String>,
+    },
     /// Start the web UI server
     #[cfg(feature = "web-ui")]
     Serve {
@@ -532,6 +548,21 @@ async fn main() -> anyhow::Result<()> {
             endpoint_id,
             prompt,
         } => commands::ark::chat(&api_key, &endpoint_id, &prompt).await,
+        #[cfg(feature = "digitalocean")]
+        Commands::DoRestore {
+            do_token,
+            snapshot_name,
+            region,
+            size,
+        } => {
+            commands::do_restore::run(commands::do_restore::DoRestoreParams {
+                do_token,
+                snapshot_name,
+                region,
+                size,
+            })
+            .await
+        }
         #[cfg(feature = "web-ui")]
         Commands::Serve { port } => commands::serve::run(port).await,
     }

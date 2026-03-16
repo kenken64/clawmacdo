@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.20.0
+
+### Added
+- **`do-restore` subcommand** — restore a DigitalOcean droplet from a snapshot by name (`--do-token` + `--snapshot-name`), with standard `openclaw-{id}` naming, SSH key generation, and deploy record saved to both JSON and SQLite (visible in web UI Deployments tab)
+- **DigitalOcean snapshot API** — `list_snapshots()` and `create_droplet_from_snapshot()` methods on `DoClient`
+
 ## v0.19.0
 
 ### Added
