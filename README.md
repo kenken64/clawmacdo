@@ -5,13 +5,18 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.15.0
+## ✨ What's New in v0.16.0
 
-- **Windows builds fixed** — Dependencies were incorrectly scoped under unix-only target, now all platforms build correctly
-- **Native Windows MSVC builds** — Switched from cross-compilation to native `x86_64-pc-windows-msvc` builds on `windows-latest`
+- **BytePlus destroy cleanup** — Automatically release EIP and delete VPC/subnet/security-group when destroying BytePlus instances
+- **BytePlus deploy form improvements** — Auto-default primary AI model to "byteplus" when BytePlus provider selected; "Generate" button for ARK API key with endpoint selection
+- **ARK API endpoints** — `POST /api/ark/endpoints` and `POST /api/ark/api-key` for ARK key generation from the web UI
+- **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers with all model/failover/messaging permutations
+
+### Previous highlights (v0.14.x – v0.15.x)
+- **Windows builds fixed** — Dependencies correctly scoped, native MSVC builds
 - **`digitalocean` feature flag** — DigitalOcean provider now properly gated as a default feature
 
-### Previous highlights (v0.13.x – v0.14.x)
+### Previous highlights (v0.13.x)
 - **`ark-api-key`** — Generate temporary BytePlus ARK API keys from access/secret credentials, or list endpoints with `--list`
 - **`ark-chat`** — Send prompts to BytePlus ARK models directly from the CLI
 - **`telegram-setup` / `telegram-pair`** — Configure and pair Telegram bots on deployed instances via SSH
@@ -392,5 +397,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 16, 2026
-**Current version:** 0.15.0
+**Current version:** 0.16.0
 **Architecture version:** 2.0 (modular workspace)
