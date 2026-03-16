@@ -12,11 +12,11 @@
 
 | Severity | Count | Fixed | Remaining |
 |----------|-------|-------|-----------|
-| CRITICAL | 4     | 3     | 1         |
+| CRITICAL | 4     | 4     | 0         |
 | HIGH     | 12    | 0     | 12        |
 | MEDIUM   | 6     | 0     | 6         |
 | LOW      | 8     | 0     | 8         |
-| **Total** | **30** | **3** | **27**   |
+| **Total** | **30** | **4** | **26**   |
 
 ---
 
@@ -24,7 +24,7 @@
 
 | ID | Severity | Status | Fix Description |
 |----|----------|--------|-----------------|
-| CRIT-01 | CRITICAL | OPEN | Web server still has zero authentication |
+| CRIT-01 | CRITICAL | **FIXED in v0.17.0** | API key auth, 6-digit PIN login, CORS, rate limiting, localhost-only binding |
 | CRIT-02 | CRITICAL | **FIXED in v0.16.0** | SSH host key verification via TOFU with `~/.clawmacdo/known_hosts` |
 | CRIT-03 | CRITICAL | **FIXED in v0.16.0** | `.env` file written via SCP binary transfer instead of shell heredoc |
 | CRIT-04 | CRITICAL | **FIXED in v0.16.0** | `PermitRootLogin prohibit-password` in cloud-init + post-provision enforcement |
@@ -59,7 +59,7 @@
 
 ## CRITICAL
 
-### CRIT-01: Web server has zero authentication
+### CRIT-01: Web server has zero authentication — FIXED in v0.17.0
 
 | Field | Value |
 |-------|-------|
@@ -67,32 +67,24 @@
 | **Lines** | 230–248 |
 | **Function** | `run()` |
 | **CWE** | CWE-306 (Missing Authentication for Critical Function) |
+| **Status** | **FIXED** |
 
-**Description:**  
+**Description:**
 The Axum server binds to `0.0.0.0` (all interfaces) with no authentication, no CORS, and no rate limiting on any endpoint.
 
-**Affected code (line 243):**
-```rust
-let addr = format!("0.0.0.0:{port}");
-```
+**Fix Applied (4 layers of protection):**
+1. **API key authentication** — All `/api/*` endpoints require `X-API-Key` header matching `CLAWMACDO_API_KEY` env var. Returns 401 if invalid/missing. If env var is unset, auth is bypassed (dev mode).
+2. **6-digit PIN login for web pages** — Web UI pages (`/`, `/assets/*`) require session cookie. Users must enter a 6-digit PIN (from `CLAWMACDO_PIN` env var) at `/login` page. Session cookie is `HttpOnly; SameSite=Strict; Max-Age=86400`. If env var is unset, PIN is bypassed (dev mode).
+3. **CORS middleware** — `tower-http` CorsLayer restricts `Access-Control-Allow-Origin` to `http://localhost:{port}`. Only `GET`, `POST`, `DELETE` methods allowed. Only `Content-Type` and `X-API-Key` headers allowed.
+4. **Rate limiting** — In-memory per-IP rate limiter: 60 requests per 60-second window. Returns `429 Too Many Requests` when exceeded.
+5. **Localhost-only binding** — Server binds to `127.0.0.1` by default (not `0.0.0.0`). Set `CLAWMACDO_BIND=0.0.0.0` to allow remote access.
 
-**Exposed endpoints (lines 230–241):**
-```rust
-.route("/api/deploy", post(start_deploy_handler))
-.route("/api/deploy/{id}/events", get(deploy_events_handler))
-.route("/api/telegram/pairing/approve", post(approve_telegram_pairing_handler))
-.route("/api/agent/docker-fix", post(repair_agent_docker_handler))
-.route("/api/whatsapp/repair", post(repair_whatsapp_handler))
-.route("/api/whatsapp/qr", post(fetch_whatsapp_qr_handler))
-.route("/api/deployments", get(list_deployments_handler))
-.route("/api/deployments/{id}", delete(delete_deployment_handler))
-```
-
-**Impact:**  
-Any network client can trigger cloud deployments (spending real money), read customer PII, delete records, and SSH into provisioned servers via repair endpoints.
-
-**Recommendation:**  
-Add an authentication middleware (API key or session-based auth). Bind to `127.0.0.1` by default. Add CORS headers restricting origin. Add rate limiting.
+**Environment variables:**
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `CLAWMACDO_API_KEY` | API key for `/api/*` endpoints | (none — auth disabled) |
+| `CLAWMACDO_PIN` | 6-digit PIN for web UI login | (none — PIN disabled) |
+| `CLAWMACDO_BIND` | Server bind address | `127.0.0.1` |
 
 ---
 

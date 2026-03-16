@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cli"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
 
@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [features]
 default = ["web-ui", "digitalocean", "tencent-cloud", "lightsail", "azure", "byteplus"]
-web-ui = ["axum", "tokio-stream"]
+web-ui = ["axum", "tokio-stream", "tower", "tower-http"]
 digitalocean = ["clawmacdo-cloud/digitalocean"]
 lightsail = ["clawmacdo-cloud/lightsail"]
 azure = ["clawmacdo-cloud/azure"]
@@ -42,6 +42,8 @@ serde_json = { workspace = true }
 
 # Optional dependencies (feature-gated)
 axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
 tokio-stream = { workspace = true, optional = true }
 
 # Internal crates
