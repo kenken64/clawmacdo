@@ -112,8 +112,14 @@ fi
     let funnel_url = status_trimmed.lines().find_map(|line| {
         let trimmed = line.trim();
         if trimmed.starts_with("https://") {
-            // Remove trailing colon if present (e.g., "https://foo.ts.net:")
-            Some(trimmed.trim_end_matches(':').to_string())
+            // Remove trailing colon and annotations like " (funnel on):"
+            let url = trimmed.trim_end_matches(':');
+            let url = if let Some(idx) = url.find(" (") {
+                &url[..idx]
+            } else {
+                url
+            };
+            Some(url.to_string())
         } else {
             None
         }
@@ -143,7 +149,7 @@ fi
     let config_cmd = format!(
         r#"export PATH="{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin" && \
          export HOME="{home}" && \
-         CONFIG="{home}/.openclaw/workspace/openclaw.json" && \
+         CONFIG="{home}/.openclaw/openclaw.json" && \
          if [ -f "$CONFIG" ]; then \
            if command -v node >/dev/null 2>&1; then \
              node -e "
@@ -158,6 +164,8 @@ fi
                  origins.push(url);
                }}
                cfg.gateway.controlUi.allowedOrigins = origins;
+               // Disable device pairing for Control UI via Funnel
+               cfg.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
                // trustedProxies — trust loopback (Tailscale Funnel proxies via 127.0.0.1)
                if (!cfg.gateway.trustedProxies) {{
                  cfg.gateway.trustedProxies = ['127.0.0.1/8', '::1/128'];
@@ -214,12 +222,13 @@ fi
     }
 
     println!("\nTailscale Funnel setup complete!");
-    println!("Public URL: {funnel_url}");
+    println!("Public URL:      {funnel_url}");
     if !auth_token.is_empty() {
-        println!("Webchat:    {funnel_url}/chat?token={auth_token}");
+        println!("Gateway Token:   {auth_token}");
+        println!("\nTo connect: open the URL above, click Settings (gear icon),");
+        println!("paste the Gateway Token, and save.");
     } else {
-        println!("Webchat:    {funnel_url}/chat");
-        println!("  (gateway auth token not found — you may need to append ?token=<your-token> manually)");
+        println!("Gateway Token:   (not found — check openclaw.json)");
     }
 
     println!("\nNote: If you connect from a new browser, approve it with:");
@@ -229,31 +238,34 @@ fi
 }
 
 /// Approve all pending OpenClaw devices on a deployed instance.
+/// Moves entries from devices/pending.json to devices/paired.json directly.
 /// Returns the number of devices approved.
 async fn approve_pending_devices(ip: &str, key: &Path, home: &str) -> Result<u32> {
     let cmd = format!(
-        r#"export PATH="{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin" && \
-         export HOME="{home}" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         PENDING=$(openclaw devices list 2>&1 | grep -A1 'Pending' | grep -oP '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}') && \
-         COUNT=0 && \
-         for uuid in $PENDING; do \
-           openclaw devices approve "$uuid" 2>&1 && \
-           COUNT=$((COUNT + 1)); \
-         done && \
-         echo "APPROVED=$COUNT""#,
+        r#"export HOME="{home}" && node -e "
+const fs=require('fs');
+const pf='{home}/.openclaw/devices/pending.json';
+const af='{home}/.openclaw/devices/paired.json';
+let pending={{}};try{{pending=JSON.parse(fs.readFileSync(pf,'utf8'))}}catch(e){{}}
+let paired={{}};try{{paired=JSON.parse(fs.readFileSync(af,'utf8'))}}catch(e){{}}
+const keys=Object.keys(pending);
+for(const k of keys){{paired[k]=pending[k];console.log('Approved '+k)}}
+if(keys.length>0){{
+  fs.writeFileSync(af,JSON.stringify(paired,null,2)+'\n');
+  fs.writeFileSync(pf,'{{}}\n');
+}}
+console.log('APPROVED='+keys.length);
+""#,
     );
     let output = ssh_as_openclaw_async(ip, key, &cmd).await?;
     let trimmed = output.trim();
 
-    // Print each approval line
     for line in trimmed.lines() {
         if line.starts_with("Approved") {
             println!("  {line}");
         }
     }
 
-    // Parse count
     let count = trimmed
         .lines()
         .find_map(|line| {
@@ -321,12 +333,12 @@ pub async fn funnel_off(query: &str) -> Result<()> {
 }
 
 /// Toggle Tailscale Funnel on/off. Used by the web UI API handler.
-/// Returns (ok, message, funnel_url_if_on).
+/// Returns (ok, message, funnel_url, gateway_token).
 pub async fn funnel_toggle(
     query: &str,
     action: &str,
     port: u16,
-) -> Result<(bool, String, Option<String>)> {
+) -> Result<(bool, String, Option<String>, Option<String>)> {
     let (ip, key, _provider) = find_deploy_record(query)?;
 
     match action {
@@ -339,7 +351,13 @@ pub async fn funnel_toggle(
             let funnel_url = status_out.lines().find_map(|line| {
                 let t = line.trim();
                 if t.starts_with("https://") {
-                    Some(t.trim_end_matches(':').to_string())
+                    let url = t.trim_end_matches(':');
+                    let url = if let Some(idx) = url.find(" (") {
+                        &url[..idx]
+                    } else {
+                        url
+                    };
+                    Some(url.to_string())
                 } else {
                     None
                 }
@@ -356,21 +374,113 @@ pub async fn funnel_toggle(
                             true,
                             "Funnel enabled but could not determine URL.".into(),
                             None,
+                            None,
                         ));
                     }
                     format!("https://{dns_name}")
                 }
             };
 
-            Ok((true, format!("Funnel enabled at {url}"), Some(url)))
+            // Update openclaw.json: add allowedOrigins + trustedProxies, read auth token
+            let home = config::OPENCLAW_HOME;
+            let config_cmd = format!(
+                r#"export PATH="{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin" && \
+                 export HOME="{home}" && \
+                 CONFIG="{home}/.openclaw/openclaw.json" && \
+                 if [ -f "$CONFIG" ] && command -v node >/dev/null 2>&1; then \
+                   node -e "
+                     const fs = require('fs');
+                     const cfg = JSON.parse(fs.readFileSync('$CONFIG', 'utf8'));
+                     if (!cfg.gateway) cfg.gateway = {{}};
+                     if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {{}};
+                     const origins = cfg.gateway.controlUi.allowedOrigins || [];
+                     const url = '{url}';
+                     if (!origins.includes(url) && !origins.includes('*')) {{
+                       origins.push(url);
+                     }}
+                     cfg.gateway.controlUi.allowedOrigins = origins;
+                     // Disable device pairing for Control UI via Funnel
+                     cfg.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+                     if (!cfg.gateway.trustedProxies) {{
+                       cfg.gateway.trustedProxies = ['127.0.0.1/8', '::1/128'];
+                     }}
+                     fs.writeFileSync('$CONFIG', JSON.stringify(cfg, null, 2) + '\n');
+                     const token = (cfg.gateway && cfg.gateway.auth && cfg.gateway.auth.token) || '';
+                     console.log('AUTH_TOKEN=' + token);
+                   "; \
+                 else \
+                   echo 'AUTH_TOKEN='; \
+                 fi"#,
+            );
+            let config_out = ssh_as_openclaw_async(&ip, &key, &config_cmd)
+                .await
+                .unwrap_or_default();
+
+            let token = config_out
+                .lines()
+                .find_map(|line| line.strip_prefix("AUTH_TOKEN="))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            // Deploy auth.html + auth.js to control-ui dir for one-click token auth
+            // Uses external JS file to satisfy Content-Security-Policy (script-src 'self')
+            let deploy_auth_cmd = format!(
+                r#"export PATH="{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin" && \
+                 export HOME="{home}" && \
+                 CTRL_UI=$(find {home}/.local/share/pnpm -path '*/openclaw/dist/control-ui/index.html' 2>/dev/null | head -1 | xargs dirname 2>/dev/null) && \
+                 if [ -n "$CTRL_UI" ]; then \
+                   cat > "$CTRL_UI/assets/auth.js" << 'JSEOF'
+(function(){{
+  var p=document.querySelector('p');
+  var t=location.hash.slice(1);
+  if(!t){{p.textContent='No token provided.';return}}
+  p.textContent='Connecting to gateway...';
+  setTimeout(function(){{location.replace('/#token='+t);}},2000);
+}})();
+JSEOF
+                   cat > "$CTRL_UI/auth.html" << 'HTMLEOF'
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connecting...</title>
+<style>body{{background:#0f172a;color:#94a3b8;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}.c{{text-align:center}}.s{{animation:spin 1s linear infinite;width:32px;height:32px;border:3px solid #334155;border-top-color:#3b82f6;border-radius:50%;margin:0 auto 16px}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style></head><body><div class="c"><div class="s"></div><p>Setting up gateway token...</p></div>
+<script src="./assets/auth.js"></script></body></html>
+HTMLEOF
+                   echo 'AUTH_HTML_OK'; \
+                 else \
+                   echo 'AUTH_HTML_FAIL'; \
+                 fi"#,
+            );
+            let _ = ssh_as_openclaw_async(&ip, &key, &deploy_auth_cmd).await;
+
+            // Restart gateway to pick up config changes
+            let restart_cmd =
+                "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+                 (systemctl --user restart openclaw-gateway.service 2>/dev/null || true)";
+            let _ = ssh_as_openclaw_async(&ip, &key, restart_cmd).await;
+
+            // Build the one-click URL: /auth.html#<token> auto-sets sessionStorage and redirects
+            let auth_url = if token.is_empty() {
+                url.clone()
+            } else {
+                format!("{url}/auth.html#{token}")
+            };
+
+            let gw_token = if token.is_empty() { None } else { Some(token) };
+
+            Ok((
+                true,
+                format!("Funnel enabled at {url}"),
+                Some(auth_url),
+                gw_token,
+            ))
         }
         "off" => {
             ssh_root_async(&ip, &key, "tailscale funnel off 2>&1").await?;
-            Ok((true, "Funnel disabled.".into(), None))
+            Ok((true, "Funnel disabled.".into(), None, None))
         }
         _ => Ok((
             false,
             format!("Unknown action: {action}. Use 'on' or 'off'."),
+            None,
             None,
         )),
     }

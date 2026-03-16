@@ -13,7 +13,7 @@ use chrono::TimeZone;
 use clawmacdo_core::config;
 use clawmacdo_db as db;
 use clawmacdo_provision::provision::commands::{
-    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async,
+    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async, ssh_root_async,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -249,6 +249,8 @@ struct FunnelToggleResponse {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     funnel_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -581,6 +583,22 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             post(destroy_deployment_handler),
         )
         .route("/api/deployments/{id}/funnel", post(toggle_funnel_handler))
+        .route(
+            "/api/deployments/{id}/funnel/status",
+            get(funnel_status_handler),
+        )
+        .route(
+            "/api/deployments/{id}/whatsapp/repair",
+            post(deployment_whatsapp_repair_handler),
+        )
+        .route(
+            "/api/deployments/{id}/whatsapp/qr",
+            post(deployment_whatsapp_qr_handler),
+        )
+        .route(
+            "/api/deployments/{id}/devices/approve",
+            post(device_approve_handler),
+        )
         .route("/api/config", get(config_handler))
         .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
         .route("/api/ark/api-key", post(ark_api_key_handler))
@@ -633,9 +651,9 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
 
 // ── Route handlers ──────────────────────────────────────────────────────────
 
-/// IIndex handler.
-async fn index_handler() -> Html<&'static str> {
-    Html(INDEX_HTML)
+/// Index handler.
+async fn index_handler() -> Html<String> {
+    Html(INDEX_HTML.replace("{version}", env!("CARGO_PKG_VERSION")))
 }
 
 /// MMascot handler.
@@ -970,7 +988,51 @@ async fn approve_telegram_pairing_handler(
     }
 }
 
-/// FFetch whatsapp qr handler.
+/// Extract the last QR code block from output that may contain multiple QR codes.
+/// QR codes use Unicode block characters (█ ▀ ▄ ▐ ▌ etc).
+fn extract_last_qr_block(output: &str) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    let is_qr_line = |line: &str| {
+        line.contains('█')
+            || line.contains('▀')
+            || line.contains('▄')
+            || line.contains('▐')
+            || line.contains('▌')
+            || line.contains('▖')
+            || line.contains('▗')
+            || line.contains('▘')
+            || line.contains('▙')
+            || line.contains('▚')
+            || line.contains('▛')
+            || line.contains('▜')
+            || line.contains('▝')
+            || line.contains('▞')
+            || line.contains('▟')
+    };
+
+    // Find the last contiguous block of QR lines
+    let mut last_end = None;
+    let mut last_start = None;
+    let mut i = lines.len();
+    while i > 0 {
+        i -= 1;
+        if is_qr_line(lines[i]) {
+            if last_end.is_none() {
+                last_end = Some(i);
+            }
+            last_start = Some(i);
+        } else if last_end.is_some() {
+            break;
+        }
+    }
+
+    match (last_start, last_end) {
+        (Some(start), Some(end)) => lines[start..=end].join("\n"),
+        _ => output.to_string(), // No QR found, return full output
+    }
+}
+
+/// Fetch whatsapp qr handler.
 async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl IntoResponse {
     let ip = req.ip.trim().to_string();
     let key_path = req.ssh_key_path.trim().to_string();
@@ -986,11 +1048,12 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
     }
 
     let key = PathBuf::from(key_path);
+    // Use 45s timeout — enough to capture the first QR code
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if command -v timeout >/dev/null 2>&1; then \
-           timeout 240s openclaw channels login --channel whatsapp 2>&1 || true; \
+           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
          else \
            openclaw channels login --channel whatsapp 2>&1; \
          fi",
@@ -1013,12 +1076,14 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
                 );
             }
 
+            let qr_output = extract_last_qr_block(&out);
+
             (
                 StatusCode::OK,
                 Json(WhatsAppQrResponse {
                     ok: true,
                     message: "WhatsApp login output captured.".into(),
-                    qr_output: out,
+                    qr_output,
                 }),
             )
         }
@@ -1299,7 +1364,7 @@ async fn toggle_funnel_handler(
     Json(req): Json<FunnelToggleRequest>,
 ) -> impl IntoResponse {
     match crate::commands::tailscale_funnel::funnel_toggle(&id, &req.action, req.port).await {
-        Ok((ok, message, funnel_url)) => (
+        Ok((ok, message, funnel_url, gateway_token)) => (
             if ok {
                 StatusCode::OK
             } else {
@@ -1309,6 +1374,7 @@ async fn toggle_funnel_handler(
                 ok,
                 message,
                 funnel_url,
+                gateway_token,
             }),
         ),
         Err(e) => (
@@ -1317,6 +1383,265 @@ async fn toggle_funnel_handler(
                 ok: false,
                 message: format!("Funnel toggle failed: {e}"),
                 funnel_url: None,
+                gateway_token: None,
+            }),
+        ),
+    }
+}
+
+/// Check Tailscale Funnel status for a deployment.
+async fn funnel_status_handler(Path(id): Path<String>) -> impl IntoResponse {
+    let (ip, key) = match resolve_deploy_connection(&id) {
+        Ok(v) => v,
+        Err(_) => {
+            return Json(serde_json::json!({
+                "ok": false, "active": false, "funnel_url": null
+            }))
+        }
+    };
+
+    let cmd = "tailscale funnel status 2>&1";
+    match ssh_root_async(&ip, &key, cmd).await {
+        Ok(out) => {
+            let trimmed = out.trim();
+            // Check if funnel is active (has a proxy line)
+            let has_proxy = trimmed.lines().any(|l| l.contains("proxy"));
+            let funnel_url = trimmed.lines().find_map(|line| {
+                let t = line.trim();
+                if t.starts_with("https://") {
+                    // Strip trailing ":" and annotations like " (funnel on):"
+                    let url = t.trim_end_matches(':');
+                    let url = if let Some(idx) = url.find(" (") {
+                        &url[..idx]
+                    } else {
+                        url
+                    };
+                    Some(url.to_string())
+                } else {
+                    None
+                }
+            });
+            // If funnel is active, read auth token and build one-click auth URL
+            let (auth_url, gateway_token) = if has_proxy {
+                if let Some(ref base_url) = funnel_url {
+                    let home = config::OPENCLAW_HOME;
+                    let token_cmd = format!(
+                        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
+                         export HOME=\"{home}\" && \
+                         node -e \"const fs=require('fs');try{{const c=JSON.parse(fs.readFileSync('{home}/.openclaw/openclaw.json','utf8'));console.log((c.gateway&&c.gateway.auth&&c.gateway.auth.token)||'')}}catch(e){{console.log('')}}\""
+                    );
+                    let token = ssh_as_openclaw_async(&ip, &key, &token_cmd)
+                        .await
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if token.is_empty() {
+                        (Some(base_url.clone()), None)
+                    } else {
+                        (Some(format!("{base_url}/auth.html#{token}")), Some(token))
+                    }
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
+
+            Json(serde_json::json!({
+                "ok": true,
+                "active": has_proxy,
+                "funnel_url": auth_url.or(funnel_url),
+                "gateway_token": gateway_token,
+            }))
+        }
+        Err(_) => Json(serde_json::json!({
+            "ok": false, "active": false, "funnel_url": null
+        })),
+    }
+}
+
+/// Auto-approve all pending OpenClaw device pairing requests.
+async fn device_approve_handler(Path(id): Path<String>) -> impl IntoResponse {
+    let (ip, key) = match resolve_deploy_connection(&id) {
+        Ok(v) => v,
+        Err(e) => return Json(serde_json::json!({"ok": false, "message": e, "approved": 0})),
+    };
+    let home = config::OPENCLAW_HOME;
+    // Approve devices by moving entries from pending.json to paired.json directly
+    // (the `openclaw devices approve` CLI fails with "pairing required" chicken-and-egg)
+    let cmd = format!(
+        r#"export HOME="{home}" && node -e "
+const fs=require('fs');
+const pf='{home}/.openclaw/devices/pending.json';
+const af='{home}/.openclaw/devices/paired.json';
+let pending={{}};try{{pending=JSON.parse(fs.readFileSync(pf,'utf8'))}}catch(e){{}}
+let paired={{}};try{{paired=JSON.parse(fs.readFileSync(af,'utf8'))}}catch(e){{}}
+const keys=Object.keys(pending);
+for(const k of keys){{paired[k]=pending[k]}}
+if(keys.length>0){{
+  fs.writeFileSync(af,JSON.stringify(paired,null,2)+'\n');
+  fs.writeFileSync(pf,'{{}}\n');
+}}
+console.log('APPROVED='+keys.length);
+""#,
+    );
+    let output = ssh_as_openclaw_async(&ip, &key, &cmd)
+        .await
+        .unwrap_or_default();
+    let count = output
+        .lines()
+        .find_map(|l| l.strip_prefix("APPROVED="))
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    Json(
+        serde_json::json!({"ok": true, "message": format!("Approved {count} device(s)"), "approved": count}),
+    )
+}
+
+/// Resolve a deploy record by ID, returning (ip, ssh_key_path).
+fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
+    let deploys_dir = match config::deploys_dir() {
+        Ok(d) => d,
+        Err(e) => return Err(format!("Cannot find deploys dir: {e}")),
+    };
+    if !deploys_dir.exists() {
+        return Err("No deploy records found.".into());
+    }
+    for entry in std::fs::read_dir(&deploys_dir).map_err(|e| e.to_string())? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let record: config::DeployRecord = match serde_json::from_str(&contents) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if record.id == id || record.hostname == id || record.ip_address == id {
+            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
+        }
+    }
+    Err(format!("No deploy record found for '{id}'."))
+}
+
+/// WhatsApp repair handler for deployments tab — resolves connection from deploy ID.
+async fn deployment_whatsapp_repair_handler(Path(id): Path<String>) -> impl IntoResponse {
+    let (ip, key) = match resolve_deploy_connection(&id) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(WhatsAppRepairResponse {
+                    ok: false,
+                    message: msg,
+                    repair_output: String::new(),
+                }),
+            )
+        }
+    };
+
+    match whatsapp::repair_support(&ip, &key).await {
+        Ok(result) => {
+            let message = if result.supported {
+                "Repair completed. WhatsApp channel appears available now.".to_string()
+            } else {
+                "Repair completed, but WhatsApp is still unsupported on this OpenClaw build."
+                    .to_string()
+            };
+            let code = if result.supported {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (
+                code,
+                Json(WhatsAppRepairResponse {
+                    ok: result.supported,
+                    message,
+                    repair_output: result.output,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(WhatsAppRepairResponse {
+                ok: false,
+                message: format!("Failed to run WhatsApp repair: {e}"),
+                repair_output: String::new(),
+            }),
+        ),
+    }
+}
+
+/// WhatsApp QR handler for deployments tab — resolves connection from deploy ID.
+async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResponse {
+    let (ip, key) = match resolve_deploy_connection(&id) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(WhatsAppQrResponse {
+                    ok: false,
+                    message: msg,
+                    qr_output: String::new(),
+                }),
+            )
+        }
+    };
+
+    // Use 45s timeout — enough to capture the first QR code (appears in ~10-15s)
+    let cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         if command -v timeout >/dev/null 2>&1; then \
+           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
+         else \
+           openclaw channels login --channel whatsapp 2>&1; \
+         fi",
+        home = config::OPENCLAW_HOME,
+    );
+
+    match ssh_as_openclaw_async(&ip, &key, &cmd).await {
+        Ok(out) => {
+            let lowered = out.to_ascii_lowercase();
+            if lowered.contains("unsupported channel: whatsapp")
+                || lowered.contains("unsupported channel whatsapp")
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(WhatsAppQrResponse {
+                        ok: false,
+                        message: "WhatsApp channel unsupported. Click 'Repair' first.".into(),
+                        qr_output: out,
+                    }),
+                );
+            }
+
+            // Extract only the last QR code block from the output
+            let qr_output = extract_last_qr_block(&out);
+
+            (
+                StatusCode::OK,
+                Json(WhatsAppQrResponse {
+                    ok: true,
+                    message: "WhatsApp login output captured.".into(),
+                    qr_output,
+                }),
+            )
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(WhatsAppQrResponse {
+                ok: false,
+                message: format!("Failed to fetch WhatsApp QR: {e}"),
+                qr_output: String::new(),
             }),
         ),
     }
@@ -1612,7 +1937,7 @@ tailwind.config = {
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
-    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.17.0</span>
+    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v{version}</span>
     <a href="/logout" class="ml-3 text-xs text-slate-500 hover:text-red-400 transition-colors" title="Logout">&#x2716; Logout</a>
   </div>
   <!-- Tab bar -->
@@ -2601,7 +2926,7 @@ async function fixAgentDockerAccess(btn) {
     const data = await res.json();
     const msg = data.message || 'Docker repair completed.';
     const details = (data.fix_output || '').trim();
-    output.textContent = details ? (msg + '\\n\\n' + details) : msg;
+    output.textContent = details ? (msg + '\n\n' + details) : msg;
   } catch (err) {
     output.textContent = 'Request failed: ' + err.message;
   } finally {
@@ -2640,6 +2965,17 @@ async function repairWhatsAppSupport(btn) {
     const msg = data.message || 'WhatsApp repair completed.';
     const details = (data.repair_output || '').trim();
     output.textContent = details ? (msg + '\n\n' + details) : msg;
+    // Auto-fetch QR after successful repair
+    if (res.ok && data.ok) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+      const qrBtn = panel.querySelector('.whatsapp-qr-btn');
+      if (qrBtn) {
+        output.textContent += '\n\nAuto-fetching WhatsApp QR code...';
+        fetchWhatsAppQr(qrBtn);
+      }
+      return;
+    }
   } catch (err) {
     output.textContent = 'Request failed: ' + err.message;
   } finally {
@@ -2873,11 +3209,19 @@ async function loadDeployments(page) {
           '<td class="px-4 py-3">' +
             '<div class="flex gap-1 items-center">' +
               '<button id="funnel-btn-' + esc(d.id) + '" onclick="toggleFunnel(\'' + esc(d.id) + '\',this)" class="text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors" title="Toggle Tailscale Funnel">Off</button>' +
-              '<span id="funnel-url-' + esc(d.id) + '" class="hidden text-xs text-blue-400 ml-1 truncate max-w-[120px]"></span>' +
+              '<button id="funnel-open-' + esc(d.id) + '" onclick="openFunnel(\'' + esc(d.id) + '\')" class="hidden text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 ml-1" title="Open webchat (auto-approves device)">Open</button>' +
+              '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
             '</div>' +
           '</td>' +
           '<td class="px-4 py-3">' +
-            '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
+            '<div class="flex flex-col gap-1">' +
+              '<div class="flex gap-1">' +
+                '<button onclick="depRepairWhatsApp(\'' + esc(d.id) + '\',this)" class="text-amber-400 hover:text-amber-300 text-xs font-medium px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors" title="Install/Repair WhatsApp Support">WhatsApp</button>' +
+                '<button onclick="depFetchWhatsAppQr(\'' + esc(d.id) + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors" title="Fetch WhatsApp QR Code">QR</button>' +
+                '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
+              '</div>' +
+              '<pre id="wa-output-' + esc(d.id) + '" class="hidden mt-1 bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
+            '</div>' +
           '</td>';
         tbody.appendChild(tr);
       }
@@ -2887,9 +3231,45 @@ async function loadDeployments(page) {
     document.getElementById('dep-page-info').textContent = 'Page ' + depCurrentPage + ' of ' + totalPages;
     document.getElementById('dep-prev').disabled = depCurrentPage <= 1;
     document.getElementById('dep-next').disabled = depCurrentPage >= totalPages;
+
+    // Probe funnel status for each completed deployment
+    if (data.deployments) {
+      for (const d of data.deployments) {
+        if (d.status !== 'completed') continue;
+        checkFunnelStatus(d.id);
+      }
+    }
   } catch (e) {
     console.error('Failed to load deployments:', e);
   }
+}
+
+async function checkFunnelStatus(id) {
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/funnel/status');
+    const data = await res.json();
+    const btn = document.getElementById('funnel-btn-' + id);
+    const openBtn = document.getElementById('funnel-open-' + id);
+    const urlVal = document.getElementById('funnel-url-val-' + id);
+    if (!btn) return;
+    if (data.ok && data.active) {
+      btn.textContent = 'On';
+      btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
+      if (data.funnel_url && openBtn && urlVal) {
+        urlVal.value = data.funnel_url;
+        openBtn.classList.remove('hidden');
+      }
+    }
+  } catch (e) {
+    // Silently ignore — button stays as Off
+  }
+}
+
+async function openFunnel(id) {
+  const urlVal = document.getElementById('funnel-url-val-' + id);
+  if (!urlVal || !urlVal.value) return;
+  // dangerouslyDisableDeviceAuth is set during funnel setup — no pairing needed
+  window.open(urlVal.value, '_blank');
 }
 
 function deploymentsPage(delta) {
@@ -3027,19 +3407,20 @@ async function toggleFunnel(id, btn) {
       body: JSON.stringify({ action: action, port: 18789 }),
     });
     const data = await res.json();
-    const urlSpan = document.getElementById('funnel-url-' + id);
+    const openBtn = document.getElementById('funnel-open-' + id);
+    const urlVal = document.getElementById('funnel-url-val-' + id);
     if (data.ok && action === 'on') {
       btn.textContent = 'On';
       btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
-      if (data.funnel_url && urlSpan) {
-        urlSpan.textContent = data.funnel_url;
-        urlSpan.title = data.funnel_url;
-        urlSpan.classList.remove('hidden');
+      if (data.funnel_url && openBtn && urlVal) {
+        urlVal.value = data.funnel_url;
+        openBtn.classList.remove('hidden');
       }
     } else if (data.ok && action === 'off') {
       btn.textContent = 'Off';
       btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
-      if (urlSpan) { urlSpan.textContent = ''; urlSpan.classList.add('hidden'); }
+      if (openBtn) { openBtn.classList.add('hidden'); }
+      if (urlVal) { urlVal.value = ''; }
     } else {
       btn.textContent = origText;
       btn.className = 'text-red-400 text-xs font-medium px-2 py-1 rounded bg-red-500/20 border border-red-500/30';
@@ -3057,6 +3438,74 @@ async function toggleFunnel(id, btn) {
     }, 2000);
   }
   btn.disabled = false;
+}
+
+async function depRepairWhatsApp(id, btn) {
+  const output = document.getElementById('wa-output-' + id);
+  if (!output) return;
+  output.classList.remove('hidden');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Repairing...';
+  output.textContent = 'Updating OpenClaw and refreshing extensions...';
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/whatsapp/repair', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await res.json();
+    const msg = data.message || 'WhatsApp repair completed.';
+    const details = (data.repair_output || '').trim();
+    output.textContent = details ? (msg + '\n\n' + details) : msg;
+    if (res.ok && data.ok) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+      output.textContent += '\n\nAuto-fetching WhatsApp QR code (may take up to 4 minutes)...';
+      depFetchWhatsAppQr(id, null);
+      return;
+    }
+  } catch (err) {
+    output.textContent = 'Request failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function depFetchWhatsAppQr(id, btn) {
+  const output = document.getElementById('wa-output-' + id);
+  if (!output) return;
+  output.classList.remove('hidden');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Fetching...';
+  }
+  if (btn) {
+    output.textContent = 'Fetching WhatsApp QR code (may take up to 4 minutes)...';
+  }
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/whatsapp/qr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      output.textContent = (data.qr_output || '').trim() || 'No QR output returned.';
+    } else {
+      const msg = data.message || 'Failed to fetch WhatsApp QR.';
+      const details = (data.qr_output || '').trim();
+      output.textContent = details ? (msg + '\n\n' + details) : msg;
+    }
+  } catch (err) {
+    output.textContent = 'Request failed: ' + err.message;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'QR';
+    }
+  }
 }
 
 function esc(s) {
