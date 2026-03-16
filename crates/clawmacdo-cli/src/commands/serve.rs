@@ -580,10 +580,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/deployments/{id}/destroy",
             post(destroy_deployment_handler),
         )
-        .route(
-            "/api/deployments/{id}/funnel",
-            post(toggle_funnel_handler),
-        )
+        .route("/api/deployments/{id}/funnel", post(toggle_funnel_handler))
         .route("/api/config", get(config_handler))
         .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
         .route("/api/ark/api-key", post(ark_api_key_handler))

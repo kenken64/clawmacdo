@@ -58,7 +58,11 @@ pub async fn upload(query: &str, skill_file: &Path, api_url: &str, api_key: &str
 
     // Step 2: Upload to Railway API
     println!("[1/3] Uploading to skills API...");
-    let upload_url = format!("{}/api/user-skills/{}", api_url.trim_end_matches('/'), deploy_id);
+    let upload_url = format!(
+        "{}/api/user-skills/{}",
+        api_url.trim_end_matches('/'),
+        deploy_id
+    );
     let client = reqwest::Client::new();
 
     let form = reqwest::multipart::Form::new().part(
@@ -79,7 +83,10 @@ pub async fn upload(query: &str, skill_file: &Path, api_url: &str, api_key: &str
     let body: serde_json::Value = resp.json().await?;
 
     if status.is_success() {
-        let backed_up = body.get("backed_up").and_then(|v| v.as_bool()).unwrap_or(false);
+        let backed_up = body
+            .get("backed_up")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         println!("  Uploaded to Railway volume.");
         if backed_up {
             println!("  Previous version backed up on server.");
@@ -89,7 +96,7 @@ pub async fn upload(query: &str, skill_file: &Path, api_url: &str, api_key: &str
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
-        bail!("API upload failed ({}): {}", status, err_msg);
+        bail!("API upload failed ({status}): {err_msg}");
     }
 
     // Step 3: Backup existing SKILL.md on the instance
@@ -141,12 +148,7 @@ pub async fn upload(query: &str, skill_file: &Path, api_url: &str, api_key: &str
 /// Steps:
 /// 1. Download from Railway API: GET /api/user-skills/<deployment-id>
 /// 2. Save to local file
-pub async fn download(
-    query: &str,
-    output_path: &Path,
-    api_url: &str,
-    api_key: &str,
-) -> Result<()> {
+pub async fn download(query: &str, output_path: &Path, api_url: &str, api_key: &str) -> Result<()> {
     let (deploy_id, _ip, _ssh_key) = find_deploy_record(query)?;
 
     println!("Downloading SKILL.md for deployment {deploy_id}...\n");
@@ -170,7 +172,7 @@ pub async fn download(
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
-        bail!("API download failed ({}): {}", status, err_msg);
+        bail!("API download failed ({status}): {err_msg}");
     }
 
     let bytes = resp.bytes().await?;
@@ -216,7 +218,7 @@ pub async fn push_to_instance(query: &str, api_url: &str, api_key: &str) -> Resu
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
-        bail!("API download failed ({}): {}", status, err_msg);
+        bail!("API download failed ({status}): {err_msg}");
     }
 
     let file_bytes = resp.bytes().await?.to_vec();

@@ -109,17 +109,15 @@ fi
     println!("  {}", status_trimmed.replace('\n', "\n  "));
 
     // Extract the https:// URL from funnel status output
-    let funnel_url = status_trimmed
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("https://") {
-                // Remove trailing colon if present (e.g., "https://foo.ts.net:")
-                Some(trimmed.trim_end_matches(':').to_string())
-            } else {
-                None
-            }
-        });
+    let funnel_url = status_trimmed.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with("https://") {
+            // Remove trailing colon if present (e.g., "https://foo.ts.net:")
+            Some(trimmed.trim_end_matches(':').to_string())
+        } else {
+            None
+        }
+    });
 
     let funnel_url = match funnel_url {
         Some(url) => {
@@ -324,7 +322,11 @@ pub async fn funnel_off(query: &str) -> Result<()> {
 
 /// Toggle Tailscale Funnel on/off. Used by the web UI API handler.
 /// Returns (ok, message, funnel_url_if_on).
-pub async fn funnel_toggle(query: &str, action: &str, port: u16) -> Result<(bool, String, Option<String>)> {
+pub async fn funnel_toggle(
+    query: &str,
+    action: &str,
+    port: u16,
+) -> Result<(bool, String, Option<String>)> {
     let (ip, key, _provider) = find_deploy_record(query)?;
 
     match action {
@@ -350,7 +352,11 @@ pub async fn funnel_toggle(query: &str, action: &str, port: u16) -> Result<(bool
                     let dns_out = ssh_root_async(&ip, &key, dns_cmd).await?;
                     let dns_name = dns_out.trim().trim_end_matches('.');
                     if dns_name.is_empty() {
-                        return Ok((true, "Funnel enabled but could not determine URL.".into(), None));
+                        return Ok((
+                            true,
+                            "Funnel enabled but could not determine URL.".into(),
+                            None,
+                        ));
                     }
                     format!("https://{dns_name}")
                 }
@@ -362,6 +368,10 @@ pub async fn funnel_toggle(query: &str, action: &str, port: u16) -> Result<(bool
             ssh_root_async(&ip, &key, "tailscale funnel off 2>&1").await?;
             Ok((true, "Funnel disabled.".into(), None))
         }
-        _ => Ok((false, format!("Unknown action: {action}. Use 'on' or 'off'."), None)),
+        _ => Ok((
+            false,
+            format!("Unknown action: {action}. Use 'on' or 'off'."),
+            None,
+        )),
     }
 }
