@@ -66,6 +66,11 @@ pub fn keys_dir() -> Result<PathBuf, AppError> {
     Ok(app_dir()?.join("keys"))
 }
 
+/// ~/.clawmacdo/known_hosts
+pub fn known_hosts_path() -> Result<PathBuf, AppError> {
+    Ok(app_dir()?.join("known_hosts"))
+}
+
 /// ~/.clawmacdo/deploys/
 /// DDeploys dir.
 pub fn deploys_dir() -> Result<PathBuf, AppError> {

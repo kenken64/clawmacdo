@@ -33,6 +33,13 @@ pub enum AppError {
     #[error("SSH error: {0}")]
     Ssh(String),
 
+    #[error("SSH host key mismatch for {ip}: expected {expected} but got {actual}. If the server was rebuilt, remove the old entry from ~/.clawmacdo/known_hosts")]
+    HostKeyMismatch {
+        ip: String,
+        expected: String,
+        actual: String,
+    },
+
     #[error("SSH key generation error: {0}")]
     SshKeyGen(String),
 

@@ -148,5 +148,18 @@ pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), A
     }
     notify_step_done(opts, 14);
 
+    // Post-provisioning: ensure root login is restricted to pubkey-only.
+    // Cloud-init sets PermitRootLogin to prohibit-password, but enforce it
+    // here as a safety net in case the config was modified during provisioning.
+    commands::ssh_root_as_async(
+        ip,
+        key,
+        "sed -i 's/^PermitRootLogin yes/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
+         sed -i 's/^PermitRootLogin yes/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true && \
+         systemctl restart sshd 2>/dev/null || systemctl restart ssh",
+        ssh_user,
+    )
+    .await?;
+
     Ok(())
 }
