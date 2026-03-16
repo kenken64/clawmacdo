@@ -3,6 +3,8 @@ pub mod ark;
 pub mod deploy;
 pub mod deploy_cmd;
 pub mod destroy;
+#[cfg(feature = "digitalocean")]
+pub mod do_restore;
 pub mod docker_fix;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]

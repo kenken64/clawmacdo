@@ -5,8 +5,11 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.19.0
+## ✨ What's New in v0.20.0
 
+- **`do-restore` subcommand** — restore a DigitalOcean droplet from a snapshot by name, with standard `openclaw-{id}` naming and deploy record saved to both JSON and SQLite (visible in web UI Deployments tab)
+
+### Previous highlights (v0.19.x)
 - **One-click Funnel access** — "Open" button in Deployments tab opens the Funnel webchat with gateway token pre-injected (no manual token paste or device pairing needed)
 - **Auto-disable device pairing for Funnel** — Funnel setup sets `dangerouslyDisableDeviceAuth: true` so browser connections via Tailscale Funnel skip the pairing screen
 
@@ -304,6 +307,26 @@ export ARK_ENDPOINT_ID="ep-20260315233753-58rpv"
 clawmacdo ark-chat "Explain quantum computing in 3 sentences."
 ```
 
+### Restore DigitalOcean Droplet from Snapshot
+
+Create a new droplet from an existing DigitalOcean snapshot. The droplet name follows the standard `openclaw-{id}` naming convention.
+
+```bash
+# Restore from a snapshot by name
+clawmacdo do-restore \
+  --do-token "$DO_TOKEN" \
+  --snapshot-name "my-openclaw-snapshot"
+
+# With region and size overrides
+clawmacdo do-restore \
+  --do-token "$DO_TOKEN" \
+  --snapshot-name "my-openclaw-snapshot" \
+  --region nyc1 \
+  --size s-4vcpu-8gb
+```
+
+The command generates a new SSH key pair, looks up the snapshot by name, creates the droplet, waits for it to become active, and saves a deploy record for use with other `clawmacdo` commands.
+
 ### Track Deploy Progress
 
 ```bash
@@ -487,6 +510,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 16, 2026
-**Current version:** 0.18.0
+**Last updated:** March 17, 2026
+**Current version:** 0.20.0
 **Architecture version:** 2.0 (modular workspace)
