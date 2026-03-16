@@ -2,6 +2,8 @@
 
 Node.js REST API serving OpenClaw skills data from MongoDB, with keyword search, file downloads, and batch uploads. Railway-ready with Dockerfile.
 
+**Production URL:** `https://clawmacdo-production.up.railway.app`
+
 ## Quick Start
 
 ```bash
@@ -34,7 +36,7 @@ npm start
 List all categories with skill counts.
 
 ```bash
-curl http://localhost:3100/api/categories
+curl https://clawmacdo-production.up.railway.app/api/categories
 ```
 
 ```json
@@ -57,7 +59,7 @@ Get all skills in a category (paginated).
 | `limit` | query | `50` | Results per page (max 100) |
 
 ```bash
-curl "http://localhost:3100/api/categories/ai-and-llms?page=1&limit=10"
+curl "https://clawmacdo-production.up.railway.app/api/categories/ai-and-llms?page=1&limit=10"
 ```
 
 ```json
@@ -76,7 +78,7 @@ curl "http://localhost:3100/api/categories/ai-and-llms?page=1&limit=10"
 List skills in a category, verifying SKILL.md file presence on the data volume. Useful for checking which files are actually available.
 
 ```bash
-curl "http://localhost:3100/api/categories/ai-and-llms/files?page=1&limit=5"
+curl "https://clawmacdo-production.up.railway.app/api/categories/ai-and-llms/files?page=1&limit=5"
 ```
 
 ```json
@@ -108,7 +110,7 @@ List or search skills with keyword search on description (uses MongoDB text inde
 
 ```bash
 # Search for "blockchain"
-curl "http://localhost:3100/api/skills?q=blockchain&limit=5"
+curl "https://clawmacdo-production.up.railway.app/api/skills?q=blockchain&limit=5"
 ```
 
 ```json
@@ -135,7 +137,7 @@ curl "http://localhost:3100/api/skills?q=blockchain&limit=5"
 Get skill detail by slug. Includes the full SKILL.md content if available on disk.
 
 ```bash
-curl http://localhost:3100/api/skills/aegis-security
+curl https://clawmacdo-production.up.railway.app/api/skills/aegis-security
 ```
 
 ```json
@@ -155,7 +157,7 @@ curl http://localhost:3100/api/skills/aegis-security
 Download the raw SKILL.md file for a skill from the data volume.
 
 ```bash
-curl -O http://localhost:3100/api/skills/aegis-security/download
+curl -O https://clawmacdo-production.up.railway.app/api/skills/aegis-security/download
 ```
 
 Returns `text/markdown` with `Content-Disposition: attachment` header. Returns 404 JSON if file not found.
@@ -171,11 +173,11 @@ Batch upload SKILL.md files to the data volume. Multipart form-data.
 
 ```bash
 # Upload with slug in filename path
-curl -X POST http://localhost:3100/api/skills/upload \
+curl -X POST https://clawmacdo-production.up.railway.app/api/skills/upload \
   -F "files=@skills/my-skill/SKILL.md;filename=my-skill/SKILL.md"
 
 # Batch upload with explicit slugs
-curl -X POST http://localhost:3100/api/skills/upload \
+curl -X POST https://clawmacdo-production.up.railway.app/api/skills/upload \
   -F "files=@file1.md" -F "files=@file2.md" \
   -F 'slugs=["skill-one","skill-two"]'
 ```
@@ -197,7 +199,7 @@ curl -X POST http://localhost:3100/api/skills/upload \
 #### `GET /api/health`
 
 ```bash
-curl http://localhost:3100/api/health
+curl https://clawmacdo-production.up.railway.app/api/health
 ```
 
 ```json
