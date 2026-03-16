@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.19.0
+
+### Added
+- **One-click Funnel access** — "Open" button in Deployments tab opens the Funnel URL with gateway token pre-injected via `auth.html` (external JS to satisfy CSP `script-src 'self'`)
+- **Auto-disable device pairing for Funnel** — Funnel setup now sets `controlUi.dangerouslyDisableDeviceAuth: true` in `openclaw.json`, eliminating the mandatory device pairing step for browser connections through Tailscale Funnel
+
+### Fixed
+- **Funnel "pairing required" blocker** — browser connections via Tailscale Funnel no longer get stuck at the device pairing screen
+- **CSP inline script violation** — moved auth page JavaScript to external `assets/auth.js` file served from the same origin
+
 ## v0.18.0
 
 ### Added

@@ -5,14 +5,15 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.18.0
+## ✨ What's New in v0.19.0
 
+- **One-click Funnel access** — "Open" button in Deployments tab opens the Funnel webchat with gateway token pre-injected (no manual token paste or device pairing needed)
+- **Auto-disable device pairing for Funnel** — Funnel setup sets `dangerouslyDisableDeviceAuth: true` so browser connections via Tailscale Funnel skip the pairing screen
+
+### Previous highlights (v0.18.x)
 - **Tailscale Funnel** — `tailscale-funnel` subcommand: install Tailscale, enable Funnel, configure `openclaw.json`, auto-approve devices, and print public webchat URL
 - **Funnel toggle** — `funnel-on` / `funnel-off` CLI commands and web UI Deployments tab toggle button
-- **Device approval** — `device-approve` subcommand to auto-approve all pending webchat pairing requests
-- **Customer skill management** — `skill-upload`, `skill-download`, `skill-push` subcommands for per-deployment SKILL.md via Railway skills API + SCP to instances
-- **User-skills API** — REST endpoints for per-deployment SKILL.md with API key protection and auto-backup
-- **Web UI fixes** — Deployments tab works after PIN login; logout button; PIN error message displays correctly
+- **Customer skill management** — `skill-upload`, `skill-download`, `skill-push` subcommands for per-deployment SKILL.md
 
 ### Previous highlights (v0.17.x)
 - **Web UI security hardening (CRIT-01)** — API key auth, 6-digit PIN login, CORS, rate limiting, localhost-only binding
