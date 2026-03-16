@@ -202,6 +202,81 @@ enum Commands {
         #[arg(long)]
         code: String,
     },
+    /// Upload a SKILL.md to the skills API and deploy it to the OpenClaw instance
+    SkillUpload {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Path to the local SKILL.md file
+        #[arg(long)]
+        file: PathBuf,
+        /// Skills API base URL
+        #[arg(long, env = "SKILLS_API_URL")]
+        api_url: String,
+        /// Skills API key
+        #[arg(long, env = "USER_SKILLS_API_KEY")]
+        api_key: String,
+    },
+    /// Download a SKILL.md from the skills API
+    SkillDownload {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Output file path (default: ./SKILL.md)
+        #[arg(long, default_value = "SKILL.md")]
+        output: PathBuf,
+        /// Skills API base URL
+        #[arg(long, env = "SKILLS_API_URL")]
+        api_url: String,
+        /// Skills API key
+        #[arg(long, env = "USER_SKILLS_API_KEY")]
+        api_key: String,
+    },
+    /// Push a SKILL.md from the skills API to the OpenClaw instance
+    SkillPush {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Skills API base URL
+        #[arg(long, env = "SKILLS_API_URL")]
+        api_url: String,
+        /// Skills API key
+        #[arg(long, env = "USER_SKILLS_API_KEY")]
+        api_key: String,
+    },
+    /// Approve all pending webchat device pairing requests on a deployed instance
+    DeviceApprove {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Enable Tailscale Funnel on a deployed instance
+    FunnelOn {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Port to expose via Funnel (default: 18789)
+        #[arg(long, default_value = "18789")]
+        port: u16,
+    },
+    /// Disable Tailscale Funnel on a deployed instance
+    FunnelOff {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Set up Tailscale Funnel on a deployed instance for public HTTPS access
+    TailscaleFunnel {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Tailscale auth key (tskey-auth-...)
+        #[arg(long, env = "TAILSCALE_AUTH_KEY")]
+        auth_key: String,
+        /// Port to expose via Funnel (default: 18789)
+        #[arg(long, default_value = "18789")]
+        port: u16,
+    },
     /// Generate a temporary BytePlus ARK API key, or list available endpoints
     #[cfg(feature = "byteplus")]
     ArkApiKey {
@@ -400,6 +475,37 @@ async fn main() -> anyhow::Result<()> {
         Commands::TelegramPair { instance, code } => {
             commands::telegram::approve_pairing(&instance, &code).await
         }
+        Commands::SkillUpload {
+            instance,
+            file,
+            api_url,
+            api_key,
+        } => commands::skill::upload(&instance, &file, &api_url, &api_key).await,
+        Commands::SkillDownload {
+            instance,
+            output,
+            api_url,
+            api_key,
+        } => commands::skill::download(&instance, &output, &api_url, &api_key).await,
+        Commands::SkillPush {
+            instance,
+            api_url,
+            api_key,
+        } => commands::skill::push_to_instance(&instance, &api_url, &api_key).await,
+        Commands::DeviceApprove { instance } => {
+            commands::tailscale_funnel::device_approve_all(&instance).await
+        }
+        Commands::FunnelOn { instance, port } => {
+            commands::tailscale_funnel::funnel_on(&instance, port).await
+        }
+        Commands::FunnelOff { instance } => {
+            commands::tailscale_funnel::funnel_off(&instance).await
+        }
+        Commands::TailscaleFunnel {
+            instance,
+            auth_key,
+            port,
+        } => commands::tailscale_funnel::setup(&instance, &auth_key, port).await,
         #[cfg(feature = "byteplus")]
         Commands::ArkApiKey {
             access_key,

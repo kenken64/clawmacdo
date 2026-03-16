@@ -231,6 +231,27 @@ struct DeleteResponse {
 }
 
 #[derive(Deserialize)]
+struct FunnelToggleRequest {
+    /// "on" or "off"
+    action: String,
+    /// Port to expose (default 18789)
+    #[serde(default = "default_funnel_port")]
+    port: u16,
+}
+
+fn default_funnel_port() -> u16 {
+    18789
+}
+
+#[derive(Serialize)]
+struct FunnelToggleResponse {
+    ok: bool,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    funnel_url: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct DestroyDeploymentRequest {
     #[serde(default)]
     do_token: String,
@@ -362,14 +383,37 @@ async fn api_key_middleware(req: Request<Body>, next: Next) -> Response {
         return next.run(req).await;
     }
 
-    match req.headers().get("x-api-key") {
-        Some(val) if val.as_bytes() == api_key.as_bytes() => next.run(req).await,
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid or missing API key"})),
-        )
-            .into_response(),
+    // Check X-API-Key header (for programmatic / curl access)
+    if let Some(val) = req.headers().get("x-api-key") {
+        if val.as_bytes() == api_key.as_bytes() {
+            return next.run(req).await;
+        }
     }
+
+    // Also accept valid PIN session cookie (for browser-based web UI fetch calls)
+    if let Some(pin) = get_configured_pin() {
+        let expected_token = generate_session_token(&pin);
+        let has_valid_session = req
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(|cookies| {
+                cookies.split(';').any(|c| {
+                    let c = c.trim();
+                    c == format!("{PIN_COOKIE_NAME}={expected_token}")
+                })
+            })
+            .unwrap_or(false);
+        if has_valid_session {
+            return next.run(req).await;
+        }
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "Invalid or missing API key"})),
+    )
+        .into_response()
 }
 
 // ── Security: PIN-based web page auth ──────────────────────────────────────
@@ -477,6 +521,18 @@ async fn login_submit_handler(
     }
 }
 
+async fn logout_handler() -> Response {
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, "/login")
+        .header(
+            header::SET_COOKIE,
+            format!("{PIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"),
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 /// Run the web server.
@@ -524,6 +580,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/deployments/{id}/destroy",
             post(destroy_deployment_handler),
         )
+        .route(
+            "/api/deployments/{id}/funnel",
+            post(toggle_funnel_handler),
+        )
         .route("/api/config", get(config_handler))
         .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
         .route("/api/ark/api-key", post(ark_api_key_handler))
@@ -535,10 +595,11 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/assets/mascot.jpg", get(mascot_handler))
         .layer(middleware::from_fn(pin_auth_middleware));
 
-    // Login routes — always accessible
+    // Login/logout routes — always accessible
     let login_routes = Router::new()
         .route("/login", get(login_page_handler))
-        .route("/login", post(login_submit_handler));
+        .route("/login", post(login_submit_handler))
+        .route("/logout", get(logout_handler));
 
     let app = Router::new()
         .merge(login_routes)
@@ -1236,6 +1297,34 @@ async fn destroy_deployment_handler(
     }
 }
 
+async fn toggle_funnel_handler(
+    Path(id): Path<String>,
+    Json(req): Json<FunnelToggleRequest>,
+) -> impl IntoResponse {
+    match crate::commands::tailscale_funnel::funnel_toggle(&id, &req.action, req.port).await {
+        Ok((ok, message, funnel_url)) => (
+            if ok {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            Json(FunnelToggleResponse {
+                ok,
+                message,
+                funnel_url,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(FunnelToggleResponse {
+                ok: false,
+                message: format!("Funnel toggle failed: {e}"),
+                funnel_url: None,
+            }),
+        ),
+    }
+}
+
 async fn config_handler() -> impl IntoResponse {
     Json(ConfigResponse {
         dry_run: is_dry_run(),
@@ -1468,9 +1557,9 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
     <p class="text-gray-400 text-sm mt-1">Enter your 6-digit PIN to continue</p>
   </div>
   <!-- ERROR -->
-  <form method="POST" action="/login" class="space-y-4">
-    <input type="password" name="pin" maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
-      placeholder="000000" required autocomplete="off"
+  <form method="POST" action="/login" novalidate class="space-y-4">
+    <input type="password" name="pin" maxlength="6" inputmode="numeric"
+      placeholder="000000" autocomplete="off"
       class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-center text-2xl tracking-[0.5em] font-mono text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
     <button type="submit"
       class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors">
@@ -1526,7 +1615,8 @@ tailwind.config = {
     <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
     <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
-    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.12.2</span>
+    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v0.17.0</span>
+    <a href="/logout" class="ml-3 text-xs text-slate-500 hover:text-red-400 transition-colors" title="Logout">&#x2716; Logout</a>
   </div>
   <!-- Tab bar -->
   <div class="w-full px-4 sm:px-8 lg:px-12 flex gap-0">
@@ -1583,6 +1673,7 @@ tailwind.config = {
             <th class="px-4 py-3">Region</th>
             <th class="px-4 py-3">Status</th>
             <th class="px-4 py-3">Created</th>
+            <th class="px-4 py-3">Funnel</th>
             <th class="px-4 py-3">Actions</th>
           </tr>
         </thead>
@@ -2783,6 +2874,12 @@ async function loadDeployments(page) {
           '<td class="px-4 py-3">' + statusBadge(d.status) + '</td>' +
           '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
           '<td class="px-4 py-3">' +
+            '<div class="flex gap-1 items-center">' +
+              '<button id="funnel-btn-' + esc(d.id) + '" onclick="toggleFunnel(\'' + esc(d.id) + '\',this)" class="text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors" title="Toggle Tailscale Funnel">Off</button>' +
+              '<span id="funnel-url-' + esc(d.id) + '" class="hidden text-xs text-blue-400 ml-1 truncate max-w-[120px]"></span>' +
+            '</div>' +
+          '</td>' +
+          '<td class="px-4 py-3">' +
             '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
           '</td>';
         tbody.appendChild(tr);
@@ -2916,6 +3013,53 @@ async function confirmDestroy(id, provider) {
     btn.disabled = false;
     btn.textContent = 'Destroy Instance';
   }
+}
+
+async function toggleFunnel(id, btn) {
+  const isOn = btn.textContent.trim() === 'On';
+  const action = isOn ? 'off' : 'on';
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = action === 'on' ? 'Enabling...' : 'Disabling...';
+  btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/funnel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, port: 18789 }),
+    });
+    const data = await res.json();
+    const urlSpan = document.getElementById('funnel-url-' + id);
+    if (data.ok && action === 'on') {
+      btn.textContent = 'On';
+      btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
+      if (data.funnel_url && urlSpan) {
+        urlSpan.textContent = data.funnel_url;
+        urlSpan.title = data.funnel_url;
+        urlSpan.classList.remove('hidden');
+      }
+    } else if (data.ok && action === 'off') {
+      btn.textContent = 'Off';
+      btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
+      if (urlSpan) { urlSpan.textContent = ''; urlSpan.classList.add('hidden'); }
+    } else {
+      btn.textContent = origText;
+      btn.className = 'text-red-400 text-xs font-medium px-2 py-1 rounded bg-red-500/20 border border-red-500/30';
+      alert('Funnel toggle failed: ' + (data.message || 'Unknown error'));
+      setTimeout(() => {
+        btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
+      }, 2000);
+    }
+  } catch (e) {
+    btn.textContent = origText;
+    btn.className = 'text-red-400 text-xs font-medium px-2 py-1 rounded bg-red-500/20 border border-red-500/30';
+    alert('Network error: ' + e.message);
+    setTimeout(() => {
+      btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
+    }, 2000);
+  }
+  btn.disabled = false;
 }
 
 function esc(s) {
