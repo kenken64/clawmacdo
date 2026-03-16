@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.16.0
+
+### Added
+- **BytePlus destroy cleanup** — automatically release EIP and delete VPC/subnet/security-group when destroying BytePlus instances
+- **BytePlus deploy form improvements** — auto-default primary AI model to "byteplus" when BytePlus provider selected; "Generate" button for ARK API key with endpoint selection
+- **ARK API endpoints** — `POST /api/ark/endpoints` and `POST /api/ark/api-key` for ARK key generation from the web UI
+- **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers (DigitalOcean, Tencent, AWS Lightsail, Azure, BytePlus) with all model/failover/messaging permutations
+
 ## v0.15.0
 
 ### Fixed
