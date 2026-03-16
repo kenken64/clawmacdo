@@ -26,6 +26,7 @@ npm start
 | `DB_NAME` | `clawmacdo` | MongoDB database name |
 | `PORT` | `3100` | Server port |
 | `SKILLS_DIR` | `/skills` (Docker) / `./skills` (local) | Path to SKILL.md files on disk or volume |
+| `USER_SKILLS_API_KEY` | — | API key for user-skills endpoints (required) |
 
 ## API Endpoints
 
@@ -191,6 +192,77 @@ curl -X POST https://clawmacdo-production.up.railway.app/api/skills/upload \
     { "slug": "skill-one", "status": "uploaded", "size": 1234 },
     { "slug": "skill-two", "status": "uploaded", "size": 5678 }
   ]
+}
+```
+
+### User/Customer Skills (API key required)
+
+Per-deployment custom SKILL.md files, stored at `/skills/user/<deploymentId>/SKILL.md` on the Railway volume. All endpoints require `x-api-key` header matching the `USER_SKILLS_API_KEY` environment variable.
+
+#### `POST /api/user-skills/:deploymentId`
+
+Upload a customer-specific SKILL.md. Automatically backs up any existing file before overwriting.
+
+```bash
+curl -X POST https://clawmacdo-production.up.railway.app/api/user-skills/abc123 \
+  -H "x-api-key: your-secret-key" \
+  -F "file=@SKILL.md"
+```
+
+```json
+{
+  "ok": true,
+  "deployment_id": "abc123",
+  "size": 2048,
+  "backed_up": false,
+  "path": "/skills/user/abc123/SKILL.md"
+}
+```
+
+#### `GET /api/user-skills/:deploymentId`
+
+Download the customer-specific SKILL.md.
+
+```bash
+curl -O https://clawmacdo-production.up.railway.app/api/user-skills/abc123 \
+  -H "x-api-key: your-secret-key"
+```
+
+Returns `text/markdown` with attachment header. Returns 404 if no file exists for this deployment.
+
+#### `DELETE /api/user-skills/:deploymentId`
+
+Delete the customer-specific SKILL.md (backup is retained).
+
+```bash
+curl -X DELETE https://clawmacdo-production.up.railway.app/api/user-skills/abc123 \
+  -H "x-api-key: your-secret-key"
+```
+
+```json
+{
+  "ok": true,
+  "deployment_id": "abc123",
+  "message": "SKILL.md deleted (backup retained)"
+}
+```
+
+#### `GET /api/user-skills/:deploymentId/info`
+
+Get metadata about the user skill file.
+
+```bash
+curl https://clawmacdo-production.up.railway.app/api/user-skills/abc123/info \
+  -H "x-api-key: your-secret-key"
+```
+
+```json
+{
+  "deployment_id": "abc123",
+  "size": 2048,
+  "last_modified": "2026-03-16T05:30:00.000Z",
+  "backup_count": 2,
+  "backups": ["SKILL.md.backup-2026-03-16T04-00-00-000Z", "SKILL.md.backup-2026-03-16T05-00-00-000Z"]
 }
 ```
 

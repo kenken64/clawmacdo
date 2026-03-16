@@ -7,6 +7,8 @@ pub mod docker_fix;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]
 pub mod serve;
+pub mod skill;
+pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;
 pub mod whatsapp;

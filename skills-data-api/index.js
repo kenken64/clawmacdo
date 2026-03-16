@@ -273,6 +273,153 @@ app.post("/api/skills/upload", upload.array("files", 500), async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// User-specific (customer) SKILL.md endpoints
+// Volume path: /skills/user/<deploymentId>/SKILL.md
+// ══════════════════════════════════════════════════════════════════════════
+
+const USER_SKILLS_DIR = path.join(SKILLS_DIR, "user");
+const USER_SKILLS_API_KEY = process.env.USER_SKILLS_API_KEY || "";
+
+// Middleware: require API key for user-skills endpoints
+function requireUserSkillsApiKey(req, res, next) {
+  if (!USER_SKILLS_API_KEY) {
+    return res.status(503).json({ error: "USER_SKILLS_API_KEY not configured on server" });
+  }
+  const provided = req.headers["x-api-key"] || "";
+  if (provided !== USER_SKILLS_API_KEY) {
+    return res.status(401).json({ error: "Invalid or missing API key" });
+  }
+  next();
+}
+
+// --- POST /api/user-skills/:deploymentId ---
+// Upload a customer-specific SKILL.md for a deployment.
+// Accepts multipart/form-data with field "file" (single SKILL.md).
+app.post(
+  "/api/user-skills/:deploymentId",
+  requireUserSkillsApiKey,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const { deploymentId } = req.params;
+      if (!deploymentId || deploymentId.includes("..") || deploymentId.includes("/")) {
+        return res.status(400).json({ error: "Invalid deployment ID" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded. Use field name 'file'." });
+      }
+
+      const destDir = path.join(USER_SKILLS_DIR, deploymentId);
+      const destFile = path.join(destDir, "SKILL.md");
+
+      // Backup existing file if present
+      let backedUp = false;
+      if (fs.existsSync(destFile)) {
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupFile = path.join(destDir, `SKILL.md.backup-${ts}`);
+        fs.copyFileSync(destFile, backupFile);
+        backedUp = true;
+      }
+
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(destFile, req.file.buffer);
+
+      res.json({
+        ok: true,
+        deployment_id: deploymentId,
+        size: req.file.buffer.length,
+        backed_up: backedUp,
+        path: `/skills/user/${deploymentId}/SKILL.md`,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// --- GET /api/user-skills/:deploymentId ---
+// Download the customer-specific SKILL.md for a deployment.
+app.get("/api/user-skills/:deploymentId", requireUserSkillsApiKey, (req, res) => {
+  const { deploymentId } = req.params;
+  if (!deploymentId || deploymentId.includes("..") || deploymentId.includes("/")) {
+    return res.status(400).json({ error: "Invalid deployment ID" });
+  }
+
+  const mdPath = path.join(USER_SKILLS_DIR, deploymentId, "SKILL.md");
+  if (!fs.existsSync(mdPath)) {
+    return res.status(404).json({
+      error: "No SKILL.md found for this deployment",
+      deployment_id: deploymentId,
+    });
+  }
+
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${deploymentId}-SKILL.md"`
+  );
+  fs.createReadStream(mdPath).pipe(res);
+});
+
+// --- DELETE /api/user-skills/:deploymentId ---
+// Delete the customer-specific SKILL.md for a deployment.
+app.delete("/api/user-skills/:deploymentId", requireUserSkillsApiKey, (req, res) => {
+  const { deploymentId } = req.params;
+  if (!deploymentId || deploymentId.includes("..") || deploymentId.includes("/")) {
+    return res.status(400).json({ error: "Invalid deployment ID" });
+  }
+
+  const mdPath = path.join(USER_SKILLS_DIR, deploymentId, "SKILL.md");
+  if (!fs.existsSync(mdPath)) {
+    return res.status(404).json({
+      error: "No SKILL.md found for this deployment",
+      deployment_id: deploymentId,
+    });
+  }
+
+  // Backup before delete
+  const destDir = path.join(USER_SKILLS_DIR, deploymentId);
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFile = path.join(destDir, `SKILL.md.backup-${ts}`);
+  fs.copyFileSync(mdPath, backupFile);
+  fs.unlinkSync(mdPath);
+
+  res.json({ ok: true, deployment_id: deploymentId, message: "SKILL.md deleted (backup retained)" });
+});
+
+// --- GET /api/user-skills/:deploymentId/info ---
+// Get metadata about the user skill (size, last modified, backups).
+app.get("/api/user-skills/:deploymentId/info", requireUserSkillsApiKey, (req, res) => {
+  const { deploymentId } = req.params;
+  if (!deploymentId || deploymentId.includes("..") || deploymentId.includes("/")) {
+    return res.status(400).json({ error: "Invalid deployment ID" });
+  }
+
+  const destDir = path.join(USER_SKILLS_DIR, deploymentId);
+  const mdPath = path.join(destDir, "SKILL.md");
+
+  if (!fs.existsSync(mdPath)) {
+    return res.status(404).json({
+      error: "No SKILL.md found for this deployment",
+      deployment_id: deploymentId,
+    });
+  }
+
+  const stat = fs.statSync(mdPath);
+  const files = fs.readdirSync(destDir);
+  const backups = files.filter((f) => f.startsWith("SKILL.md.backup-"));
+
+  res.json({
+    deployment_id: deploymentId,
+    size: stat.size,
+    last_modified: stat.mtime.toISOString(),
+    backup_count: backups.length,
+    backups,
+  });
+});
+
 // --- Health check ---
 app.get("/api/health", async (_req, res) => {
   try {
@@ -297,6 +444,10 @@ async function main() {
     console.log("  GET  /api/skills/:slug");
     console.log("  GET  /api/skills/:slug/download");
     console.log("  POST /api/skills/upload  (multipart: files + slugs)");
+    console.log("  POST /api/user-skills/:id  (upload user SKILL.md, x-api-key)");
+    console.log("  GET  /api/user-skills/:id  (download user SKILL.md, x-api-key)");
+    console.log("  DELETE /api/user-skills/:id  (delete user SKILL.md, x-api-key)");
+    console.log("  GET  /api/user-skills/:id/info  (metadata, x-api-key)");
     console.log("  GET  /api/health");
   });
 
