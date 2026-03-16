@@ -22,6 +22,7 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [skill-push](#skill-push) — Push a SKILL.md from the skills API to the instance
 - [ark-api-key](#ark-api-key) — Generate BytePlus ARK API key or list endpoints
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
+- [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
 - [serve](#serve) — Start the web UI server
 - [Environment Variables](#environment-variables)
 - [Web UI API Endpoints](#web-ui-api-endpoints)
@@ -1200,6 +1201,113 @@ curl -X POST "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions" \
       {"role": "assistant", "content": "A closure is a function that retains access to variables from its outer scope..."},
       {"role": "user", "content": "Give me an example."}
     ]
+  }'
+```
+
+---
+
+## do-restore
+
+Restore a DigitalOcean droplet from a snapshot by name. Creates a new droplet using the snapshot image, generates a fresh SSH key pair, and saves the deploy record to both JSON and SQLite (visible in web UI Deployments tab).
+
+The droplet name follows the standard `openclaw-{id}` naming convention.
+
+### Syntax
+
+```
+clawmacdo do-restore --do-token <DO_TOKEN> --snapshot-name <SNAPSHOT_NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default | Env var |
+|------|-------------|---------|---------|
+| `--do-token` | DigitalOcean API token | *(required)* | `DO_TOKEN` |
+| `--snapshot-name` | Name of the snapshot to restore from | *(required)* | — |
+| `--region` | Region override | `sgp1` | — |
+| `--size` | Instance size override | `s-2vcpu-4gb` | — |
+
+### Examples
+
+```bash
+# Restore from a snapshot using env var
+export DO_TOKEN="dop_v1_abc123..."
+clawmacdo do-restore --snapshot-name "my-openclaw-snapshot"
+
+# Restore with explicit token
+clawmacdo do-restore \
+  --do-token "dop_v1_abc123..." \
+  --snapshot-name "openclaw-byteplusark"
+
+# Restore to a specific region and size
+clawmacdo do-restore \
+  --do-token "$DO_TOKEN" \
+  --snapshot-name "openclaw-byteplusark" \
+  --region nyc1 \
+  --size s-4vcpu-8gb
+```
+
+### What it does (5 steps)
+
+1. **Resolve parameters** — generate deploy ID, compute hostname (`openclaw-{id[..8]}`), set region/size defaults
+2. **Generate SSH key pair** — RSA-4096 PEM key via `ssh-keygen`, saved to `~/.clawmacdo/keys/`
+3. **Upload SSH key & look up snapshot** — upload public key to DigitalOcean, find snapshot by name, verify region availability
+4. **Create droplet from snapshot** — create droplet using the snapshot image ID
+5. **Wait for active** — poll until droplet is active (up to 5 min), save deploy record to JSON (`~/.clawmacdo/deploys/`) and SQLite (`~/.clawmacdo/deployments.db`)
+
+### Sample output
+
+```
+[Step 1/5] Resolving parameters...
+  Hostname:  openclaw-9ba625bb
+  Region:    sgp1
+  Size:      s-2vcpu-4gb
+  Snapshot:  openclaw-byteplusark
+
+[Step 2/5] Generating SSH key pair...
+  Key saved: /Users/you/.clawmacdo/keys/clawmacdo_9ba625bb-9b40-4bda-a486-1a0fc9bdaf60
+
+[Step 3/5] Uploading SSH key and looking up snapshot...
+  Key ID: 54935221, Fingerprint: a5:d3:71:16:98:8c:23:49:42:23:23:23:6e:fb:04:79
+  Snapshot found: ID 220912131 (openclaw-byteplusark)
+
+[Step 4/5] Creating droplet from snapshot...
+  Droplet created: ID 558765268
+
+[Step 5/5] Waiting for droplet to become active...
+  Droplet active: 167.99.73.79
+
+--- Restore Complete ---
+  Deploy ID:   9ba625bb-9b40-4bda-a486-1a0fc9bdaf60
+  Hostname:    openclaw-9ba625bb
+  IP Address:  167.99.73.79
+  Region:      sgp1
+  Size:        s-2vcpu-4gb
+  Snapshot:    openclaw-byteplusark
+  SSH Key:     /Users/you/.clawmacdo/keys/clawmacdo_9ba625bb-9b40-4bda-a486-1a0fc9bdaf60
+  Record:      /Users/you/.clawmacdo/deploys/9ba625bb-9b40-4bda-a486-1a0fc9bdaf60.json
+
+  SSH access:  ssh -i /Users/you/.clawmacdo/keys/clawmacdo_9ba625bb-9b40-4bda-a486-1a0fc9bdaf60 root@167.99.73.79
+```
+
+### Equivalent DigitalOcean API calls
+
+```bash
+# 1. List snapshots to find the snapshot ID
+curl -s -H "Authorization: Bearer $DO_TOKEN" \
+  "https://api.digitalocean.com/v2/snapshots?resource_type=droplet" | jq '.snapshots[] | {id, name, regions}'
+
+# 2. Create droplet from snapshot
+curl -s -X POST -H "Authorization: Bearer $DO_TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://api.digitalocean.com/v2/droplets" \
+  -d '{
+    "name": "openclaw-9ba625bb",
+    "region": "sgp1",
+    "size": "s-2vcpu-4gb",
+    "image": 220912131,
+    "ssh_keys": [54935221],
+    "tags": ["openclaw"]
   }'
 ```
 
