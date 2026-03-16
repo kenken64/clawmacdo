@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.17.0
+
+### Security
+- **CRIT-01: Web UI authentication** — API key middleware for all `/api/*` endpoints (`CLAWMACDO_API_KEY`), 6-digit PIN login for web pages (`CLAWMACDO_PIN`), CORS middleware restricting origins, per-IP rate limiting (60 req/min), and localhost-only binding by default (`CLAWMACDO_BIND`)
+- All 4 CRITICAL security findings from the security audit are now resolved
+
+### Changed
+- Server now binds to `127.0.0.1` by default instead of `0.0.0.0` — set `CLAWMACDO_BIND=0.0.0.0` for remote access
+
 ## v0.16.0
 
 ### Added

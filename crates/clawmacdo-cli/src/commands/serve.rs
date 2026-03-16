@@ -1,10 +1,12 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
 use crate::commands::whatsapp;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, Method, Request, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, Sse};
-use axum::response::{Html, IntoResponse, Json};
+use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use chrono::TimeZone;
@@ -16,21 +18,25 @@ use clawmacdo_provision::provision::commands::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
 type Db = Arc<Mutex<rusqlite::Connection>>;
 type Jobs = Arc<RwLock<HashMap<String, DeployJob>>>;
+type RateLimiter = Arc<Mutex<HashMap<IpAddr, (u32, std::time::Instant)>>>;
 
 #[derive(Clone)]
 struct AppState {
     jobs: Jobs,
     db: Db,
+    rate_limiter: RateLimiter,
 }
 
 struct DeployJob {
@@ -308,18 +314,200 @@ struct ConfigResponse {
     dry_run: bool,
 }
 
+// ── Security: Rate limiting ─────────────────────────────────────────────────
+
+const RATE_LIMIT_MAX: u32 = 60; // max requests per window
+const RATE_LIMIT_WINDOW_SECS: u64 = 60; // 1-minute window
+
+async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let ip = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+
+    let now = std::time::Instant::now();
+    {
+        let mut limiter = state.rate_limiter.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = limiter.entry(ip).or_insert((0, now));
+        if now.duration_since(entry.1).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+            *entry = (1, now);
+        } else {
+            entry.0 += 1;
+            if entry.0 > RATE_LIMIT_MAX {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Rate limit exceeded. Try again later.",
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    next.run(req).await
+}
+
+// ── Security: API key middleware ────────────────────────────────────────────
+
+async fn api_key_middleware(req: Request<Body>, next: Next) -> Response {
+    let api_key = std::env::var("CLAWMACDO_API_KEY").unwrap_or_default();
+    if api_key.is_empty() {
+        // No API key configured — allow all (dev mode)
+        return next.run(req).await;
+    }
+
+    match req.headers().get("x-api-key") {
+        Some(val) if val.as_bytes() == api_key.as_bytes() => next.run(req).await,
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing API key"})),
+        )
+            .into_response(),
+    }
+}
+
+// ── Security: PIN-based web page auth ──────────────────────────────────────
+
+const PIN_COOKIE_NAME: &str = "clawmacdo_session";
+
+fn get_configured_pin() -> Option<String> {
+    let pin = std::env::var("CLAWMACDO_PIN").unwrap_or_default();
+    if pin.len() == 6 && pin.chars().all(|c| c.is_ascii_digit()) {
+        Some(pin)
+    } else {
+        None
+    }
+}
+
+fn generate_session_token(pin: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    pin.hash(&mut hasher);
+    "sess_".to_string() + &format!("{:x}", hasher.finish())
+}
+
+async fn pin_auth_middleware(req: Request<Body>, next: Next) -> Response {
+    let pin = match get_configured_pin() {
+        Some(p) => p,
+        None => return next.run(req).await, // No PIN configured — allow all
+    };
+
+    let path = req.uri().path().to_string();
+
+    // Allow login page and static assets without auth
+    if path == "/login" || path.starts_with("/assets/") {
+        return next.run(req).await;
+    }
+
+    // Check session cookie
+    let expected_token = generate_session_token(&pin);
+    let has_valid_session = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|cookies| {
+            cookies.split(';').any(|c| {
+                let c = c.trim();
+                c == format!("{PIN_COOKIE_NAME}={expected_token}")
+            })
+        })
+        .unwrap_or(false);
+
+    if has_valid_session {
+        return next.run(req).await;
+    }
+
+    // Redirect to login
+    Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, "/login")
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn login_page_handler() -> Html<String> {
+    Html(LOGIN_HTML.to_string())
+}
+
+#[derive(Deserialize)]
+struct LoginForm {
+    pin: String,
+}
+
+async fn login_submit_handler(
+    axum::extract::Form(form): axum::extract::Form<LoginForm>,
+) -> Response {
+    let pin = match get_configured_pin() {
+        Some(p) => p,
+        None => {
+            return Response::builder()
+                .status(StatusCode::FOUND)
+                .header(header::LOCATION, "/")
+                .body(Body::empty())
+                .unwrap();
+        }
+    };
+
+    if form.pin == pin {
+        let token = generate_session_token(&pin);
+        Response::builder()
+            .status(StatusCode::FOUND)
+            .header(header::LOCATION, "/")
+            .header(
+                header::SET_COOKIE,
+                format!(
+                    "{PIN_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400"
+                ),
+            )
+            .body(Body::empty())
+            .unwrap()
+    } else {
+        Html(LOGIN_HTML.replace(
+            "<!-- ERROR -->",
+            r#"<p style="color:#ef4444;margin-bottom:1rem;font-size:0.875rem">Invalid PIN. Please try again.</p>"#,
+        ))
+        .into_response()
+    }
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
-/// RRun.
+/// Run the web server.
 pub async fn run(port: u16) -> anyhow::Result<()> {
     let conn = db::init_db()?;
     let db: Db = Arc::new(Mutex::new(conn));
     let jobs: Jobs = Arc::new(RwLock::new(HashMap::new()));
-    let state = AppState { jobs, db };
+    let rate_limiter: RateLimiter = Arc::new(Mutex::new(HashMap::new()));
+    let state = AppState {
+        jobs,
+        db,
+        rate_limiter,
+    };
 
-    let app = Router::new()
-        .route("/", get(index_handler))
-        .route("/assets/mascot.jpg", get(mascot_handler))
+    // CORS — restrict to same-origin; allow standard methods and headers
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::exact(
+            format!("http://localhost:{port}").parse().unwrap(),
+        ))
+        .allow_methods(AllowMethods::list([
+            Method::GET,
+            Method::POST,
+            Method::DELETE,
+        ]))
+        .allow_headers(AllowHeaders::list([
+            header::CONTENT_TYPE,
+            header::HeaderName::from_static("x-api-key"),
+        ]));
+
+    // API routes — protected by API key middleware
+    let api_routes = Router::new()
         .route("/api/backups", get(list_backups_handler))
         .route("/api/deploy", post(start_deploy_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
@@ -339,10 +527,45 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/config", get(config_handler))
         .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
         .route("/api/ark/api-key", post(ark_api_key_handler))
+        .layer(middleware::from_fn(api_key_middleware));
+
+    // Web routes — protected by PIN auth middleware
+    let web_routes = Router::new()
+        .route("/", get(index_handler))
+        .route("/assets/mascot.jpg", get(mascot_handler))
+        .layer(middleware::from_fn(pin_auth_middleware));
+
+    // Login routes — always accessible
+    let login_routes = Router::new()
+        .route("/login", get(login_page_handler))
+        .route("/login", post(login_submit_handler));
+
+    let app = Router::new()
+        .merge(login_routes)
+        .merge(web_routes)
+        .merge(api_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
+        .layer(cors)
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{port}");
-    println!("ClawMacToDO web UI running at http://localhost:{port}");
+    let bind_addr = std::env::var("CLAWMACDO_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr = format!("{bind_addr}:{port}");
+    println!("ClawMacToDO web UI running at http://{addr}");
+    if bind_addr == "127.0.0.1" {
+        println!("  (localhost only — set CLAWMACDO_BIND=0.0.0.0 to allow remote access)");
+    }
+    if get_configured_pin().is_some() {
+        println!("  PIN protection enabled (CLAWMACDO_PIN)");
+    }
+    if !std::env::var("CLAWMACDO_API_KEY")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        println!("  API key protection enabled (CLAWMACDO_API_KEY)");
+    }
     println!("Press Ctrl+C to stop.\n");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -1228,6 +1451,35 @@ fn list_backup_files() -> anyhow::Result<Vec<BackupEntry>> {
 }
 
 // ── Embedded HTML ───────────────────────────────────────────────────────────
+
+const LOGIN_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClawMacToDO — Login</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={darkMode:'class'}</script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex items-center justify-center">
+<div class="w-full max-w-sm p-8 bg-gray-900 rounded-2xl border border-gray-800 shadow-xl">
+  <div class="text-center mb-6">
+    <h1 class="text-2xl font-bold text-white">ClawMacToDO</h1>
+    <p class="text-gray-400 text-sm mt-1">Enter your 6-digit PIN to continue</p>
+  </div>
+  <!-- ERROR -->
+  <form method="POST" action="/login" class="space-y-4">
+    <input type="password" name="pin" maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
+      placeholder="000000" required autocomplete="off"
+      class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-center text-2xl tracking-[0.5em] font-mono text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+    <button type="submit"
+      class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors">
+      Unlock
+    </button>
+  </form>
+</div>
+</body>
+</html>"##;
 
 const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en" class="dark">

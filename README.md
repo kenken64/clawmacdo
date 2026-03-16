@@ -5,12 +5,16 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.16.0
+## ✨ What's New in v0.17.0
+
+- **Web UI security hardening (CRIT-01)** — API key authentication for all `/api/*` endpoints, 6-digit PIN login for web pages, CORS middleware, per-IP rate limiting (60 req/min), and localhost-only binding by default
+- **All 4 CRITICAL security findings now resolved** — CRIT-01 (auth), CRIT-02 (SSH MITM), CRIT-03 (injection), CRIT-04 (root login)
+
+### Previous highlights (v0.16.x)
 
 - **BytePlus destroy cleanup** — Automatically release EIP and delete VPC/subnet/security-group when destroying BytePlus instances
-- **BytePlus deploy form improvements** — Auto-default primary AI model to "byteplus" when BytePlus provider selected; "Generate" button for ARK API key with endpoint selection
-- **ARK API endpoints** — `POST /api/ark/endpoints` and `POST /api/ark/api-key` for ARK key generation from the web UI
-- **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers with all model/failover/messaging permutations
+- **BytePlus deploy form improvements** — Auto-default primary AI model to "byteplus"; ARK API key generation from web UI
+- **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers
 
 ### Previous highlights (v0.14.x – v0.15.x)
 - **Windows builds fixed** — Dependencies correctly scoped, native MSVC builds
@@ -355,6 +359,9 @@ new-crate = { workspace = true }
 | `OPENAI_API_KEY` | OpenAI API key | Optional |
 | `TELEGRAM_TOKEN` | Telegram bot token | Optional |
 | `TAILSCALE_AUTH_KEY` | Tailscale auth key | Optional |
+| `CLAWMACDO_API_KEY` | API key protecting `/api/*` endpoints | Optional (Web UI) |
+| `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
+| `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
 
 ## Architecture Notes
 
@@ -397,5 +404,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 16, 2026
-**Current version:** 0.16.0
+**Current version:** 0.17.0
 **Architecture version:** 2.0 (modular workspace)
