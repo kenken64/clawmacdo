@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.22.0
+
+### Changed
+- Minor version bump; README updated to reflect v0.21.0 additions (destroy command, skills-data-api service, Playwright e2e suite, project structure docs)
+
 ## v0.21.0
 
 ### Changed
