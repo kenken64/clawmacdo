@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.21.0
+
+### Changed
+- Bumped minor version following addition of `skill`, `do-restore`, `tailscale-funnel`, `destroy` commands, BytePlus and DigitalOcean cloud provider support, Playwright e2e test suite, and skills-data-api service
+
 ## v0.20.0
 
 ### Added
