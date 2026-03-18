@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.23.0
+
+### Fixed
+- Committed `npm/clawmacdo/README.md` to the repo so npmjs.com always displays the correct, up-to-date README regardless of commit order relative to tagging
+
 ## v0.22.0
 
 ### Changed
