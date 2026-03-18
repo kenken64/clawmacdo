@@ -5,8 +5,13 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.20.0
+## ✨ What's New in v0.21.0
 
+- **`destroy` subcommand** — delete any openclaw instance across all 5 cloud providers (DigitalOcean, Lightsail, Tencent, Azure, BytePlus) with interactive confirmation; removes cloud SSH key, local key, and for BytePlus also releases EIP and cleans up VPC/subnet/security-group
+- **`skills-data-api` service** — Node.js/Express API backed by MongoDB for browsing, scraping, and serving Claude Code skill marketplace data; includes Docker support and shell scripts for bulk download and data loading
+- **Playwright e2e test suite** — CSV-driven deploy form testing under `e2e/`, covering all 5 cloud providers with 30+ scenarios
+
+### Previous highlights (v0.20.x)
 - **`do-restore` subcommand** — restore a DigitalOcean droplet from a snapshot by name, with standard `openclaw-{id}` naming and deploy record saved to both JSON and SQLite (visible in web UI Deployments tab)
 
 ### Previous highlights (v0.19.x)
@@ -21,10 +26,6 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 ### Previous highlights (v0.17.x)
 - **Web UI security hardening (CRIT-01)** — API key auth, 6-digit PIN login, CORS, rate limiting, localhost-only binding
 - **All 4 CRITICAL security findings resolved**
-
-### Previous highlights (v0.16.x)
-- **BytePlus destroy cleanup** — Auto-release EIP and delete VPC/subnet/security-group
-- **Playwright E2E test suite** — 30 CSV-driven test scenarios covering all 5 cloud providers
 
 ### Previous highlights (v0.14.x – v0.15.x)
 - **Windows builds fixed** — Dependencies correctly scoped, native MSVC builds
@@ -58,12 +59,14 @@ clawmacdo/
 │   ├── clawmacdo-cli/      # 🖥️  Main CLI binary & command orchestration
 │   ├── clawmacdo-core/     # 🔧  Config, errors, shared types
 │   ├── clawmacdo-cloud/    # ☁️   Cloud provider implementations
-│   ├── clawmacdo-provision/# 🔨  Server provisioning & setup logic  
+│   ├── clawmacdo-provision/# 🔨  Server provisioning & setup logic
 │   ├── clawmacdo-db/       # 💾  Database operations & storage
 │   ├── clawmacdo-ssh/      # 🔑  SSH/SCP operations & key management
 │   └── clawmacdo-ui/       # 🎨  Web UI, progress bars, user prompts
+├── skills-data-api/        # 🧠  Node.js skills marketplace API (MongoDB)
+├── e2e/                    # 🧪  Playwright end-to-end test suite
 ├── assets/                 # Static assets (mascot, etc.)
-└── README.md
+└── docs/                   # Design docs and usage reference
 ```
 
 ### 📦 Crate Overview
@@ -328,6 +331,33 @@ clawmacdo do-restore \
 
 The command generates a new SSH key pair, looks up the snapshot by name, creates the droplet, waits for it to become active, and saves a deploy record for use with other `clawmacdo` commands.
 
+### Destroy an Instance
+
+Delete an instance by name across any supported provider. Removes cloud SSH key, local key, and (for BytePlus) EIP and VPC resources.
+
+```bash
+# DigitalOcean
+clawmacdo destroy \
+  --provider digitalocean \
+  --do-token "$DO_TOKEN" \
+  --name "openclaw-abc123"
+
+# Tencent Cloud (skip confirmation prompt)
+clawmacdo destroy \
+  --provider tencent \
+  --tencent-secret-id "$TENCENT_SECRET_ID" \
+  --tencent-secret-key "$TENCENT_SECRET_KEY" \
+  --name "openclaw-abc123" \
+  --yes
+
+# BytePlus (also releases EIP and VPC resources)
+clawmacdo destroy \
+  --provider byteplus \
+  --byteplus-access-key "$BYTEPLUS_ACCESS_KEY" \
+  --byteplus-secret-key "$BYTEPLUS_SECRET_KEY" \
+  --name "openclaw-abc123"
+```
+
 ### Track Deploy Progress
 
 ```bash
@@ -406,6 +436,42 @@ clawmacdo status
 # Check specific provider
 clawmacdo status --provider tencent
 ```
+
+## Skills Data API
+
+The `skills-data-api/` directory contains a standalone Node.js/Express service for browsing and serving Claude Code skill marketplace data, backed by MongoDB.
+
+```bash
+# Install dependencies
+cd skills-data-api
+npm install
+
+# Load skills data into MongoDB
+./load-mongo.sh
+
+# Start the API server
+node index.js
+```
+
+### Docker
+
+```bash
+cd skills-data-api
+docker build -t skills-data-api .
+docker run -p 3000:3000 \
+  -e MONGODB_URI="mongodb://host.docker.internal:27017/skills" \
+  skills-data-api
+```
+
+### Key Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/skills` | List all skills (paginated) |
+| `GET` | `/api/skills/:name` | Get a skill by name |
+| `GET` | `/api/skills/search?q=...` | Search skills by keyword |
+
+See [`skills-data-api/README.md`](skills-data-api/README.md) for full API documentation.
 
 ## Development
 
@@ -511,6 +577,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 
 ---
 
-**Last updated:** March 17, 2026
-**Current version:** 0.20.0
+**Last updated:** March 19, 2026
+**Current version:** 0.21.0
 **Architecture version:** 2.0 (modular workspace)
