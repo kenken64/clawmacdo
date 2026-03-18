@@ -735,7 +735,7 @@ SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
          if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
-         ({sandbox_setup_cmd}) && \
+         ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
@@ -1121,7 +1121,7 @@ SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
          if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
-         ({sandbox_setup_cmd}) && \
+         ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
@@ -1412,7 +1412,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
            sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
            sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
          fi; \
-         ({sandbox_setup_cmd}) && \
+         ({sandbox_setup_cmd} || true) && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
          printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          (systemctl --user daemon-reload || true) && \
@@ -1806,7 +1806,7 @@ SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
          if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
-         ({sandbox_setup_cmd}) && \
+         ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
@@ -2246,7 +2246,7 @@ SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
          if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
-         ({sandbox_setup_cmd}) && \
+         ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
