@@ -578,5 +578,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.21.0
+**Current version:** 0.22.0
 **Architecture version:** 2.0 (modular workspace)
