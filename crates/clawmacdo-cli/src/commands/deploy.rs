@@ -58,6 +58,7 @@ pub struct DeployParams {
     pub failover_1: String,
     pub failover_2: String,
     pub profile: String,
+    pub spot: bool,
     pub non_interactive: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
     pub db: Option<Db>,
@@ -912,6 +913,9 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
     let user_data = cloud_init::generate();
     let user_data_b64 =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &user_data);
+    if params.spot {
+        progress::emit(tx, "  Spot instance: enabled (SpotAsPriceGo)");
+    }
     let instance_id = bp_client
         .create_instance(
             &hostname,
@@ -919,6 +923,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
             &key_name,
             &user_data_b64,
             &params.customer_email,
+            params.spot,
         )
         .await
         .context("Failed to create BytePlus ECS instance")?;

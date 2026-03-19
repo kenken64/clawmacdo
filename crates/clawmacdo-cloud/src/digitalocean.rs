@@ -120,6 +120,36 @@ struct CreateDropletFromSnapshotRequest<'a> {
     backups: bool,
 }
 
+// --- Droplet Action types ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActionInfo {
+    pub id: u64,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub action_type: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ActionResponse {
+    action: ActionInfo,
+}
+
+#[derive(Serialize)]
+struct DropletActionRequest<'a> {
+    #[serde(rename = "type")]
+    action_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct DropletSnapshotsResponse {
+    snapshots: Vec<SnapshotInfo>,
+}
+
 impl DropletInfo {
     /// PPublic ip.
     pub fn public_ip(&self) -> Option<String> {
@@ -440,5 +470,132 @@ impl DoClient {
         }
 
         Ok(())
+    }
+
+    // --- Droplet action methods ---
+
+    /// Perform a droplet action (shutdown, power_on, snapshot, etc.).
+    async fn perform_droplet_action(
+        &self,
+        droplet_id: u64,
+        action_type: &str,
+        name: Option<&str>,
+    ) -> Result<ActionInfo, AppError> {
+        let body = DropletActionRequest { action_type, name };
+        let resp = self
+            .client
+            .post(format!("{API_BASE}/droplets/{droplet_id}/actions"))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "Droplet action '{action_type}' failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: ActionResponse = resp.json().await?;
+        Ok(parsed.action)
+    }
+
+    /// Gracefully shut down a droplet. Returns the action ID for polling.
+    pub async fn shutdown_droplet(&self, droplet_id: u64) -> Result<u64, AppError> {
+        let action = self
+            .perform_droplet_action(droplet_id, "shutdown", None)
+            .await?;
+        Ok(action.id)
+    }
+
+    /// Power on a droplet. Returns the action ID for polling.
+    pub async fn power_on_droplet(&self, droplet_id: u64) -> Result<u64, AppError> {
+        let action = self
+            .perform_droplet_action(droplet_id, "power_on", None)
+            .await?;
+        Ok(action.id)
+    }
+
+    /// Create a snapshot of a droplet. Returns the action ID for polling.
+    pub async fn create_snapshot(&self, droplet_id: u64, name: &str) -> Result<u64, AppError> {
+        let action = self
+            .perform_droplet_action(droplet_id, "snapshot", Some(name))
+            .await?;
+        Ok(action.id)
+    }
+
+    /// Get the status of an action by ID.
+    pub async fn get_action(&self, action_id: u64) -> Result<ActionInfo, AppError> {
+        let resp = self
+            .client
+            .get(format!("{API_BASE}/actions/{action_id}"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "Get action failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: ActionResponse = resp.json().await?;
+        Ok(parsed.action)
+    }
+
+    /// Poll an action until it completes or times out.
+    pub async fn wait_for_action(
+        &self,
+        action_id: u64,
+        timeout: std::time::Duration,
+    ) -> Result<ActionInfo, AppError> {
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(AppError::Timeout(format!("action {action_id} to complete")));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            match self.get_action(action_id).await {
+                Ok(action) => {
+                    if action.status == "completed" {
+                        return Ok(action);
+                    }
+                    if action.status == "errored" {
+                        return Err(AppError::DigitalOcean(format!(
+                            "Action {action_id} failed (type: {})",
+                            action.action_type
+                        )));
+                    }
+                }
+                Err(AppError::Http(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// List snapshots belonging to a specific droplet.
+    pub async fn get_droplet_snapshots(
+        &self,
+        droplet_id: u64,
+    ) -> Result<Vec<SnapshotInfo>, AppError> {
+        let resp = self
+            .client
+            .get(format!("{API_BASE}/droplets/{droplet_id}/snapshots"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "List droplet snapshots failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: DropletSnapshotsResponse = resp.json().await?;
+        Ok(parsed.snapshots)
     }
 }

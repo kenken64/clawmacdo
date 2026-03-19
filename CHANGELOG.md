@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.24.0
+
+### Added
+- **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID (`--do-token` + `--droplet-id` + `--snapshot-name`), with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
+- **DigitalOcean action polling API** — `shutdown_droplet()`, `power_on_droplet()`, `create_snapshot()`, `get_action()`, `wait_for_action()`, and `get_droplet_snapshots()` methods on `DoClient`
+
+### Changed
+- **BytePlus EIP: pay-by-traffic billing** — switched from `BillingType: 2` (pay-by-bandwidth at 10 Mbps) to `PostPaidByTraffic` (pay-by-traffic at 5 Mbps), significantly reducing costs for low-traffic instances
+- **BytePlus EIP: inline creation** — EIP is now created as part of `RunInstances` via the `EipAddress` parameter with `ReleaseWithInstance: true`, eliminating the separate `AllocateEipAddress` + `AssociateEipAddress` calls and ensuring automatic EIP cleanup on instance termination
+- **BytePlus `wait_for_running` simplified** — no longer allocates/associates EIP separately; polls until instance is RUNNING with public IP already assigned
+- **BytePlus spot instances** — new `--spot` CLI flag enables `SpotAsPriceGo` strategy on BytePlus deploys for up to ~80% compute cost savings (instance may be reclaimed with 5 min warning)
+
 ## v0.23.0
 
 ### Fixed

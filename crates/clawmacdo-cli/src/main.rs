@@ -118,6 +118,9 @@ enum Commands {
         /// Profile (messaging, coding, full)
         #[arg(long, default_value = "full")]
         profile: String,
+        /// Use spot instance for BytePlus (up to ~80% cheaper, may be reclaimed with 5 min warning)
+        #[arg(long)]
+        spot: bool,
         /// Detach: fork deploy to background, print deploy ID, exit immediately
         #[arg(long)]
         detach: bool,
@@ -311,6 +314,22 @@ enum Commands {
         /// The prompt to send
         prompt: String,
     },
+    /// Create a named snapshot from a DigitalOcean droplet
+    #[cfg(feature = "digitalocean")]
+    DoSnapshot {
+        /// DigitalOcean API token
+        #[arg(long, env = "DO_TOKEN")]
+        do_token: String,
+        /// Droplet ID to snapshot
+        #[arg(long)]
+        droplet_id: u64,
+        /// Name for the snapshot
+        #[arg(long)]
+        snapshot_name: String,
+        /// Shut down the droplet before snapshotting, then power it back on
+        #[arg(long)]
+        power_off: bool,
+    },
     /// Restore a DigitalOcean droplet from a snapshot
     #[cfg(feature = "digitalocean")]
     DoRestore {
@@ -394,6 +413,7 @@ async fn main() -> anyhow::Result<()> {
             failover_1,
             failover_2,
             profile,
+            spot,
             detach,
             json,
             _deploy_id,
@@ -432,6 +452,7 @@ async fn main() -> anyhow::Result<()> {
                 failover_1,
                 failover_2,
                 profile,
+                spot,
                 detach,
                 json,
                 deploy_id: _deploy_id,
@@ -548,6 +569,21 @@ async fn main() -> anyhow::Result<()> {
             endpoint_id,
             prompt,
         } => commands::ark::chat(&api_key, &endpoint_id, &prompt).await,
+        #[cfg(feature = "digitalocean")]
+        Commands::DoSnapshot {
+            do_token,
+            droplet_id,
+            snapshot_name,
+            power_off,
+        } => {
+            commands::do_snapshot::run(commands::do_snapshot::DoSnapshotParams {
+                do_token,
+                droplet_id,
+                snapshot_name,
+                power_off,
+            })
+            .await
+        }
         #[cfg(feature = "digitalocean")]
         Commands::DoRestore {
             do_token,
