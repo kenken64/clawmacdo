@@ -53,6 +53,20 @@ Use Semantic Versioning (SemVer: MAJOR.MINOR.PATCH). When asked to bump the vers
 - Ensure `README.md` and `CHANGELOG.md` reflect user-facing changes.
 - Validate release flow on CI before publishing binaries/tags.
 
+## Release Workflow
+
+Run `./scripts/release.sh [patch|minor|major]` to automate the full release:
+
+1. `cargo fmt --all` + `cargo clippy -- -D warnings`
+2. Bump version in all `Cargo.toml` (7 crates) and `package.json` (4 npm packages)
+3. Update `CHANGELOG.md` and `README.md` version references
+4. Sync `README.md` to `npm/clawmacdo/README.md`
+5. `cargo build --release`
+6. Git commit, tag, push
+7. Create GitHub release (triggers `release.yml` + `npm-publish.yml` workflows)
+
+Default bump type is `minor`. Example: `./scripts/release.sh patch`
+
 ## Documentation Rule
 
 **Every codebase change must include a README.md update.** When adding features, fixing bugs, changing commands, modifying APIs, or altering behavior:
