@@ -5,11 +5,16 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.24.0
+## ✨ What's New in v0.25.0
 
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID, with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
 - **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps, and EIP is now created inline with the instance (`ReleaseWithInstance: true`) so it auto-releases on destroy
 - **BytePlus spot instances** — new `--spot` flag on deploy enables `SpotAsPriceGo` strategy for up to ~80% compute cost savings
+- **`bp-snapshot` subcommand** — create a named snapshot of a BytePlus ECS instance's system disk
+- **`bp-restore` subcommand** — restore a new BytePlus ECS instance from a snapshot (creates custom image, then launches instance)
+- **`ls-snapshot` subcommand** — create a snapshot of an AWS Lightsail instance
+- **`ls-restore` subcommand** — restore a new Lightsail instance from a snapshot (direct, no intermediate image step)
+- **BytePlus EIP orphan cleanup** — destroy command now finds and releases unbound EIPs left behind after instance termination
 
 ### Previous highlights (v0.21.x – v0.23.x)
 - **`destroy` subcommand** — delete any openclaw instance across all 5 cloud providers with interactive confirmation
@@ -358,6 +363,59 @@ clawmacdo do-snapshot \
 
 The command verifies the droplet exists, optionally shuts it down, creates the snapshot, polls until complete, confirms the snapshot, and optionally powers the droplet back on.
 
+### Create a BytePlus Snapshot from an ECS Instance
+
+Create a named snapshot of a BytePlus ECS instance's system disk.
+
+```bash
+clawmacdo bp-snapshot \
+  --instance-id i-abc123 \
+  --snapshot-name "my-openclaw-backup"
+```
+
+### Restore a BytePlus ECS Instance from a Snapshot
+
+Create a new instance from an existing BytePlus snapshot. This creates a custom image from the snapshot, then launches a new instance from that image.
+
+```bash
+# Restore from a snapshot by name
+clawmacdo bp-restore \
+  --snapshot-name "my-openclaw-backup"
+
+# With spot instance for cost savings
+clawmacdo bp-restore \
+  --snapshot-name "my-openclaw-backup" \
+  --size ecs.g3i.large \
+  --spot
+```
+
+### Create a Lightsail Snapshot
+
+Create a snapshot of an AWS Lightsail instance.
+
+```bash
+clawmacdo ls-snapshot \
+  --instance-name "openclaw-abc123" \
+  --snapshot-name "my-openclaw-backup" \
+  --region ap-southeast-1
+```
+
+### Restore a Lightsail Instance from a Snapshot
+
+Create a new instance directly from an existing Lightsail snapshot.
+
+```bash
+# Restore from a snapshot by name
+clawmacdo ls-restore \
+  --snapshot-name "my-openclaw-backup" \
+  --region ap-southeast-1
+
+# With size override
+clawmacdo ls-restore \
+  --snapshot-name "my-openclaw-backup" \
+  --size s-4vcpu-8gb
+```
+
 ### Destroy an Instance
 
 Delete an instance by name across any supported provider. Removes cloud SSH key, local key, and (for BytePlus) EIP and VPC resources.
@@ -605,5 +663,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.24.0
+**Current version:** 0.25.0
 **Architecture version:** 2.0 (modular workspace)

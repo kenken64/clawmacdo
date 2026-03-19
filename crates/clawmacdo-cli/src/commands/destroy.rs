@@ -409,6 +409,14 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
             println!("  Terminated.");
         }
 
+        // Release any orphaned unbound EIPs
+        println!("\nReleasing orphaned EIPs...");
+        match client.release_unbound_eips().await {
+            Ok(0) => println!("  No orphaned EIPs found."),
+            Ok(n) => println!("  Released {n} orphaned EIP(s)."),
+            Err(e) => println!("  Warning: EIP cleanup failed: {e}"),
+        }
+
         // Clean up VPC resources (security groups, subnets, VPC)
         println!("\nCleaning up VPC resources (waiting for instance deletion to propagate)...");
         client.cleanup_vpc_resources().await;
@@ -453,6 +461,14 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
 
         client.terminate_instance(&instance.id).await?;
         println!("Instance terminated.");
+
+        // Release any orphaned unbound EIPs
+        println!("Checking for orphaned EIPs...");
+        match client.release_unbound_eips().await {
+            Ok(0) => println!("  No orphaned EIPs found."),
+            Ok(n) => println!("  Released {n} orphaned EIP(s)."),
+            Err(e) => println!("  Warning: EIP cleanup failed: {e}"),
+        }
 
         // Clean up VPC resources (security groups, subnets, VPC)
         // Waits for instance deletion to fully propagate before removing network resources.

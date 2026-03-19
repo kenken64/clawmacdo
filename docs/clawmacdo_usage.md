@@ -1313,6 +1313,163 @@ curl -s -X POST -H "Authorization: Bearer $DO_TOKEN" \
 
 ---
 
+## do-snapshot
+
+Create a named snapshot from an existing DigitalOcean droplet. Optionally shuts down the droplet before snapshotting (recommended for data consistency) and powers it back on afterward.
+
+### Syntax
+
+```
+clawmacdo do-snapshot --do-token <DO_TOKEN> --droplet-id <DROPLET_ID> --snapshot-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default | Env var |
+|------|-------------|---------|---------|
+| `--do-token` | DigitalOcean API token | *(required)* | `DO_TOKEN` |
+| `--droplet-id` | ID of the droplet to snapshot | *(required)* | -- |
+| `--snapshot-name` | Name for the new snapshot | *(required)* | -- |
+| `--power-off` | Shut down before snapshot, power on after | `false` | -- |
+
+### Examples
+
+```bash
+# Quick snapshot of a running droplet
+clawmacdo do-snapshot \
+  --droplet-id 558765268 \
+  --snapshot-name "my-openclaw-2026-03-20"
+
+# Clean snapshot with shutdown/power-on cycle
+clawmacdo do-snapshot \
+  --droplet-id 558765268 \
+  --snapshot-name "pre-upgrade-snapshot" \
+  --power-off
+```
+
+---
+
+## bp-snapshot
+
+Create a named snapshot of a BytePlus ECS instance's system disk via the StorageEBS API.
+
+### Syntax
+
+```
+clawmacdo bp-snapshot --access-key <KEY> --secret-key <KEY> --instance-id <ID> --snapshot-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default | Env var |
+|------|-------------|---------|---------|
+| `--access-key` | BytePlus Access Key | *(required)* | `BYTEPLUS_ACCESS_KEY` |
+| `--secret-key` | BytePlus Secret Key | *(required)* | `BYTEPLUS_SECRET_KEY` |
+| `--instance-id` | Instance ID to snapshot | *(required)* | -- |
+| `--snapshot-name` | Name for the snapshot | *(required)* | -- |
+| `--region` | Region | `ap-southeast-1` | -- |
+
+### Examples
+
+```bash
+clawmacdo bp-snapshot \
+  --instance-id i-abc123 \
+  --snapshot-name "my-openclaw-backup"
+```
+
+---
+
+## bp-restore
+
+Restore a new BytePlus ECS instance from a snapshot. Creates a custom image from the snapshot, then launches a new instance from that image.
+
+### Syntax
+
+```
+clawmacdo bp-restore --access-key <KEY> --secret-key <KEY> --snapshot-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default | Env var |
+|------|-------------|---------|---------|
+| `--access-key` | BytePlus Access Key | *(required)* | `BYTEPLUS_ACCESS_KEY` |
+| `--secret-key` | BytePlus Secret Key | *(required)* | `BYTEPLUS_SECRET_KEY` |
+| `--snapshot-name` | Name of the snapshot to restore from | *(required)* | -- |
+| `--region` | Region | `ap-southeast-1` | -- |
+| `--size` | Instance size override | `ecs.g3i.large` | -- |
+| `--spot` | Use spot instance (~80% cheaper) | `false` | -- |
+
+### Examples
+
+```bash
+# Restore from a snapshot
+clawmacdo bp-restore --snapshot-name "my-openclaw-backup"
+
+# Restore with spot instance
+clawmacdo bp-restore --snapshot-name "my-openclaw-backup" --spot
+```
+
+---
+
+## ls-snapshot
+
+Create a snapshot of an AWS Lightsail instance.
+
+### Syntax
+
+```
+clawmacdo ls-snapshot --instance-name <NAME> --snapshot-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--instance-name` | Lightsail instance name | *(required)* |
+| `--snapshot-name` | Name for the snapshot | *(required)* |
+| `--region` | AWS region | `ap-southeast-1` |
+
+### Examples
+
+```bash
+clawmacdo ls-snapshot \
+  --instance-name "openclaw-abc123" \
+  --snapshot-name "my-openclaw-backup"
+```
+
+---
+
+## ls-restore
+
+Restore a new Lightsail instance directly from a snapshot. Unlike BytePlus, Lightsail supports direct snapshot-to-instance creation (no intermediate image step).
+
+### Syntax
+
+```
+clawmacdo ls-restore --snapshot-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--snapshot-name` | Name of the snapshot to restore from | *(required)* |
+| `--region` | AWS region | `ap-southeast-1` |
+| `--size` | Instance size override | `s-2vcpu-4gb` |
+
+### Examples
+
+```bash
+# Restore from a snapshot
+clawmacdo ls-restore --snapshot-name "my-openclaw-backup"
+
+# Restore with larger size
+clawmacdo ls-restore --snapshot-name "my-openclaw-backup" --size s-4vcpu-8gb
+```
+
+---
+
 ## serve
 
 Start the web UI server for browser-based deployment management.

@@ -1,5 +1,9 @@
 #[cfg(feature = "byteplus")]
 pub mod ark;
+#[cfg(feature = "byteplus")]
+pub mod bp_restore;
+#[cfg(feature = "byteplus")]
+pub mod bp_snapshot;
 pub mod deploy;
 pub mod deploy_cmd;
 pub mod destroy;
@@ -8,6 +12,10 @@ pub mod do_restore;
 #[cfg(feature = "digitalocean")]
 pub mod do_snapshot;
 pub mod docker_fix;
+#[cfg(feature = "lightsail")]
+pub mod ls_restore;
+#[cfg(feature = "lightsail")]
+pub mod ls_snapshot;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]
 pub mod serve;
