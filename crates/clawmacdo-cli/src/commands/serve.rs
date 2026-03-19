@@ -119,6 +119,8 @@ struct DeployRequest {
     tailscale_auth_key: String,
     #[serde(default = "default_profile")]
     profile: String,
+    #[serde(default)]
+    spot: bool,
 }
 
 fn default_provider() -> String {
@@ -791,6 +793,7 @@ async fn start_deploy_handler(
             failover_1: req.failover_1,
             failover_2: req.failover_2,
             profile: req.profile,
+            spot: req.spot,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
             db: Some(db_clone.clone()),
@@ -2359,6 +2362,10 @@ function addDeployCard(initialState) {
           <input type="checkbox" name="tailscale" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
           <span class="text-sm text-slate-300">Enable Tailscale VPN</span>
         </label>
+        <label class="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" name="spot" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+          <span class="text-sm text-slate-300">Use spot instance — BytePlus only, up to ~80% cheaper (may be reclaimed)</span>
+        </label>
       </fieldset>
       <button type="submit" class="deploy-submit-btn w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900">
         Deploy
@@ -3035,6 +3042,7 @@ async function startDeploy(e, cardNum) {
     tailscale: form.querySelector('[name="tailscale"]').checked,
     tailscale_auth_key: val('tailscale_auth_key'),
     profile: val('profile'),
+    spot: form.querySelector('[name="spot"]').checked,
   };
 
   // Disable button and show progress

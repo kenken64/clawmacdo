@@ -5,10 +5,15 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.21.0
+## ✨ What's New in v0.24.0
 
-- **`destroy` subcommand** — delete any openclaw instance across all 5 cloud providers (DigitalOcean, Lightsail, Tencent, Azure, BytePlus) with interactive confirmation; removes cloud SSH key, local key, and for BytePlus also releases EIP and cleans up VPC/subnet/security-group
-- **`skills-data-api` service** — Node.js/Express API backed by MongoDB for browsing, scraping, and serving Claude Code skill marketplace data; includes Docker support and shell scripts for bulk download and data loading
+- **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID, with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
+- **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps, and EIP is now created inline with the instance (`ReleaseWithInstance: true`) so it auto-releases on destroy
+- **BytePlus spot instances** — new `--spot` flag on deploy enables `SpotAsPriceGo` strategy for up to ~80% compute cost savings
+
+### Previous highlights (v0.21.x – v0.23.x)
+- **`destroy` subcommand** — delete any openclaw instance across all 5 cloud providers with interactive confirmation
+- **`skills-data-api` service** — Node.js/Express API backed by MongoDB for browsing, scraping, and serving Claude Code skill marketplace data
 - **Playwright e2e test suite** — CSV-driven deploy form testing under `e2e/`, covering all 5 cloud providers with 30+ scenarios
 
 ### Previous highlights (v0.20.x)
@@ -88,6 +93,7 @@ clawmacdo/
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
 - **Snapshot restore**: create a DigitalOcean droplet from a snapshot by name, with deploy record saved to SQLite for web UI visibility
+- **Snapshot create**: create a named snapshot from an existing DigitalOcean droplet, with optional power-off for data consistency
 - **Destroy**: delete an instance by name with confirmation, clean up SSH keys (cloud + local)
 - **Status**: list all openclaw-tagged instances with IPs
 - **List backups**: show local backup archives with sizes and dates
@@ -330,6 +336,27 @@ clawmacdo do-restore \
 ```
 
 The command generates a new SSH key pair, looks up the snapshot by name, creates the droplet, waits for it to become active, and saves a deploy record for use with other `clawmacdo` commands.
+
+### Create a DigitalOcean Snapshot from a Droplet
+
+Create a named snapshot from an existing DigitalOcean droplet. Optionally shuts down the droplet first for a clean snapshot.
+
+```bash
+# Create a snapshot (droplet stays running)
+clawmacdo do-snapshot \
+  --do-token "$DO_TOKEN" \
+  --droplet-id 558765268 \
+  --snapshot-name "my-openclaw-2026-03-19"
+
+# Recommended: shut down first for a clean snapshot, then power back on
+clawmacdo do-snapshot \
+  --do-token "$DO_TOKEN" \
+  --droplet-id 558765268 \
+  --snapshot-name "my-openclaw-2026-03-19" \
+  --power-off
+```
+
+The command verifies the droplet exists, optionally shuts it down, creates the snapshot, polls until complete, confirms the snapshot, and optionally powers the droplet back on.
 
 ### Destroy an Instance
 
@@ -578,5 +605,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.23.0
+**Current version:** 0.24.0
 **Architecture version:** 2.0 (modular workspace)

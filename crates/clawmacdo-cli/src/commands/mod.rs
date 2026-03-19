@@ -5,6 +5,8 @@ pub mod deploy_cmd;
 pub mod destroy;
 #[cfg(feature = "digitalocean")]
 pub mod do_restore;
+#[cfg(feature = "digitalocean")]
+pub mod do_snapshot;
 pub mod docker_fix;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]

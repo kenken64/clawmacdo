@@ -633,7 +633,8 @@ impl BytePlusClient {
             .ok_or_else(|| AppError::BytePlus("No Ubuntu image found via DescribeImages".into()))
     }
 
-    /// Create an ECS instance.
+    /// Create an ECS instance. When `spot` is true, uses `SpotAsPriceGo` strategy
+    /// for up to ~80% cost savings (instance may be reclaimed with 5 min warning).
     pub async fn create_instance(
         &self,
         name: &str,
@@ -641,6 +642,7 @@ impl BytePlusClient {
         key_pair_name: &str,
         user_data_base64: &str,
         customer_email: &str,
+        spot: bool,
     ) -> Result<String, AppError> {
         // Ensure networking resources exist
         let vpc_id = self.ensure_vpc().await?;
@@ -651,6 +653,8 @@ impl BytePlusClient {
         let image_id = self.find_ubuntu_image().await?;
 
         let zone_id = format!("{}{DEFAULT_ZONE_SUFFIX}", self.region);
+
+        let spot_strategy = if spot { "SpotAsPriceGo" } else { "NoSpot" };
 
         let payload = serde_json::json!({
             "InstanceName": name,
@@ -667,8 +671,14 @@ impl BytePlusClient {
             }],
             "KeyPairName": key_pair_name,
             "InstanceChargeType": "PostPaid",
+            "SpotStrategy": spot_strategy,
             "UserData": user_data_base64,
             "Count": 1,
+            "EipAddress": {
+                "BandwidthMbps": 5,
+                "ChargeType": "PostPaidByTraffic",
+                "ReleaseWithInstance": true
+            },
             "Tags": [
                 { "Key": "app", "Value": "openclaw" },
                 { "Key": "customer_email", "Value": customer_email }
@@ -1062,7 +1072,7 @@ impl BytePlusClient {
         Ok(())
     }
 
-    /// Poll until instance is RUNNING, then allocate and associate an EIP.
+    /// Poll until instance is RUNNING and has a public IP (inline EIP).
     pub async fn wait_for_running(
         &self,
         instance_id: &str,
@@ -1070,41 +1080,26 @@ impl BytePlusClient {
     ) -> Result<InstanceInfo, AppError> {
         let start = std::time::Instant::now();
 
-        // First wait for instance to be RUNNING
+        // Wait for instance to be RUNNING with an EIP assigned (created inline via RunInstances)
         loop {
             if start.elapsed() > timeout {
                 return Err(AppError::Timeout(
-                    "BytePlus ECS instance to become RUNNING".into(),
+                    "BytePlus ECS instance to become RUNNING with public IP".into(),
                 ));
             }
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
             match self.describe_instance(instance_id).await {
-                Ok(info) if info.status == "RUNNING" => break,
+                Ok(info)
+                    if info.status == "RUNNING"
+                        && info.public_ip.as_ref().is_some_and(|ip| !ip.is_empty()) =>
+                {
+                    return Ok(info);
+                }
                 Ok(_) => continue,
                 Err(_) => continue,
             }
         }
-
-        // Allocate and associate an EIP for public internet access
-        let (allocation_id, eip_address) = self.allocate_eip().await?;
-
-        // Wait a moment for EIP to be ready
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        self.associate_eip(&allocation_id, instance_id).await?;
-
-        // Wait for the EIP to appear on the instance
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        // Re-describe to get the updated info with the EIP
-        let mut info = self.describe_instance(instance_id).await?;
-        if info.public_ip.is_none() || info.public_ip.as_deref() == Some("") {
-            // Use the EIP address we just allocated
-            info.public_ip = Some(eip_address);
-        }
-
-        Ok(info)
     }
 }
 
@@ -1134,6 +1129,7 @@ impl CloudProvider for BytePlusClient {
             &params.ssh_key_id,
             &user_data_b64,
             &params.customer_email,
+            false,
         )
         .await?;
 

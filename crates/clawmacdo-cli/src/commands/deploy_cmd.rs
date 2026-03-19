@@ -39,6 +39,7 @@ pub struct DeployCmdArgs {
     pub failover_1: String,
     pub failover_2: String,
     pub profile: String,
+    pub spot: bool,
     pub detach: bool,
     pub json: bool,
     /// Pre-assigned deploy ID (from detach re-exec)
@@ -171,6 +172,7 @@ pub async fn run(args: DeployCmdArgs) -> Result<()> {
         failover_1: args.failover_1,
         failover_2: args.failover_2,
         profile: args.profile,
+        spot: args.spot,
         non_interactive: true,
         progress_tx: None,
         db: Some(db_handle.clone()),

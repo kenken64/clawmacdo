@@ -112,6 +112,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         failover_1: params.failover_1,
         failover_2: params.failover_2,
         profile: params.profile,
+        spot: false,
         non_interactive: false,
         progress_tx: None,
     };
