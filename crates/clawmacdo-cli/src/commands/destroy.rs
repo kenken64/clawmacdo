@@ -402,13 +402,15 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
                 println!("  Releasing EIP ({alloc_id})...");
                 let _ = client.disassociate_eip(&alloc_id).await;
                 let _ = client.release_eip(&alloc_id).await;
+            } else {
+                println!("  No EIP found (may auto-release with instance).");
             }
             client.terminate_instance(&inst.id).await?;
             println!("  Terminated.");
         }
 
         // Clean up VPC resources (security groups, subnets, VPC)
-        println!("\nCleaning up VPC resources...");
+        println!("\nCleaning up VPC resources (waiting for instance deletion to propagate)...");
         client.cleanup_vpc_resources().await;
         println!("VPC cleanup complete.");
     } else {
@@ -445,13 +447,16 @@ async fn run_byteplus(params: DestroyParams) -> Result<()> {
             let _ = client.disassociate_eip(&alloc_id).await;
             let _ = client.release_eip(&alloc_id).await;
             println!("  EIP released.");
+        } else {
+            println!("  No EIP found (may auto-release with instance).");
         }
 
         client.terminate_instance(&instance.id).await?;
         println!("Instance terminated.");
 
         // Clean up VPC resources (security groups, subnets, VPC)
-        println!("Cleaning up VPC resources...");
+        // Waits for instance deletion to fully propagate before removing network resources.
+        println!("Cleaning up VPC resources (waiting for instance deletion to propagate)...");
         client.cleanup_vpc_resources().await;
         println!("VPC cleanup complete.");
 

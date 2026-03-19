@@ -675,8 +675,8 @@ impl BytePlusClient {
             "UserData": user_data_base64,
             "Count": 1,
             "EipAddress": {
-                "BandwidthMbps": 5,
-                "ChargeType": "PostPaidByTraffic",
+                "Bandwidth": 5,
+                "BillingType": 3,
                 "ReleaseWithInstance": true
             },
             "Tags": [
@@ -945,17 +945,14 @@ impl BytePlusClient {
         }
     }
 
-    /// Delete a subnet by ID (ignores "in use" or "not found" errors).
+    /// Delete a subnet by ID (ignores "not found" errors, returns Err for dependency violations).
     pub async fn delete_subnet(&self, subnet_id: &str) -> Result<(), AppError> {
         let payload = serde_json::json!({ "SubnetId": subnet_id });
         match self.vpc_request("DeleteSubnet", &payload.to_string()).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = format!("{e}");
-                if msg.contains("InUse")
-                    || msg.contains("DependencyViolation")
-                    || msg.contains("NotFound")
-                {
+                if msg.contains("NotFound") {
                     Ok(())
                 } else {
                     Err(e)
@@ -964,17 +961,14 @@ impl BytePlusClient {
         }
     }
 
-    /// Delete a VPC by ID (ignores "in use" or "not found" errors).
+    /// Delete a VPC by ID (ignores "not found" errors, returns Err for dependency violations).
     pub async fn delete_vpc(&self, vpc_id: &str) -> Result<(), AppError> {
         let payload = serde_json::json!({ "VpcId": vpc_id });
         match self.vpc_request("DeleteVpc", &payload.to_string()).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = format!("{e}");
-                if msg.contains("InUse")
-                    || msg.contains("DependencyViolation")
-                    || msg.contains("NotFound")
-                {
+                if msg.contains("NotFound") {
                     Ok(())
                 } else {
                     Err(e)
@@ -983,13 +977,28 @@ impl BytePlusClient {
         }
     }
 
+    /// Wait for all openclaw-tagged instances to be fully deleted (up to 60s).
+    async fn wait_for_instances_deleted(&self) {
+        for _ in 0..12 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            match self.list_openclaw_instances().await {
+                Ok(instances) if instances.is_empty() => return,
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+    }
+
     /// Clean up VPC resources (security groups, subnets, then VPC) for an openclaw-tagged VPC.
-    /// Errors are logged but do not fail the overall operation (best-effort cleanup).
+    /// Waits for instances to be fully deleted first, then retries subnet/VPC deletion.
     pub async fn cleanup_vpc_resources(&self) {
         let vpc_id = match self.find_openclaw_vpc().await {
             Ok(Some(id)) => id,
             _ => return,
         };
+
+        // Wait for instances to be fully deleted so network interfaces are released
+        self.wait_for_instances_deleted().await;
 
         // Delete security groups in the VPC
         let sg_payload = serde_json::json!({
@@ -1010,25 +1019,43 @@ impl BytePlusClient {
             }
         }
 
-        // Delete subnets in the VPC
-        let subnet_payload = serde_json::json!({ "VpcId": &vpc_id, "MaxResults": 100 });
-        if let Ok(resp) = self
-            .vpc_request("DescribeSubnets", &subnet_payload.to_string())
-            .await
-        {
-            if let Some(subnets) = resp["Result"]["Subnets"].as_array() {
-                for subnet in subnets {
-                    if let Some(subnet_id) = subnet["SubnetId"].as_str() {
-                        let _ = self.delete_subnet(subnet_id).await;
+        // Retry subnet + VPC deletion up to 3 times with increasing waits
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+
+            // Delete subnets in the VPC
+            let mut subnet_failed = false;
+            let subnet_payload = serde_json::json!({ "VpcId": &vpc_id, "MaxResults": 100 });
+            if let Ok(resp) = self
+                .vpc_request("DescribeSubnets", &subnet_payload.to_string())
+                .await
+            {
+                if let Some(subnets) = resp["Result"]["Subnets"].as_array() {
+                    for subnet in subnets {
+                        if let Some(subnet_id) = subnet["SubnetId"].as_str() {
+                            if self.delete_subnet(subnet_id).await.is_err() {
+                                subnet_failed = true;
+                            }
+                        }
                     }
                 }
             }
+
+            if subnet_failed {
+                continue;
+            }
+
+            // Wait for subnets to be cleaned up before deleting VPC
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            // Delete the VPC itself
+            let _ = self.delete_vpc(&vpc_id).await;
+            return;
         }
 
-        // Wait for dependent resources to be cleaned up
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-        // Delete the VPC itself
+        // Final attempt after all retries
         let _ = self.delete_vpc(&vpc_id).await;
     }
 

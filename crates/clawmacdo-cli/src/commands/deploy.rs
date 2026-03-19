@@ -695,7 +695,13 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
     } else {
-        "true".to_string()
+        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
+        // requires Docker. Without Docker the agent fails on first message.
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -975,6 +981,22 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
     progress::emit(tx, "[Step 7/16] Cloud-init complete");
     record_step_complete(step_db, &deploy_id, 7);
 
+    // BytePlus DNS fix: internal DNS (100.96.0.x) can fail to resolve external
+    // domains (e.g. api.telegram.org). Add public DNS fallback via systemd-resolved.
+    progress::emit(tx, "  Configuring public DNS fallback...");
+    {
+        let dns_cmd = r#"mkdir -p /etc/systemd/resolved.conf.d && cat > /etc/systemd/resolved.conf.d/public-dns.conf << 'DNSEOF'
+[Resolve]
+DNS=8.8.8.8 1.1.1.1
+FallbackDNS=8.8.4.4 1.0.0.1
+DNSEOF
+systemctl restart systemd-resolved"#;
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, dns_cmd)).await??;
+    }
+    progress::emit(tx, "  Public DNS fallback configured (8.8.8.8, 1.1.1.1)");
+
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
     if let Some(bp) = backup_path.as_deref() {
@@ -1085,7 +1107,13 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
     } else {
-        "true".to_string()
+        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
+        // requires Docker. Without Docker the agent fails on first message.
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -1395,7 +1423,11 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
         )
     } else {
-        "true".to_string()
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
@@ -1770,7 +1802,13 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
     } else {
-        "true".to_string()
+        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
+        // requires Docker. Without Docker the agent fails on first message.
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -2210,7 +2248,13 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
               (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
         )
     } else {
-        "true".to_string()
+        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
+        // requires Docker. Without Docker the agent fails on first message.
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     };
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
