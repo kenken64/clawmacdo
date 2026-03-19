@@ -13,6 +13,8 @@ const VPC_SERVICE: &str = "vpc";
 const VPC_VERSION: &str = "2020-04-01";
 const ARK_SERVICE: &str = "ark";
 const ARK_VERSION: &str = "2024-01-01";
+const STORAGE_EBS_SERVICE: &str = "storage_ebs";
+const STORAGE_EBS_VERSION: &str = "2020-04-01";
 const DEFAULT_ZONE_SUFFIX: &str = "a";
 
 pub struct BytePlusClient {
@@ -297,6 +299,21 @@ impl BytePlusClient {
     ) -> Result<serde_json::Value, AppError> {
         self.signed_request(ARK_SERVICE, action, ARK_VERSION, payload, "POST")
             .await
+    }
+
+    async fn storage_ebs_request(
+        &self,
+        action: &str,
+        payload: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        self.signed_request(
+            STORAGE_EBS_SERVICE,
+            action,
+            STORAGE_EBS_VERSION,
+            payload,
+            "GET",
+        )
+        .await
     }
 
     /// Generate a temporary ARK API key scoped to the given resource IDs.
@@ -1127,6 +1144,259 @@ impl BytePlusClient {
                 Err(_) => continue,
             }
         }
+    }
+
+    // --- Snapshot / Image / EIP management ---
+
+    /// Find the system disk VolumeId for an instance.
+    pub async fn describe_system_volume(&self, instance_id: &str) -> Result<String, AppError> {
+        let payload = serde_json::json!({ "InstanceId": instance_id });
+        let resp = self
+            .storage_ebs_request("DescribeVolumes", &payload.to_string())
+            .await?;
+
+        let volumes = resp["Result"]["Volumes"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        for vol in &volumes {
+            let kind = vol["Kind"].as_str().unwrap_or("");
+            if kind == "system" {
+                if let Some(id) = vol["VolumeId"].as_str() {
+                    return Ok(id.to_string());
+                }
+            }
+        }
+
+        Err(AppError::BytePlus(format!(
+            "No system volume found for instance {instance_id}"
+        )))
+    }
+
+    /// Create a snapshot of a volume. Returns the SnapshotId.
+    pub async fn create_ebs_snapshot(
+        &self,
+        volume_id: &str,
+        name: &str,
+    ) -> Result<String, AppError> {
+        let payload = serde_json::json!({
+            "VolumeId": volume_id,
+            "SnapshotName": name,
+            "Description": format!("openclaw snapshot: {name}"),
+            "Tags": [{ "Key": "app", "Value": "openclaw" }]
+        });
+        let resp = self
+            .storage_ebs_request("CreateSnapshot", &payload.to_string())
+            .await?;
+
+        resp["Result"]["SnapshotId"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                AppError::BytePlus("Missing SnapshotId in CreateSnapshot response".into())
+            })
+    }
+
+    /// List snapshots, optionally filtered by name.
+    pub async fn describe_snapshots(
+        &self,
+        name_filter: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, AppError> {
+        let mut payload = serde_json::json!({ "PageSize": 100 });
+        if let Some(name) = name_filter {
+            payload["SnapshotName"] = serde_json::Value::String(name.to_string());
+        }
+        let resp = self
+            .storage_ebs_request("DescribeSnapshots", &payload.to_string())
+            .await?;
+
+        Ok(resp["Result"]["Snapshots"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Poll until a snapshot becomes available.
+    pub async fn wait_for_snapshot(
+        &self,
+        snapshot_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), AppError> {
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(AppError::Timeout(
+                    "BytePlus snapshot to become available".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            let payload = serde_json::json!({ "SnapshotIds": [snapshot_id] });
+            if let Ok(resp) = self
+                .storage_ebs_request("DescribeSnapshots", &payload.to_string())
+                .await
+            {
+                if let Some(status) = resp["Result"]["Snapshots"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|s| s["Status"].as_str())
+                {
+                    if status == "available" {
+                        return Ok(());
+                    }
+                    if status == "error" || status == "failed" {
+                        return Err(AppError::BytePlus(format!("Snapshot {snapshot_id} failed")));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a custom image from a snapshot. Returns the ImageId.
+    pub async fn create_image(&self, snapshot_id: &str, name: &str) -> Result<String, AppError> {
+        let payload = serde_json::json!({
+            "ImageName": name,
+            "SnapshotId": snapshot_id,
+            "Description": format!("openclaw image from snapshot: {name}")
+        });
+        let resp = self
+            .ecs_request("CreateImage", &payload.to_string())
+            .await?;
+
+        resp["Result"]["ImageId"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| AppError::BytePlus("Missing ImageId in CreateImage response".into()))
+    }
+
+    /// Poll until a custom image becomes available.
+    pub async fn wait_for_image(
+        &self,
+        image_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), AppError> {
+        let start = std::time::Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(AppError::Timeout(
+                    "BytePlus image to become available".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            let payload = serde_json::json!({ "ImageIds": [image_id] });
+            if let Ok(resp) = self
+                .ecs_request("DescribeImages", &payload.to_string())
+                .await
+            {
+                if let Some(status) = resp["Result"]["Images"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|s| s["Status"].as_str())
+                {
+                    if status == "available" {
+                        return Ok(());
+                    }
+                    if status == "error" || status == "failed" {
+                        return Err(AppError::BytePlus(format!(
+                            "Image {image_id} creation failed"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create an ECS instance from a custom image (snapshot restore).
+    pub async fn create_instance_from_image(
+        &self,
+        name: &str,
+        image_id: &str,
+        instance_type: &str,
+        key_pair_name: &str,
+        customer_email: &str,
+        spot: bool,
+    ) -> Result<String, AppError> {
+        let vpc_id = self.ensure_vpc().await?;
+        let subnet_id = self.ensure_subnet(&vpc_id).await?;
+        let sg_id = self.ensure_security_group(&vpc_id).await?;
+
+        let zone_id = format!("{}{DEFAULT_ZONE_SUFFIX}", self.region);
+        let spot_strategy = if spot { "SpotAsPriceGo" } else { "NoSpot" };
+
+        let payload = serde_json::json!({
+            "InstanceName": name,
+            "InstanceTypeId": instance_type,
+            "ImageId": image_id,
+            "ZoneId": zone_id,
+            "SystemVolume": {
+                "VolumeType": "ESSD_PL0",
+                "Size": 40
+            },
+            "NetworkInterfaces": [{
+                "SubnetId": subnet_id,
+                "SecurityGroupIds": [sg_id]
+            }],
+            "KeyPairName": key_pair_name,
+            "InstanceChargeType": "PostPaid",
+            "SpotStrategy": spot_strategy,
+            "Count": 1,
+            "EipAddress": {
+                "Bandwidth": 5,
+                "BillingType": 3,
+                "ReleaseWithInstance": true
+            },
+            "Tags": [
+                { "Key": "app", "Value": "openclaw" },
+                { "Key": "customer_email", "Value": customer_email }
+            ]
+        });
+
+        let resp = self
+            .ecs_request("RunInstances", &payload.to_string())
+            .await?;
+
+        resp["Result"]["InstanceIds"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| AppError::BytePlus("Missing InstanceId in RunInstances response".into()))
+    }
+
+    /// List all EIP addresses, optionally filtering by name.
+    pub async fn list_eip_addresses(&self) -> Result<Vec<serde_json::Value>, AppError> {
+        let payload = serde_json::json!({
+            "MaxResults": 100,
+            "Name": "openclaw-eip"
+        });
+        let resp = self
+            .vpc_request("DescribeEipAddresses", &payload.to_string())
+            .await?;
+
+        Ok(resp["Result"]["EipAddresses"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Release all unbound/available EIPs. Returns the count released.
+    pub async fn release_unbound_eips(&self) -> Result<u32, AppError> {
+        let eips = self.list_eip_addresses().await.unwrap_or_default();
+        let mut released = 0u32;
+        for eip in &eips {
+            // BytePlus uses "Available" for unbound EIPs
+            let status = eip["Status"].as_str().unwrap_or("");
+            if status == "Available" || status == "Unbindable" {
+                if let Some(alloc_id) = eip["AllocationId"].as_str() {
+                    if self.release_eip(alloc_id).await.is_ok() {
+                        released += 1;
+                    }
+                }
+            }
+        }
+        Ok(released)
     }
 }
 

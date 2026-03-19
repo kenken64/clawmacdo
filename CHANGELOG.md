@@ -1,10 +1,23 @@
 # Changelog
 
-## v0.24.0
+## v0.25.0
 
 ### Added
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID (`--do-token` + `--droplet-id` + `--snapshot-name`), with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
 - **DigitalOcean action polling API** — `shutdown_droplet()`, `power_on_droplet()`, `create_snapshot()`, `get_action()`, `wait_for_action()`, and `get_droplet_snapshots()` methods on `DoClient`
+- **`bp-snapshot` subcommand** — create a named snapshot of a BytePlus ECS instance's system disk via StorageEBS API (`--instance-id` + `--snapshot-name`)
+- **`bp-restore` subcommand** — restore a new BytePlus ECS instance from a snapshot: creates a custom image from the snapshot, then launches a new instance with SSH key, deploy record, and inline EIP
+- **`ls-snapshot` subcommand** — create a snapshot of an AWS Lightsail instance (`--instance-name` + `--snapshot-name`)
+- **`ls-restore` subcommand** — restore a new Lightsail instance from a snapshot (direct snapshot-to-instance, no intermediate image step)
+- **Lightsail snapshot API** — `create_instance_snapshot()`, `get_snapshot()`, `list_snapshots()`, `wait_for_snapshot()`, `create_instance_from_snapshot()` methods on `LightsailCliProvider`
+- **BytePlus StorageEBS API** — `describe_system_volume()`, `create_ebs_snapshot()`, `describe_snapshots()`, `wait_for_snapshot()` methods on `BytePlusClient`
+- **BytePlus image management** — `create_image()`, `wait_for_image()`, `create_instance_from_image()` methods on `BytePlusClient`
+
+### Fixed
+- **BytePlus EIP orphan cleanup** — destroy command now lists and releases unbound EIPs (`release_unbound_eips()`) after instance termination, preventing orphaned EIP charges
+- **BytePlus VPC cleanup reliability** — waits for instance deletion to fully propagate (up to 60s), retries subnet/VPC deletion up to 3 times
+- **BytePlus DNS resolution** — configures public DNS fallback (8.8.8.8, 1.1.1.1) on BytePlus instances to fix Telegram and external API resolution failures
+- **Sandbox mode disabled by default** — explicitly sets `sandbox.mode=off` when `--enable-sandbox` is not passed, preventing Docker-not-found errors
 
 ### Changed
 - **BytePlus EIP: pay-by-traffic billing** — switched from `BillingType: 2` (pay-by-bandwidth at 10 Mbps) to `PostPaidByTraffic` (pay-by-traffic at 5 Mbps), significantly reducing costs for low-traffic instances

@@ -346,6 +346,73 @@ enum Commands {
         #[arg(long)]
         size: Option<String>,
     },
+    /// Create a snapshot of a Lightsail instance
+    #[cfg(feature = "lightsail")]
+    LsSnapshot {
+        /// Instance name to snapshot
+        #[arg(long)]
+        instance_name: String,
+        /// Name for the snapshot
+        #[arg(long)]
+        snapshot_name: String,
+        /// AWS region (default: ap-southeast-1)
+        #[arg(long, default_value = "ap-southeast-1")]
+        region: String,
+    },
+    /// Restore a Lightsail instance from a snapshot
+    #[cfg(feature = "lightsail")]
+    LsRestore {
+        /// Name of the snapshot to restore from
+        #[arg(long)]
+        snapshot_name: String,
+        /// AWS region (default: ap-southeast-1)
+        #[arg(long, default_value = "ap-southeast-1")]
+        region: String,
+        /// Instance size override
+        #[arg(long)]
+        size: Option<String>,
+    },
+    /// Create a snapshot of a BytePlus ECS instance's system disk
+    #[cfg(feature = "byteplus")]
+    BpSnapshot {
+        /// BytePlus Access Key
+        #[arg(long, env = "BYTEPLUS_ACCESS_KEY")]
+        access_key: String,
+        /// BytePlus Secret Key
+        #[arg(long, env = "BYTEPLUS_SECRET_KEY")]
+        secret_key: String,
+        /// Instance ID to snapshot
+        #[arg(long)]
+        instance_id: String,
+        /// Name for the snapshot
+        #[arg(long)]
+        snapshot_name: String,
+        /// Region (default: ap-southeast-1)
+        #[arg(long, default_value = "ap-southeast-1")]
+        region: String,
+    },
+    /// Restore a BytePlus ECS instance from a snapshot
+    #[cfg(feature = "byteplus")]
+    BpRestore {
+        /// BytePlus Access Key
+        #[arg(long, env = "BYTEPLUS_ACCESS_KEY")]
+        access_key: String,
+        /// BytePlus Secret Key
+        #[arg(long, env = "BYTEPLUS_SECRET_KEY")]
+        secret_key: String,
+        /// Name of the snapshot to restore from
+        #[arg(long)]
+        snapshot_name: String,
+        /// Region (default: ap-southeast-1)
+        #[arg(long, default_value = "ap-southeast-1")]
+        region: String,
+        /// Instance size override
+        #[arg(long)]
+        size: Option<String>,
+        /// Use spot instance
+        #[arg(long)]
+        spot: bool,
+    },
     /// Start the web UI server
     #[cfg(feature = "web-ui")]
     Serve {
@@ -596,6 +663,68 @@ async fn main() -> anyhow::Result<()> {
                 snapshot_name,
                 region,
                 size,
+            })
+            .await
+        }
+        #[cfg(feature = "lightsail")]
+        Commands::LsSnapshot {
+            instance_name,
+            snapshot_name,
+            region,
+        } => {
+            commands::ls_snapshot::run(commands::ls_snapshot::LsSnapshotParams {
+                instance_name,
+                snapshot_name,
+                region,
+            })
+            .await
+        }
+        #[cfg(feature = "lightsail")]
+        Commands::LsRestore {
+            snapshot_name,
+            region,
+            size,
+        } => {
+            commands::ls_restore::run(commands::ls_restore::LsRestoreParams {
+                snapshot_name,
+                region,
+                size,
+            })
+            .await
+        }
+        #[cfg(feature = "byteplus")]
+        Commands::BpSnapshot {
+            access_key,
+            secret_key,
+            instance_id,
+            snapshot_name,
+            region,
+        } => {
+            commands::bp_snapshot::run(commands::bp_snapshot::BpSnapshotParams {
+                access_key,
+                secret_key,
+                instance_id,
+                snapshot_name,
+                region,
+            })
+            .await
+        }
+        #[cfg(feature = "byteplus")]
+        Commands::BpRestore {
+            access_key,
+            secret_key,
+            snapshot_name,
+            region,
+            size,
+            spot,
+        } => {
+            commands::bp_restore::run(commands::bp_restore::BpRestoreParams {
+                access_key,
+                secret_key,
+                snapshot_name,
+                region,
+                size,
+                spot,
             })
             .await
         }

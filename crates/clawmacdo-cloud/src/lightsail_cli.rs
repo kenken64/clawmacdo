@@ -134,6 +134,32 @@ struct LightsailInstancesResponse {
     instances: Option<Vec<LightsailInstance>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct LightsailSnapshot {
+    pub name: Option<String>,
+    pub state: Option<String>,
+    #[serde(rename = "fromInstanceName")]
+    pub from_instance_name: Option<String>,
+    #[serde(rename = "fromBundleId")]
+    pub from_bundle_id: Option<String>,
+    #[serde(rename = "sizeInGb")]
+    pub size_in_gb: Option<u64>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct LightsailSnapshotResponse {
+    #[serde(rename = "instanceSnapshot")]
+    instance_snapshot: Option<LightsailSnapshot>,
+}
+
+#[derive(Deserialize)]
+struct LightsailSnapshotsResponse {
+    #[serde(rename = "instanceSnapshots")]
+    instance_snapshots: Option<Vec<LightsailSnapshot>>,
+}
+
 impl LightsailCliProvider {
     pub fn new(region: String) -> Self {
         Self { region }
@@ -170,6 +196,119 @@ impl LightsailCliProvider {
             "s-4vcpu-8gb" | "4vcpu-8gb" => "large_3_0", // $40/month - 4vCPU, 8GB RAM
             _ => "medium_3_0", // Default to 2vCPU, 4GB for the user's request
         }
+    }
+
+    // --- Snapshot methods ---
+
+    /// Create an instance snapshot. Returns immediately; poll with `get_snapshot`.
+    pub fn create_instance_snapshot(
+        &self,
+        instance_name: &str,
+        snapshot_name: &str,
+    ) -> Result<(), AppError> {
+        self.execute_aws_cli(&[
+            "create-instance-snapshot",
+            "--instance-snapshot-name",
+            snapshot_name,
+            "--instance-name",
+            instance_name,
+        ])?;
+        Ok(())
+    }
+
+    /// Get a single snapshot by name.
+    pub fn get_snapshot(&self, snapshot_name: &str) -> Result<LightsailSnapshot, AppError> {
+        let output = self.execute_aws_cli(&[
+            "get-instance-snapshot",
+            "--instance-snapshot-name",
+            snapshot_name,
+        ])?;
+        let resp: LightsailSnapshotResponse = serde_json::from_str(&output).map_err(|e| {
+            AppError::CloudProviderError(format!("Failed to parse snapshot response: {e}"))
+        })?;
+        resp.instance_snapshot.ok_or_else(|| {
+            AppError::CloudProviderError(format!("Snapshot '{snapshot_name}' not found"))
+        })
+    }
+
+    /// List all instance snapshots.
+    pub fn list_snapshots(&self) -> Result<Vec<LightsailSnapshot>, AppError> {
+        let output = self.execute_aws_cli(&["get-instance-snapshots"])?;
+        let resp: LightsailSnapshotsResponse = serde_json::from_str(&output).map_err(|e| {
+            AppError::CloudProviderError(format!("Failed to parse snapshots response: {e}"))
+        })?;
+        Ok(resp.instance_snapshots.unwrap_or_default())
+    }
+
+    /// Poll until a snapshot becomes available.
+    pub async fn wait_for_snapshot(
+        &self,
+        snapshot_name: &str,
+        timeout: Duration,
+    ) -> Result<(), AppError> {
+        let start = Instant::now();
+        loop {
+            if start.elapsed() > timeout {
+                return Err(AppError::Timeout(
+                    "Lightsail snapshot to become available".into(),
+                ));
+            }
+            sleep(Duration::from_secs(10)).await;
+
+            match self.get_snapshot(snapshot_name) {
+                Ok(snap) => {
+                    let state = snap.state.as_deref().unwrap_or("");
+                    if state == "available" {
+                        return Ok(());
+                    }
+                    if state == "error" {
+                        return Err(AppError::CloudProviderError(format!(
+                            "Snapshot '{snapshot_name}' failed"
+                        )));
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Create an instance from a snapshot.
+    pub fn create_instance_from_snapshot(
+        &self,
+        instance_name: &str,
+        snapshot_name: &str,
+        bundle_id: &str,
+        key_pair_name: &str,
+    ) -> Result<(), AppError> {
+        let az = format!("{}a", self.region);
+        let tags = r#"[{"key":"openclaw","value":"true"}]"#;
+
+        let mut args = vec![
+            "create-instances-from-snapshot",
+            "--instance-snapshot-name",
+            snapshot_name,
+            "--instance-names",
+            instance_name,
+            "--availability-zone",
+            &az,
+            "--bundle-id",
+            bundle_id,
+            "--tags",
+            tags,
+        ];
+
+        if !key_pair_name.is_empty() {
+            args.push("--key-pair-name");
+            args.push(key_pair_name);
+        }
+
+        self.execute_aws_cli(&args)?;
+        Ok(())
+    }
+
+    /// Public accessor for bundle mapping.
+    pub fn get_bundle_id(&self, size: &str) -> String {
+        self.map_size_to_bundle(size).to_string()
     }
 }
 
