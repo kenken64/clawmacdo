@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -288,6 +288,47 @@ struct DestroyDeploymentResponse {
 }
 
 #[derive(Deserialize)]
+struct SnapshotDeploymentRequest {
+    snapshot_name: String,
+    #[serde(default)]
+    do_token: String,
+    #[serde(default)]
+    aws_region: String,
+    #[serde(default)]
+    byteplus_access_key: String,
+    #[serde(default)]
+    byteplus_secret_key: String,
+    #[serde(default)]
+    byteplus_region: String,
+}
+
+#[derive(Serialize)]
+struct SnapshotDeploymentResponse {
+    ok: bool,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct RestoreSnapshotRequest {
+    snapshot_name: String,
+    provider: String,
+    #[serde(default)]
+    do_token: String,
+    #[serde(default)]
+    aws_region: String,
+    #[serde(default)]
+    byteplus_access_key: String,
+    #[serde(default)]
+    byteplus_secret_key: String,
+    #[serde(default)]
+    byteplus_region: String,
+    #[serde(default)]
+    size: String,
+    #[serde(default)]
+    spot: bool,
+}
+
+#[derive(Deserialize)]
 struct ArkApiKeyRequest {
     #[serde(default)]
     access_key: String,
@@ -424,13 +465,32 @@ async fn api_key_middleware(req: Request<Body>, next: Next) -> Response {
 
 const PIN_COOKIE_NAME: &str = "clawmacdo_session";
 
+/// Returns the active 6-digit PIN, generating one automatically if
+/// `CLAWMACDO_PIN` is not set or invalid.  The generated PIN is stable
+/// for the lifetime of the process (stored in a `OnceLock`).
 fn get_configured_pin() -> Option<String> {
-    let pin = std::env::var("CLAWMACDO_PIN").unwrap_or_default();
-    if pin.len() == 6 && pin.chars().all(|c| c.is_ascii_digit()) {
-        Some(pin)
-    } else {
-        None
-    }
+    static PIN: OnceLock<String> = OnceLock::new();
+    Some(
+        PIN.get_or_init(|| {
+            let env_pin = std::env::var("CLAWMACDO_PIN").unwrap_or_default();
+            if env_pin.len() == 6 && env_pin.chars().all(|c| c.is_ascii_digit()) {
+                return env_pin;
+            }
+            // Auto-generate a 6-digit PIN from system randomness
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hasher};
+            let mut hasher = RandomState::new().build_hasher();
+            hasher.write_u64(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            );
+            let n = hasher.finish() % 1_000_000;
+            format!("{n:06}")
+        })
+        .clone(),
+    )
 }
 
 fn generate_session_token(pin: &str) -> String {
@@ -584,6 +644,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/deployments/{id}/destroy",
             post(destroy_deployment_handler),
         )
+        .route(
+            "/api/deployments/{id}/snapshot",
+            post(snapshot_deployment_handler),
+        )
         .route("/api/deployments/{id}/funnel", post(toggle_funnel_handler))
         .route(
             "/api/deployments/{id}/funnel/status",
@@ -601,6 +665,8 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/deployments/{id}/devices/approve",
             post(device_approve_handler),
         )
+        .route("/api/snapshots/restore", post(restore_snapshot_handler))
+        .route("/api/snapshots", get(list_snapshots_handler))
         .route("/api/config", get(config_handler))
         .route("/api/ark/endpoints", post(ark_list_endpoints_handler))
         .route("/api/ark/api-key", post(ark_api_key_handler))
@@ -635,8 +701,16 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     if bind_addr == "127.0.0.1" {
         println!("  (localhost only — set CLAWMACDO_BIND=0.0.0.0 to allow remote access)");
     }
-    if get_configured_pin().is_some() {
-        println!("  PIN protection enabled (CLAWMACDO_PIN)");
+    if let Some(pin) = get_configured_pin() {
+        let source = if std::env::var("CLAWMACDO_PIN")
+            .map(|v| v.len() == 6 && v.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or(false)
+        {
+            "from CLAWMACDO_PIN"
+        } else {
+            "auto-generated"
+        };
+        println!("  PIN: {pin}  ({source})");
     }
     if !std::env::var("CLAWMACDO_API_KEY")
         .unwrap_or_default()
@@ -1362,6 +1436,290 @@ async fn destroy_deployment_handler(
     }
 }
 
+async fn snapshot_deployment_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SnapshotDeploymentRequest>,
+) -> impl IntoResponse {
+    let (provider, hostname, region) = {
+        let conn = state.db.lock().unwrap();
+        match db::get_deployment_by_id(&conn, &id) {
+            Ok(Some(d)) => (
+                d.provider.unwrap_or_default(),
+                d.hostname.unwrap_or_default(),
+                d.region.unwrap_or_default(),
+            ),
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: "Deployment not found.".into(),
+                    }),
+                )
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: format!("DB error: {e}"),
+                    }),
+                )
+            }
+        }
+    };
+
+    match provider.as_str() {
+        "digitalocean" => {
+            let do_token = &req.do_token;
+            if do_token.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: "do_token is required.".into(),
+                    }),
+                );
+            }
+            let client = match clawmacdo_cloud::digitalocean::DoClient::new(do_token) {
+                Ok(c) => c,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Invalid DO token: {e}"),
+                        }),
+                    )
+                }
+            };
+            // Find droplet by hostname
+            let droplets = match client.list_droplets().await {
+                Ok(d) => d,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Failed to list droplets: {e}"),
+                        }),
+                    )
+                }
+            };
+            let droplet = match droplets.iter().find(|d| d.name == hostname) {
+                Some(d) => d,
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Droplet '{hostname}' not found."),
+                        }),
+                    )
+                }
+            };
+            match client.create_snapshot(droplet.id, &req.snapshot_name).await {
+                Ok(action_id) => {
+                    match client
+                        .wait_for_action(action_id, std::time::Duration::from_secs(600))
+                        .await
+                    {
+                        Ok(_) => (
+                            StatusCode::OK,
+                            Json(SnapshotDeploymentResponse {
+                                ok: true,
+                                message: format!(
+                                    "Snapshot '{}' created for droplet '{hostname}'.",
+                                    req.snapshot_name
+                                ),
+                            }),
+                        ),
+                        Err(e) => (
+                            StatusCode::BAD_GATEWAY,
+                            Json(SnapshotDeploymentResponse {
+                                ok: false,
+                                message: format!("Snapshot timed out: {e}"),
+                            }),
+                        ),
+                    }
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: format!("Failed to create snapshot: {e}"),
+                    }),
+                ),
+            }
+        }
+        "lightsail" => {
+            let ls_region = if req.aws_region.is_empty() {
+                if region.is_empty() {
+                    "ap-southeast-1".to_string()
+                } else {
+                    region
+                }
+            } else {
+                req.aws_region.clone()
+            };
+            let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(ls_region);
+            match provider.create_instance_snapshot(&hostname, &req.snapshot_name) {
+                Ok(_) => {
+                    match provider
+                        .wait_for_snapshot(&req.snapshot_name, std::time::Duration::from_secs(600))
+                        .await
+                    {
+                        Ok(_) => (
+                            StatusCode::OK,
+                            Json(SnapshotDeploymentResponse {
+                                ok: true,
+                                message: format!(
+                                    "Snapshot '{}' created for instance '{hostname}'.",
+                                    req.snapshot_name
+                                ),
+                            }),
+                        ),
+                        Err(e) => (
+                            StatusCode::BAD_GATEWAY,
+                            Json(SnapshotDeploymentResponse {
+                                ok: false,
+                                message: format!("Snapshot timed out: {e}"),
+                            }),
+                        ),
+                    }
+                }
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: format!("Failed to create snapshot: {e}"),
+                    }),
+                ),
+            }
+        }
+        "byteplus" => {
+            if req.byteplus_access_key.is_empty() || req.byteplus_secret_key.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: "BytePlus access key and secret key are required.".into(),
+                    }),
+                );
+            }
+            let bp_region = if req.byteplus_region.is_empty() {
+                if region.is_empty() {
+                    "ap-southeast-1".to_string()
+                } else {
+                    region
+                }
+            } else {
+                req.byteplus_region.clone()
+            };
+            let bp_client = match clawmacdo_cloud::byteplus::BytePlusClient::new(
+                &req.byteplus_access_key,
+                &req.byteplus_secret_key,
+                &bp_region,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Invalid BytePlus credentials: {e}"),
+                        }),
+                    )
+                }
+            };
+            // Find instance by hostname
+            let instances = match bp_client.list_openclaw_instances().await {
+                Ok(i) => i,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Failed to list instances: {e}"),
+                        }),
+                    )
+                }
+            };
+            let instance = match instances.iter().find(|i| i.name == hostname) {
+                Some(i) => i,
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Instance '{hostname}' not found."),
+                        }),
+                    )
+                }
+            };
+            // Find system volume
+            let volume_id = match bp_client.describe_system_volume(&instance.id).await {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Failed to find system volume: {e}"),
+                        }),
+                    )
+                }
+            };
+            // Create snapshot
+            let snapshot_id = match bp_client
+                .create_ebs_snapshot(&volume_id, &req.snapshot_name)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(SnapshotDeploymentResponse {
+                            ok: false,
+                            message: format!("Failed to create snapshot: {e}"),
+                        }),
+                    )
+                }
+            };
+            match bp_client
+                .wait_for_snapshot(&snapshot_id, std::time::Duration::from_secs(600))
+                .await
+            {
+                Ok(_) => (
+                    StatusCode::OK,
+                    Json(SnapshotDeploymentResponse {
+                        ok: true,
+                        message: format!(
+                            "Snapshot '{}' (ID {}) created for instance '{hostname}'.",
+                            req.snapshot_name, snapshot_id
+                        ),
+                    }),
+                ),
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(SnapshotDeploymentResponse {
+                        ok: false,
+                        message: format!("Snapshot timed out: {e}"),
+                    }),
+                ),
+            }
+        }
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(SnapshotDeploymentResponse {
+                ok: false,
+                message: format!("Snapshot not supported for provider '{other}'."),
+            }),
+        ),
+    }
+}
+
 async fn toggle_funnel_handler(
     Path(id): Path<String>,
     Json(req): Json<FunnelToggleRequest>,
@@ -1647,6 +2005,205 @@ async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResp
                 qr_output: String::new(),
             }),
         ),
+    }
+}
+
+async fn list_snapshots_handler(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let provider = params
+        .get("provider")
+        .map(|s| s.as_str())
+        .unwrap_or("digitalocean");
+    let snapshots: Vec<serde_json::Value> = match provider {
+        #[cfg(feature = "digitalocean")]
+        "digitalocean" => {
+            let token = params.get("do_token").map(|s| s.as_str()).unwrap_or("");
+            if token.is_empty() {
+                return Json(serde_json::json!({ "error": "do_token required" }));
+            }
+            match clawmacdo_cloud::digitalocean::DoClient::new(token) {
+                Ok(client) => match client.list_snapshots().await {
+                    Ok(snaps) => snaps
+                        .into_iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "id": s.id,
+                                "name": s.name,
+                                "source": "",
+                                "size_gb": null,
+                                "status": "available",
+                                "created_at": "",
+                                "regions": s.regions,
+                            })
+                        })
+                        .collect(),
+                    Err(e) => return Json(serde_json::json!({ "error": format!("{e}") })),
+                },
+                Err(e) => return Json(serde_json::json!({ "error": format!("{e}") })),
+            }
+        }
+        #[cfg(feature = "lightsail")]
+        "lightsail" => {
+            let region = params
+                .get("region")
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "ap-southeast-1".to_string());
+            let ak = params
+                .get("access_key")
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let sk = params
+                .get("secret_key")
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::with_credentials(
+                region, ak, sk,
+            );
+            match provider.list_snapshots() {
+                Ok(snaps) => snaps
+                    .into_iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "id": s.name.clone().unwrap_or_default(),
+                            "name": s.name.unwrap_or_default(),
+                            "source": s.from_instance_name.unwrap_or_default(),
+                            "size_gb": s.size_in_gb,
+                            "status": s.state.unwrap_or_else(|| "available".to_string()),
+                            "created_at": "",
+                        })
+                    })
+                    .collect(),
+                Err(e) => return Json(serde_json::json!({ "error": format!("{e}") })),
+            }
+        }
+        #[cfg(feature = "byteplus")]
+        "byteplus" => {
+            let ak = params.get("access_key").map(|s| s.as_str()).unwrap_or("");
+            let sk = params.get("secret_key").map(|s| s.as_str()).unwrap_or("");
+            let bp_region = params
+                .get("region")
+                .map(|s| s.as_str())
+                .unwrap_or("ap-southeast-1");
+            if ak.is_empty() || sk.is_empty() {
+                return Json(serde_json::json!({ "error": "access_key and secret_key required" }));
+            }
+            match clawmacdo_cloud::byteplus::BytePlusClient::new(ak, sk, bp_region) {
+                Ok(client) => match client.describe_snapshots(None).await {
+                    Ok(snaps) => snaps
+                        .into_iter()
+                        .map(|s| {
+                            serde_json::json!({
+                                "id": s["SnapshotId"].as_str().unwrap_or(""),
+                                "name": s["SnapshotName"].as_str().unwrap_or(""),
+                                "source": s["VolumeId"].as_str().unwrap_or(""),
+                                "size_gb": s["VolumeSize"].as_u64(),
+                                "status": s["Status"].as_str().unwrap_or("available"),
+                                "created_at": s["CreationTime"].as_str().unwrap_or(""),
+                            })
+                        })
+                        .collect(),
+                    Err(e) => return Json(serde_json::json!({ "error": format!("{e}") })),
+                },
+                Err(e) => return Json(serde_json::json!({ "error": format!("{e}") })),
+            }
+        }
+        _ => return Json(serde_json::json!({ "error": "Unsupported provider" })),
+    };
+
+    Json(serde_json::json!({ "snapshots": snapshots }))
+}
+
+async fn restore_snapshot_handler(Json(req): Json<RestoreSnapshotRequest>) -> impl IntoResponse {
+    match req.provider.as_str() {
+        "byteplus" => {
+            if req.byteplus_access_key.is_empty() || req.byteplus_secret_key.is_empty() {
+                return Json(
+                    serde_json::json!({ "ok": false, "message": "BytePlus access key and secret key are required." }),
+                );
+            }
+            let params = crate::commands::bp_restore::BpRestoreParams {
+                access_key: req.byteplus_access_key,
+                secret_key: req.byteplus_secret_key,
+                snapshot_name: req.snapshot_name.clone(),
+                region: if req.byteplus_region.is_empty() {
+                    "ap-southeast-1".to_string()
+                } else {
+                    req.byteplus_region
+                },
+                size: if req.size.is_empty() {
+                    None
+                } else {
+                    Some(req.size)
+                },
+                spot: req.spot,
+            };
+            match crate::commands::bp_restore::run(params).await {
+                Ok(_) => Json(serde_json::json!({
+                    "ok": true,
+                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "message": format!("Restore failed: {e}")
+                })),
+            }
+        }
+        "lightsail" => {
+            let params = crate::commands::ls_restore::LsRestoreParams {
+                snapshot_name: req.snapshot_name.clone(),
+                region: if req.aws_region.is_empty() {
+                    "ap-southeast-1".to_string()
+                } else {
+                    req.aws_region
+                },
+                size: if req.size.is_empty() {
+                    None
+                } else {
+                    Some(req.size)
+                },
+            };
+            match crate::commands::ls_restore::run(params).await {
+                Ok(_) => Json(serde_json::json!({
+                    "ok": true,
+                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "message": format!("Restore failed: {e}")
+                })),
+            }
+        }
+        "digitalocean" => {
+            let params = crate::commands::do_restore::DoRestoreParams {
+                do_token: req.do_token,
+                snapshot_name: req.snapshot_name.clone(),
+                region: Some(if req.aws_region.is_empty() {
+                    "sgp1".to_string()
+                } else {
+                    req.aws_region
+                }),
+                size: if req.size.is_empty() {
+                    None
+                } else {
+                    Some(req.size)
+                },
+            };
+            match crate::commands::do_restore::run(params).await {
+                Ok(_) => Json(serde_json::json!({
+                    "ok": true,
+                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
+                })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "message": format!("Restore failed: {e}")
+                })),
+            }
+        }
+        other => Json(serde_json::json!({
+            "ok": false,
+            "message": format!("Restore not supported for provider '{other}'.")
+        })),
     }
 }
 
@@ -1947,6 +2504,7 @@ tailwind.config = {
   <div class="w-full px-4 sm:px-8 lg:px-12 flex gap-0">
     <button id="tab-deploy" onclick="switchTab('deploy')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors">Deploy</button>
     <button id="tab-deployments" onclick="switchTab('deployments')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Deployments</button>
+    <button id="tab-snapshots" onclick="switchTab('snapshots')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Snapshots</button>
   </div>
 </header>
 
@@ -2014,6 +2572,71 @@ tailwind.config = {
     <button onclick="deploymentsPage(1)" id="dep-next" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed" disabled>Next</button>
   </div>
 </div><!-- /deployments-view -->
+
+<!-- ═══ Snapshots view ═══ -->
+<div id="snapshots-view" class="hidden">
+  <div class="mb-4 flex flex-wrap gap-3 items-end">
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Provider</label>
+      <select id="snap-provider" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-blue-500 focus:border-blue-500">
+        <option value="digitalocean">DigitalOcean</option>
+        <option value="lightsail">AWS Lightsail</option>
+        <option value="byteplus">BytePlus</option>
+      </select>
+    </div>
+    <div id="snap-cred-do">
+      <label class="block text-xs text-slate-400 mb-1">DO Token</label>
+      <input type="password" id="snap-do-token" placeholder="dop_v1_..." class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-64" />
+    </div>
+    <div id="snap-cred-ls" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Access Key ID</label>
+      <input type="password" id="snap-ls-ak" placeholder="AKIA..." class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-48" />
+    </div>
+    <div id="snap-cred-ls2" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Secret Access Key</label>
+      <input type="password" id="snap-ls-sk" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-48" />
+    </div>
+    <div id="snap-cred-ls3" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Region</label>
+      <input type="text" id="snap-ls-region" value="ap-southeast-1" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-40" />
+    </div>
+    <div id="snap-cred-bp" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Access Key</label>
+      <input type="password" id="snap-bp-ak" placeholder="AKLT..." class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-40" />
+    </div>
+    <div id="snap-cred-bp2" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Secret Key</label>
+      <input type="password" id="snap-bp-sk" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-40" />
+    </div>
+    <div id="snap-cred-bp3" class="hidden">
+      <label class="block text-xs text-slate-400 mb-1">Region</label>
+      <input type="text" id="snap-bp-region" value="ap-southeast-1" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 w-40" />
+    </div>
+    <button onclick="loadSnapshots()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors">Load Snapshots</button>
+  </div>
+  <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-4 py-3">Name</th>
+            <th class="px-4 py-3">ID</th>
+            <th class="px-4 py-3">Provider</th>
+            <th class="px-4 py-3">Source</th>
+            <th class="px-4 py-3">Size</th>
+            <th class="px-4 py-3">Status</th>
+            <th class="px-4 py-3">Regions</th>
+            <th class="px-4 py-3">Created</th>
+            <th class="px-4 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="snapshots-tbody" class="divide-y divide-slate-800"></tbody>
+      </table>
+    </div>
+    <div id="snapshots-empty" class="hidden px-4 py-8 text-center text-slate-500 text-sm">No snapshots found. Select a provider and click Load Snapshots.</div>
+    <div id="snapshots-loading" class="hidden px-4 py-8 text-center text-slate-400 text-sm">Loading snapshots...</div>
+  </div>
+</div><!-- /snapshots-view -->
 
 </main>
 
@@ -3154,23 +3777,30 @@ async function startDeploy(e, cardNum) {
 }
 
 // ── Tab switching ───────────────────────────────────────────────────────
+const TAB_INACTIVE = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
+const TAB_ACTIVE = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
 function switchTab(tab) {
-  const deployView = document.getElementById('deploy-view');
-  const deploymentsView = document.getElementById('deployments-view');
-  const tabDeploy = document.getElementById('tab-deploy');
-  const tabDeployments = document.getElementById('tab-deployments');
-  if (tab === 'deployments') {
-    deployView.classList.add('hidden');
-    deploymentsView.classList.remove('hidden');
-    tabDeploy.className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
-    tabDeployments.className = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
-    loadDeployments();
-  } else {
-    deployView.classList.remove('hidden');
-    deploymentsView.classList.add('hidden');
-    tabDeploy.className = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
-    tabDeployments.className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
-  }
+  const views = ['deploy', 'deployments', 'snapshots'];
+  views.forEach(v => {
+    const el = document.getElementById(v + '-view');
+    const btn = document.getElementById('tab-' + v);
+    if (el) el.classList.toggle('hidden', v !== tab);
+    if (btn) btn.className = v === tab ? TAB_ACTIVE : TAB_INACTIVE;
+    // Reset forms in hidden views
+    if (v !== tab && el) el.querySelectorAll('form').forEach(f => f.reset());
+  });
+  // Close any open modals
+  ['snapshot-modal', 'restore-modal', 'destroy-modal'].forEach(id => {
+    const m = document.getElementById(id);
+    if (m) m.remove();
+  });
+  // Reset snapshot results
+  const snapTbody = document.getElementById('snapshots-tbody');
+  if (tab !== 'snapshots' && snapTbody) snapTbody.innerHTML = '';
+  const snapEmpty = document.getElementById('snapshots-empty');
+  if (tab !== 'snapshots' && snapEmpty) snapEmpty.classList.add('hidden');
+  if (tab === 'deployments') loadDeployments();
+  if (tab === 'snapshots') initSnapshotCredFields();
 }
 
 // ── Deployments table ───────────────────────────────────────────────────
@@ -3223,9 +3853,10 @@ async function loadDeployments(page) {
           '</td>' +
           '<td class="px-4 py-3">' +
             '<div class="flex flex-col gap-1">' +
-              '<div class="flex gap-1">' +
+              '<div class="grid grid-cols-2 gap-1">' +
                 '<button onclick="depRepairWhatsApp(\'' + esc(d.id) + '\',this)" class="text-amber-400 hover:text-amber-300 text-xs font-medium px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors" title="Install/Repair WhatsApp Support">WhatsApp</button>' +
                 '<button onclick="depFetchWhatsAppQr(\'' + esc(d.id) + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors" title="Fetch WhatsApp QR Code">QR</button>' +
+                '<button onclick="depSnapshot(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\')" class="text-cyan-400 hover:text-cyan-300 text-xs font-medium px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 transition-colors" title="Create snapshot">Snapshot</button>' +
                 '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
               '</div>' +
               '<pre id="wa-output-' + esc(d.id) + '" class="hidden mt-1 bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
@@ -3547,6 +4178,283 @@ checkDryRun();
 // Auto-add the first deployment card
 addDeployCard();
 restoreSavedDeployments();
+
+// ── Snapshot tab ────────────────────────────────────────────────────────
+function initSnapshotCredFields() {
+  const prov = document.getElementById('snap-provider').value;
+  document.getElementById('snap-cred-do').classList.toggle('hidden', prov !== 'digitalocean');
+  document.getElementById('snap-cred-ls').classList.toggle('hidden', prov !== 'lightsail');
+  document.getElementById('snap-cred-ls2').classList.toggle('hidden', prov !== 'lightsail');
+  document.getElementById('snap-cred-ls3').classList.toggle('hidden', prov !== 'lightsail');
+  document.getElementById('snap-cred-bp').classList.toggle('hidden', prov !== 'byteplus');
+  document.getElementById('snap-cred-bp2').classList.toggle('hidden', prov !== 'byteplus');
+  document.getElementById('snap-cred-bp3').classList.toggle('hidden', prov !== 'byteplus');
+}
+document.getElementById('snap-provider').addEventListener('change', initSnapshotCredFields);
+
+async function loadSnapshots() {
+  const provider = document.getElementById('snap-provider').value;
+  const tbody = document.getElementById('snapshots-tbody');
+  const empty = document.getElementById('snapshots-empty');
+  const loading = document.getElementById('snapshots-loading');
+  tbody.innerHTML = '';
+  empty.classList.add('hidden');
+  loading.classList.remove('hidden');
+
+  const params = new URLSearchParams({ provider });
+  if (provider === 'digitalocean') params.set('do_token', document.getElementById('snap-do-token').value);
+  if (provider === 'lightsail') {
+    params.set('access_key', document.getElementById('snap-ls-ak').value);
+    params.set('secret_key', document.getElementById('snap-ls-sk').value);
+    params.set('region', document.getElementById('snap-ls-region').value);
+  }
+  if (provider === 'byteplus') {
+    params.set('access_key', document.getElementById('snap-bp-ak').value);
+    params.set('secret_key', document.getElementById('snap-bp-sk').value);
+    params.set('region', document.getElementById('snap-bp-region').value);
+  }
+
+  try {
+    const res = await fetch('/api/snapshots?' + params.toString(), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    loading.classList.add('hidden');
+    if (!res.ok) { alert(data.error || 'Failed to load snapshots'); return; }
+    if (!data.snapshots || data.snapshots.length === 0) {
+      empty.classList.remove('hidden');
+      return;
+    }
+    for (const s of data.snapshots) {
+      const tr = document.createElement('tr');
+      tr.className = 'hover:bg-slate-800/50';
+      tr.innerHTML =
+        '<td class="px-4 py-3 text-slate-200">' + esc(s.name || '-') + '</td>' +
+        '<td class="px-4 py-3 text-slate-400 font-mono text-xs">' + esc(s.id || '-') + '</td>' +
+        '<td class="px-4 py-3 text-slate-400">' + esc(provider) + '</td>' +
+        '<td class="px-4 py-3 text-slate-400 text-xs">' + esc(s.source || '-') + '</td>' +
+        '<td class="px-4 py-3 text-slate-400 text-xs">' + (s.size_gb ? s.size_gb + ' GB' : '-') + '</td>' +
+        '<td class="px-4 py-3">' + statusBadge(s.status || 'available') + '</td>' +
+        '<td class="px-4 py-3 text-slate-400 text-xs">' + (s.regions ? esc(s.regions.join(', ')) : '-') + '</td>' +
+        '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + esc(s.created_at || '-') + '</td>' +
+        '<td class="px-4 py-3">' +
+          '<button onclick="restoreSnapshot(\'' + esc(s.name || '') + '\',\'' + esc(provider) + '\')" class="text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 transition-colors">Restore</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    loading.classList.add('hidden');
+    alert('Error loading snapshots: ' + e.message);
+  }
+}
+
+function restoreSnapshot(name, provider) {
+  const existing = document.getElementById('restore-modal');
+  if (existing) existing.remove();
+
+  let credsHtml = '';
+  if (provider === 'digitalocean') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">DigitalOcean Token <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="restore-do-token" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="dop_v1_...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Region</label><input type="text" id="restore-do-region" value="sgp1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-green-500 focus:border-transparent"></div>';
+  } else if (provider === 'lightsail') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="restore-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-green-500 focus:border-transparent"></div>';
+  } else if (provider === 'byteplus') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="restore-bp-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-green-500 focus:border-transparent" placeholder="AKLT...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Secret Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="restore-bp-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-green-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Region</label><input type="text" id="restore-bp-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-green-500 focus:border-transparent"></div>' +
+      '<div class="mt-3"><label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer"><input type="checkbox" id="restore-bp-spot" class="rounded border-slate-600 bg-slate-800 text-green-500 focus:ring-green-500"> Use spot instance (cheaper)</label></div>';
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'restore-modal';
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+  modal.innerHTML = `
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-green-400">Restore from Snapshot</h3>
+      </div>
+      <div class="bg-slate-800/50 rounded-lg p-3 mb-4 text-xs text-slate-400 space-y-1">
+        <div><span class="text-slate-500">Snapshot:</span> <span class="text-slate-200">${esc(name)}</span></div>
+        <div><span class="text-slate-500">Provider:</span> <span class="text-slate-200">${esc(provider)}</span></div>
+      </div>
+      <p class="text-sm text-slate-300 mb-3">This will create a <strong class="text-green-400">new instance</strong> from this snapshot.</p>
+      ${credsHtml}
+      <div id="restore-modal-status" class="text-sm mt-3 hidden"></div>
+      <div class="flex gap-3 justify-end mt-4">
+        <button onclick="closeRestoreModal()" class="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors">Cancel</button>
+        <button id="restore-modal-btn" onclick="confirmRestore('${esc(name)}','${esc(provider)}')" class="px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-500 rounded-lg transition-colors">Restore Instance</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeRestoreModal(); });
+}
+
+function closeRestoreModal() {
+  const modal = document.getElementById('restore-modal');
+  if (modal) modal.remove();
+}
+
+async function confirmRestore(snapshotName, provider) {
+  const btn = document.getElementById('restore-modal-btn');
+  const status = document.getElementById('restore-modal-status');
+
+  btn.disabled = true;
+  btn.textContent = 'Restoring...';
+  btn.className = 'px-4 py-2 text-sm font-medium text-slate-400 bg-slate-700 rounded-lg cursor-not-allowed';
+  status.className = 'text-sm mt-3 text-yellow-400';
+  status.innerHTML = '<div class="flex items-center gap-2"><svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>Restoring from snapshot... this may take 5-10 minutes.</div>';
+  status.classList.remove('hidden');
+
+  const body = { snapshot_name: snapshotName, provider: provider };
+  if (provider === 'digitalocean') {
+    body.do_token = (document.getElementById('restore-do-token') || {}).value || '';
+    body.aws_region = (document.getElementById('restore-do-region') || {}).value || 'sgp1';
+  } else if (provider === 'lightsail') {
+    body.aws_region = (document.getElementById('restore-aws-region') || {}).value || 'ap-southeast-1';
+  } else if (provider === 'byteplus') {
+    body.byteplus_access_key = (document.getElementById('restore-bp-ak') || {}).value || '';
+    body.byteplus_secret_key = (document.getElementById('restore-bp-sk') || {}).value || '';
+    body.byteplus_region = (document.getElementById('restore-bp-region') || {}).value || 'ap-southeast-1';
+    body.spot = (document.getElementById('restore-bp-spot') || {}).checked || false;
+  }
+
+  try {
+    const res = await fetch('/api/snapshots/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'text-sm mt-3 text-green-400';
+      status.textContent = data.message;
+      btn.textContent = 'Done';
+      setTimeout(() => { closeRestoreModal(); loadDeployments(); }, 2000);
+    } else {
+      status.className = 'text-sm mt-3 text-red-400';
+      status.textContent = data.message || 'Restore failed.';
+      btn.disabled = false;
+      btn.textContent = 'Restore Instance';
+      btn.className = 'px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-500 rounded-lg transition-colors';
+    }
+  } catch (e) {
+    status.className = 'text-sm mt-3 text-red-400';
+    status.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Restore Instance';
+    btn.className = 'px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-500 rounded-lg transition-colors';
+  }
+}
+
+function depSnapshot(id, provider, hostname) {
+  const existing = document.getElementById('snapshot-modal');
+  if (existing) existing.remove();
+
+  const defaultName = hostname + '-' + new Date().toISOString().slice(0,10);
+  let credsHtml = '';
+  if (provider === 'digitalocean') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">DigitalOcean Token <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-do-token" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent" placeholder="dop_v1_...">' + eyeBtn() + '</div></div>';
+  } else if (provider === 'lightsail') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="snap-modal-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></div>';
+  } else if (provider === 'byteplus') {
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent" placeholder="AKLT...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Secret Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Region</label><input type="text" id="snap-modal-bp-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></div>';
+  } else {
+    credsHtml = '<p class="text-slate-400 text-sm mt-3">Snapshot not supported for provider "' + esc(provider) + '".</p>';
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'snapshot-modal';
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+  modal.innerHTML = `
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+        </div>
+        <h3 class="text-lg font-semibold text-cyan-400">Create Snapshot</h3>
+      </div>
+      <div class="bg-slate-800/50 rounded-lg p-3 mb-4 text-xs text-slate-400 space-y-1">
+        <div><span class="text-slate-500">Hostname:</span> <span class="text-slate-200">${esc(hostname || '-')}</span></div>
+        <div><span class="text-slate-500">Provider:</span> <span class="text-slate-200">${esc(provider || '-')}</span></div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Snapshot Name <span class="text-red-400">*</span></label>
+        <input type="text" id="snap-modal-name" value="${esc(defaultName)}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent">
+      </div>
+      ${credsHtml}
+      <div id="snap-modal-status" class="text-sm mt-3 hidden"></div>
+      <div class="flex gap-3 justify-end mt-4">
+        <button onclick="closeSnapshotModal()" class="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors">Cancel</button>
+        <button id="snap-modal-btn" onclick="confirmSnapshot('${esc(id)}','${esc(provider)}')" class="px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors">Create Snapshot</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeSnapshotModal(); });
+}
+
+function closeSnapshotModal() {
+  const modal = document.getElementById('snapshot-modal');
+  if (modal) modal.remove();
+}
+
+async function confirmSnapshot(id, provider) {
+  const btn = document.getElementById('snap-modal-btn');
+  const status = document.getElementById('snap-modal-status');
+  const snapshotName = (document.getElementById('snap-modal-name') || {}).value || '';
+  if (!snapshotName) { status.className = 'text-sm mt-3 text-red-400'; status.textContent = 'Snapshot name is required.'; status.classList.remove('hidden'); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  btn.className = 'px-4 py-2 text-sm font-medium text-slate-400 bg-slate-700 rounded-lg cursor-not-allowed';
+  status.className = 'text-sm mt-3 text-yellow-400';
+  status.innerHTML = '<div class="flex items-center gap-2"><svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>Creating snapshot... this may take several minutes.</div>';
+  status.classList.remove('hidden');
+
+  const body = { snapshot_name: snapshotName };
+  if (provider === 'digitalocean') {
+    body.do_token = (document.getElementById('snap-modal-do-token') || {}).value || '';
+  } else if (provider === 'lightsail') {
+    body.aws_region = (document.getElementById('snap-modal-aws-region') || {}).value || 'ap-southeast-1';
+  } else if (provider === 'byteplus') {
+    body.byteplus_access_key = (document.getElementById('snap-modal-bp-ak') || {}).value || '';
+    body.byteplus_secret_key = (document.getElementById('snap-modal-bp-sk') || {}).value || '';
+    body.byteplus_region = (document.getElementById('snap-modal-bp-region') || {}).value || 'ap-southeast-1';
+  }
+
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'text-sm mt-3 text-green-400';
+      status.textContent = data.message;
+      btn.textContent = 'Done';
+      setTimeout(() => { closeSnapshotModal(); }, 2000);
+    } else {
+      status.className = 'text-sm mt-3 text-red-400';
+      status.textContent = data.message || 'Snapshot failed.';
+      btn.disabled = false;
+      btn.textContent = 'Create Snapshot';
+      btn.className = 'px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors';
+    }
+  } catch (e) {
+    status.className = 'text-sm mt-3 text-red-400';
+    status.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Create Snapshot';
+    btn.className = 'px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors';
+  }
+}
 </script>
 </body>
 </html>

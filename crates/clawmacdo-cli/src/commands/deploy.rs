@@ -997,6 +997,21 @@ systemctl restart systemd-resolved"#;
     }
     progress::emit(tx, "  Public DNS fallback configured (8.8.8.8, 1.1.1.1)");
 
+    // BytePlus apt-sources fix: the default mirror (mirrors.ivolces.com) is often
+    // unresolvable from outside BytePlus's internal network. Replace with the
+    // official Ubuntu archive so that apt-get install works reliably.
+    progress::emit(tx, "  Fixing apt package sources...");
+    {
+        let apt_cmd = r#"if grep -q 'mirrors\.ivolces\.com' /etc/apt/sources.list 2>/dev/null; then
+  sed -i 's|http://mirrors\.ivolces\.com/ubuntu/|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list
+  apt-get update -y >/dev/null 2>&1
+fi"#;
+        let ip_c = ip.clone();
+        let key_c = keypair.private_key_path.clone();
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, apt_cmd)).await??;
+    }
+    progress::emit(tx, "  Apt package sources verified");
+
     // Step 8: Upload & restore backup
     let backup_restored: Option<String>;
     if let Some(bp) = backup_path.as_deref() {

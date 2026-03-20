@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::{
-    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async,
+    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async, ssh_root_async,
 };
 use std::path::Path;
 
@@ -10,7 +10,31 @@ pub struct DockerFixResult {
     pub output: String,
 }
 
+/// Install Docker via the official convenience script if it is not present.
+async fn ensure_docker_installed(ip: &str, key: &Path) -> Result<String> {
+    let check = ssh_root_async(
+        ip,
+        key,
+        "command -v docker >/dev/null 2>&1 && echo installed || echo missing",
+    )
+    .await?;
+    if check.trim() == "missing" {
+        let out = ssh_root_async(
+            ip,
+            key,
+            "echo '[0/6] Docker not found — installing...' && curl -fsSL https://get.docker.com | sh && systemctl enable --now docker && echo docker_install_ok",
+        )
+        .await?;
+        Ok(out)
+    } else {
+        Ok(String::new())
+    }
+}
+
 pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<DockerFixResult> {
+    // Ensure Docker is installed before attempting repair
+    let install_output = ensure_docker_installed(ip, key).await?;
+
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -35,8 +59,8 @@ pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<Docke
          (/usr/bin/sg docker -c 'docker info >/dev/null 2>&1 && echo docker_sg_ok || echo docker_sg_fail') && \
          echo '[5/6] Probing sandbox image access...' && \
          (/usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 && echo sandbox_image_ok || echo sandbox_image_missing') && \
-         echo '[6/6] Probing gateway health...' && \
-         (curl -fsS --max-time 3 http://127.0.0.1:18789/health >/dev/null 2>&1 && echo health_ok || echo health_fail)",
+         echo '[6/6] Probing gateway health (waiting for startup)...' && \
+         (for i in 1 2 3 4 5; do curl -fsS --max-time 3 http://127.0.0.1:18789/health >/dev/null 2>&1 && echo health_ok && break || sleep 3; done; curl -fsS --max-time 3 http://127.0.0.1:18789/health >/dev/null 2>&1 || echo health_fail)",
         home = config::OPENCLAW_HOME,
     );
 
@@ -45,13 +69,21 @@ pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<Docke
     } else {
         ssh_as_openclaw_with_user_async(ip, key, &cmd, ssh_user).await?
     };
-    let lowered = output.to_ascii_lowercase();
+
+    let combined = if install_output.is_empty() {
+        output
+    } else {
+        format!("{install_output}\n{output}")
+    };
+    let lowered = combined.to_ascii_lowercase();
     let ok = lowered.contains("docker_sg_ok")
         && (lowered.contains("health_ok")
             || lowered.contains("gateway_status=active")
             || lowered.contains("gateway_status=activating"));
-
-    Ok(DockerFixResult { ok, output })
+    Ok(DockerFixResult {
+        ok,
+        output: combined,
+    })
 }
 
 #[allow(dead_code)]

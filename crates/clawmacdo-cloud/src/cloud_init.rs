@@ -50,7 +50,8 @@ runcmd:
   # --- Enable corepack (ships with Node) for pnpm ---
   - corepack enable
 
-  # --- Enable Docker ---
+  # --- Enable Docker (install via official script if docker.io package unavailable) ---
+  - command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
   - systemctl enable --now docker
 
   # --- Enable root SSH pubkey login (needed for providers which default to a non-root user) ---
@@ -106,7 +107,8 @@ apt-get install -y nodejs
 # --- Enable corepack (ships with Node) for pnpm ---
 corepack enable
 
-# --- Enable Docker ---
+# --- Enable Docker (install via official script if docker.io package unavailable) ---
+command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
 systemctl enable --now docker
 
 # --- Enable root SSH pubkey login ---

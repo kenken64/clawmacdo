@@ -96,6 +96,8 @@ pub fn ensure_aws_cli() -> Result<(), AppError> {
 
 pub struct LightsailCliProvider {
     region: String,
+    access_key: Option<String>,
+    secret_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -162,18 +164,45 @@ struct LightsailSnapshotsResponse {
 
 impl LightsailCliProvider {
     pub fn new(region: String) -> Self {
-        Self { region }
+        Self {
+            region,
+            access_key: None,
+            secret_key: None,
+        }
+    }
+
+    pub fn with_credentials(region: String, access_key: String, secret_key: String) -> Self {
+        Self {
+            region,
+            access_key: if access_key.is_empty() {
+                None
+            } else {
+                Some(access_key)
+            },
+            secret_key: if secret_key.is_empty() {
+                None
+            } else {
+                Some(secret_key)
+            },
+        }
     }
 
     /// Execute AWS CLI command and return JSON output
     fn execute_aws_cli(&self, args: &[&str]) -> Result<String, AppError> {
-        let output = Command::new("aws")
-            .arg("lightsail")
+        let mut cmd = Command::new("aws");
+        cmd.arg("lightsail")
             .args(args)
             .arg("--region")
             .arg(&self.region)
             .arg("--output")
-            .arg("json")
+            .arg("json");
+        if let Some(ak) = &self.access_key {
+            cmd.env("AWS_ACCESS_KEY_ID", ak);
+        }
+        if let Some(sk) = &self.secret_key {
+            cmd.env("AWS_SECRET_ACCESS_KEY", sk);
+        }
+        let output = cmd
             .output()
             .map_err(|e| AppError::CloudProviderError(format!("Failed to execute AWS CLI: {e}")))?;
 
