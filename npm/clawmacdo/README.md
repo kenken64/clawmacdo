@@ -5,7 +5,7 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.25.0
+## ✨ What's New in v0.26.0
 
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID, with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
 - **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps, and EIP is now created inline with the instance (`ReleaseWithInstance: true`) so it auto-releases on destroy
@@ -663,5 +663,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.25.0
+**Current version:** 0.26.0
 **Architecture version:** 2.0 (modular workspace)

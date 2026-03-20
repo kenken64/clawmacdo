@@ -4,11 +4,11 @@ use clawmacdo_core::error::AppError;
 use std::path::Path;
 
 /// Step 11: Configure Docker daemon and add openclaw to docker group.
-/// Docker CE is already installed and running from cloud-init.
-/// This step writes daemon.json for hardening and restarts docker.
-/// On images where Docker is not available (e.g. BytePlus), this step is skipped.
+/// Docker CE is expected from cloud-init, but on some images (e.g. BytePlus)
+/// the `docker.io` package is unavailable. When Docker is missing this step
+/// installs it via the official convenience script before configuring it.
 pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppError> {
-    // Check if Docker is installed; skip entirely if not
+    // Check if Docker is installed; if not, install it
     let check = ssh_root_as_async(
         ip,
         key,
@@ -17,7 +17,12 @@ pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppEr
     )
     .await?;
     if check.trim() == "no" {
-        return Ok(());
+        ssh_root_as_async(ip, key, "curl -fsSL https://get.docker.com | sh", ssh_user)
+            .await
+            .map_err(|e| AppError::Provision {
+                phase: "docker install".into(),
+                message: e.to_string(),
+            })?;
     }
 
     // Write /etc/docker/daemon.json
