@@ -413,6 +413,33 @@ enum Commands {
         #[arg(long)]
         spot: bool,
     },
+    /// Update the AI model on a deployed OpenClaw instance
+    UpdateModel {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Primary AI model (anthropic, openai, gemini, byteplus)
+        #[arg(long)]
+        primary_model: String,
+        /// First failover model
+        #[arg(long, default_value = "")]
+        failover_1: String,
+        /// Second failover model
+        #[arg(long, default_value = "")]
+        failover_2: String,
+        /// Anthropic API key (only needed if changing to/adding anthropic)
+        #[arg(long, default_value = "", env = "ANTHROPIC_API_KEY")]
+        anthropic_key: String,
+        /// OpenAI API key (only needed if changing to/adding openai)
+        #[arg(long, default_value = "", env = "OPENAI_API_KEY")]
+        openai_key: String,
+        /// Gemini API key (only needed if changing to/adding gemini)
+        #[arg(long, default_value = "", env = "GEMINI_API_KEY")]
+        gemini_key: String,
+        /// BytePlus Ark API key (only needed if changing to/adding byteplus)
+        #[arg(long, default_value = "", env = "BYTEPLUS_ARK_API_KEY")]
+        byteplus_ark_api_key: String,
+    },
     /// Start the web UI server
     #[cfg(feature = "web-ui")]
     Serve {
@@ -648,6 +675,9 @@ async fn main() -> anyhow::Result<()> {
                 droplet_id,
                 snapshot_name,
                 power_off,
+                progress_tx: None,
+                db: None,
+                op_id: None,
             })
             .await
         }
@@ -657,15 +687,17 @@ async fn main() -> anyhow::Result<()> {
             snapshot_name,
             region,
             size,
-        } => {
-            commands::do_restore::run(commands::do_restore::DoRestoreParams {
-                do_token,
-                snapshot_name,
-                region,
-                size,
-            })
-            .await
-        }
+        } => commands::do_restore::run(commands::do_restore::DoRestoreParams {
+            do_token,
+            snapshot_name,
+            region,
+            size,
+            progress_tx: None,
+            db: None,
+            op_id: None,
+        })
+        .await
+        .map(|_| ()),
         #[cfg(feature = "lightsail")]
         Commands::LsSnapshot {
             instance_name,
@@ -676,6 +708,9 @@ async fn main() -> anyhow::Result<()> {
                 instance_name,
                 snapshot_name,
                 region,
+                progress_tx: None,
+                db: None,
+                op_id: None,
             })
             .await
         }
@@ -684,14 +719,16 @@ async fn main() -> anyhow::Result<()> {
             snapshot_name,
             region,
             size,
-        } => {
-            commands::ls_restore::run(commands::ls_restore::LsRestoreParams {
-                snapshot_name,
-                region,
-                size,
-            })
-            .await
-        }
+        } => commands::ls_restore::run(commands::ls_restore::LsRestoreParams {
+            snapshot_name,
+            region,
+            size,
+            progress_tx: None,
+            db: None,
+            op_id: None,
+        })
+        .await
+        .map(|_| ()),
         #[cfg(feature = "byteplus")]
         Commands::BpSnapshot {
             access_key,
@@ -706,6 +743,9 @@ async fn main() -> anyhow::Result<()> {
                 instance_id,
                 snapshot_name,
                 region,
+                progress_tx: None,
+                db: None,
+                op_id: None,
             })
             .await
         }
@@ -717,14 +757,38 @@ async fn main() -> anyhow::Result<()> {
             region,
             size,
             spot,
+        } => commands::bp_restore::run(commands::bp_restore::BpRestoreParams {
+            access_key,
+            secret_key,
+            snapshot_name,
+            region,
+            size,
+            spot,
+            progress_tx: None,
+            db: None,
+            op_id: None,
+        })
+        .await
+        .map(|_| ()),
+        Commands::UpdateModel {
+            instance,
+            primary_model,
+            failover_1,
+            failover_2,
+            anthropic_key,
+            openai_key,
+            gemini_key,
+            byteplus_ark_api_key,
         } => {
-            commands::bp_restore::run(commands::bp_restore::BpRestoreParams {
-                access_key,
-                secret_key,
-                snapshot_name,
-                region,
-                size,
-                spot,
+            commands::update_model::run(commands::update_model::UpdateModelParams {
+                instance,
+                primary_model,
+                failover_1,
+                failover_2,
+                anthropic_key,
+                openai_key,
+                gemini_key,
+                byteplus_ark_api_key,
             })
             .await
         }

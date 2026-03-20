@@ -23,6 +23,8 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [ark-api-key](#ark-api-key) — Generate BytePlus ARK API key or list endpoints
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
+- [update-model](#update-model) — Update the AI model on a deployed instance
+- [snapshot-restore-progress](#snapshot-restore-progress) — Progress tracking for snapshot/restore operations
 - [serve](#serve) — Start the web UI server
 - [Environment Variables](#environment-variables)
 - [Web UI API Endpoints](#web-ui-api-endpoints)
@@ -1467,6 +1469,124 @@ clawmacdo ls-restore --snapshot-name "my-openclaw-backup"
 # Restore with larger size
 clawmacdo ls-restore --snapshot-name "my-openclaw-backup" --size s-4vcpu-8gb
 ```
+
+---
+
+## update-model
+
+Update the primary AI model or failover chain on a deployed OpenClaw instance without redeploying.
+
+### Syntax
+
+```
+clawmacdo update-model --instance <QUERY> --primary-model <MODEL> [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Env Var | Description |
+|------|----------|---------|---------|-------------|
+| `--instance` | Yes | — | — | Deploy ID, hostname, or IP address |
+| `--primary-model` | Yes | — | — | Primary AI model (`anthropic`, `openai`, `gemini`, `byteplus`) |
+| `--failover-1` | No | — | — | First failover model |
+| `--failover-2` | No | — | — | Second failover model |
+| `--anthropic-key` | No | — | `ANTHROPIC_API_KEY` | Anthropic API key |
+| `--openai-key` | No | — | `OPENAI_API_KEY` | OpenAI API key |
+| `--gemini-key` | No | — | `GEMINI_API_KEY` | Gemini API key |
+| `--byteplus-ark-api-key` | No | — | `BYTEPLUS_ARK_API_KEY` | BytePlus Ark API key |
+
+### What It Does
+
+1. Updates API keys in `/home/openclaw/.openclaw/.env` (only for keys explicitly provided)
+2. Configures BytePlus provider settings in `openclaw.json` (if byteplus is selected)
+3. Sets the primary model and failover chain via `openclaw models set` / `openclaw models fallbacks add`
+4. Restarts the gateway service to apply changes
+
+### Examples
+
+```bash
+# Switch to OpenAI as primary model
+clawmacdo update-model --instance my-deploy \
+  --primary-model openai --openai-key "$OPENAI_API_KEY"
+
+# Switch to BytePlus ARK with Anthropic failover
+clawmacdo update-model --instance my-deploy \
+  --primary-model byteplus --failover-1 anthropic \
+  --byteplus-ark-api-key "$BYTEPLUS_ARK_API_KEY" \
+  --anthropic-key "$ANTHROPIC_API_KEY"
+
+# Multi-model failover chain (use env vars for keys)
+export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="AIza..."
+clawmacdo update-model --instance my-deploy \
+  --primary-model anthropic --failover-1 openai --failover-2 gemini
+
+# Switch model without providing key (key already on instance)
+clawmacdo update-model --instance 192.168.1.100 \
+  --primary-model gemini
+```
+
+### Sample Output
+
+```
+Updating AI model on 192.168.1.100...
+[1/4] Updating API keys in .env...
+  API keys updated.
+[2/4] Updating provider configuration...
+  No provider config changes needed.
+[3/4] Setting primary model and failovers...
+  ok
+[4/4] Restarting gateway service...
+  gateway: active
+
+AI model updated on 192.168.1.100:
+  Primary: openai (openai/gpt-5-mini)
+  Failover 1: anthropic (anthropic/claude-opus-4-6)
+```
+
+---
+
+## snapshot-restore-progress
+
+Snapshot and restore operations now run asynchronously and return an `operation_id` immediately. Progress is streamed via Server-Sent Events (SSE).
+
+### API Flow
+
+1. **Start operation** — `POST /api/deployments/{id}/snapshot` or `POST /api/snapshots/restore`
+2. **Response** — `{ "ok": true, "operation_id": "abc-123" }` (returned immediately)
+3. **Stream progress** — `GET /api/deploy/{operation_id}/events` (SSE)
+
+### SSE Message Format
+
+| Message pattern | Meaning |
+|----------------|---------|
+| `[Step N/T] Label` | Step N of T is starting |
+| `SNAPSHOT_COMPLETE_JSON:{...}` | Snapshot succeeded |
+| `RESTORE_COMPLETE_JSON:{...}` | Restore succeeded (includes `deploy_id`, `hostname`, `ip`, `ssh_key_path`) |
+| `SNAPSHOT_ERROR:message` | Snapshot failed |
+| `RESTORE_ERROR:message` | Restore failed |
+
+### Example
+
+```bash
+# Start snapshot
+curl -s -X POST http://localhost:3456/api/deployments/abc123/snapshot \
+  -H 'Content-Type: application/json' \
+  -d '{"snapshot_name":"backup-2026-03-20","do_token":"dop_v1_..."}'
+# {"ok":true,"message":"Snapshot operation started.","operation_id":"def-456"}
+
+# Stream progress
+curl -N http://localhost:3456/api/deploy/def-456/events
+# data: [Step 1/3] Verifying droplet...
+# data:   Droplet: openclaw-abc (ID 12345) — active
+# data: [Step 2/3] Creating snapshot 'backup-2026-03-20'...
+# data:   Snapshot created.
+# data: [Step 3/3] Confirming snapshot...
+# data: SNAPSHOT_COMPLETE_JSON:{"snapshot_name":"backup-2026-03-20","hostname":"openclaw-abc"}
+```
+
+For TanStack (React Query) frontend integration, see [`docs/tanstack-progress-tracking.md`](tanstack-progress-tracking.md).
 
 ---
 

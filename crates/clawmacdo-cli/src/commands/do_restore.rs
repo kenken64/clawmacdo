@@ -4,40 +4,80 @@ use clawmacdo_cloud::digitalocean::DoClient;
 use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_db as db;
 use clawmacdo_ssh as ssh;
+use clawmacdo_ui::progress;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 pub struct DoRestoreParams {
     pub do_token: String,
     pub snapshot_name: String,
     pub region: Option<String>,
     pub size: Option<String>,
+    pub progress_tx: Option<mpsc::UnboundedSender<String>>,
+    pub db: Option<Arc<Mutex<rusqlite::Connection>>>,
+    pub op_id: Option<String>,
 }
 
-pub async fn run(params: DoRestoreParams) -> Result<()> {
+/// Result returned on successful restore so callers (serve.rs) can relay details.
+pub struct RestoreResult {
+    pub deploy_id: String,
+    pub hostname: String,
+    pub ip_address: String,
+    pub ssh_key_path: String,
+}
+
+pub async fn run(params: DoRestoreParams) -> Result<RestoreResult> {
     config::ensure_dirs()?;
 
-    let deploy_id = uuid::Uuid::new_v4().to_string();
+    let deploy_id = params
+        .op_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let hostname = format!("openclaw-{}", &deploy_id[..8]);
+    let tx = &params.progress_tx;
+    let pdb = &params.db;
+    let total: i32 = 5;
 
-    println!("\n[Step 1/5] Resolving parameters...");
+    // Step 1
+    progress::emit(tx, &format!("\n[Step 1/{total}] Resolving parameters..."));
+    db::record_step_start(pdb, &deploy_id, 1, total, "Resolving parameters");
     let region = params
         .region
         .unwrap_or_else(|| config::DEFAULT_REGION.to_string());
     let size = params
         .size
         .unwrap_or_else(|| config::DEFAULT_SIZE.to_string());
+    progress::emit(tx, &format!("  Hostname: {hostname}"));
+    progress::emit(tx, &format!("  Region:   {region}"));
+    progress::emit(tx, &format!("  Size:     {size}"));
+    progress::emit(tx, &format!("  Snapshot: {}", params.snapshot_name));
+    db::record_step_complete(pdb, &deploy_id, 1);
 
-    println!("  Hostname:  {hostname}");
-    println!("  Region:    {region}");
-    println!("  Size:      {size}");
-    println!("  Snapshot:  {}", params.snapshot_name);
-
-    // Step 2: Generate SSH key pair
-    println!("\n[Step 2/5] Generating SSH key pair...");
+    // Step 2
+    progress::emit(
+        tx,
+        &format!("\n[Step 2/{total}] Generating SSH key pair..."),
+    );
+    db::record_step_start(pdb, &deploy_id, 2, total, "Generating SSH key pair");
     let keypair = ssh::generate_keypair(&deploy_id)?;
-    println!("  Key saved: {}", keypair.private_key_path.display());
+    progress::emit(
+        tx,
+        &format!("  Key saved: {}", keypair.private_key_path.display()),
+    );
+    db::record_step_complete(pdb, &deploy_id, 2);
 
-    // Step 3: Upload SSH key and look up snapshot
-    println!("\n[Step 3/5] Uploading SSH key and looking up snapshot...");
+    // Step 3
+    progress::emit(
+        tx,
+        &format!("\n[Step 3/{total}] Uploading SSH key and looking up snapshot..."),
+    );
+    db::record_step_start(
+        pdb,
+        &deploy_id,
+        3,
+        total,
+        "Uploading SSH key & looking up snapshot",
+    );
     let do_client = DoClient::new(&params.do_token)?;
 
     let key_name = format!("clawmacdo-{}", &deploy_id[..8]);
@@ -45,9 +85,12 @@ pub async fn run(params: DoRestoreParams) -> Result<()> {
         .upload_ssh_key(&key_name, &keypair.public_key_openssh)
         .await
         .context("Failed to upload SSH key to DigitalOcean")?;
-    println!(
-        "  Key ID: {}, Fingerprint: {}",
-        key_info.id, key_info.fingerprint
+    progress::emit(
+        tx,
+        &format!(
+            "  Key ID: {}, Fingerprint: {}",
+            key_info.id, key_info.fingerprint
+        ),
     );
 
     let snapshots = do_client
@@ -71,18 +114,27 @@ pub async fn run(params: DoRestoreParams) -> Result<()> {
         "Snapshot ID '{}' is not a valid number",
         snapshot.id
     ))?;
-    println!("  Snapshot found: ID {snapshot_id} ({})", snapshot.name);
+    progress::emit(
+        tx,
+        &format!("  Snapshot found: ID {snapshot_id} ({})", snapshot.name),
+    );
 
     if !snapshot.regions.contains(&region) {
+        db::record_step_failed(pdb, &deploy_id, 3, "Snapshot not in region");
         bail!(
             "Snapshot '{}' is not available in region '{region}'. Available regions: {:?}",
             params.snapshot_name,
             snapshot.regions
         );
     }
+    db::record_step_complete(pdb, &deploy_id, 3);
 
-    // Step 4: Create droplet from snapshot
-    println!("\n[Step 4/5] Creating droplet from snapshot...");
+    // Step 4
+    progress::emit(
+        tx,
+        &format!("\n[Step 4/{total}] Creating droplet from snapshot..."),
+    );
+    db::record_step_start(pdb, &deploy_id, 4, total, "Creating droplet from snapshot");
     let droplet = do_client
         .create_droplet_from_snapshot(
             &hostname,
@@ -96,10 +148,21 @@ pub async fn run(params: DoRestoreParams) -> Result<()> {
         .await
         .context("Failed to create droplet from snapshot")?;
     let droplet_id = droplet.id;
-    println!("  Droplet created: ID {droplet_id}");
+    progress::emit(tx, &format!("  Droplet created: ID {droplet_id}"));
+    db::record_step_complete(pdb, &deploy_id, 4);
 
-    // Step 5: Wait for droplet to become active
-    println!("\n[Step 5/5] Waiting for droplet to become active...");
+    // Step 5
+    progress::emit(
+        tx,
+        &format!("\n[Step 5/{total}] Waiting for droplet to become active..."),
+    );
+    db::record_step_start(
+        pdb,
+        &deploy_id,
+        5,
+        total,
+        "Waiting for droplet to become active",
+    );
     let active_droplet = do_client
         .wait_for_active(droplet_id, std::time::Duration::from_secs(300))
         .await
@@ -108,9 +171,10 @@ pub async fn run(params: DoRestoreParams) -> Result<()> {
     let ip = active_droplet
         .public_ip()
         .unwrap_or_else(|| "unknown".into());
-    println!("  Droplet active: {ip}");
+    progress::emit(tx, &format!("  Droplet active: {ip}"));
+    db::record_step_complete(pdb, &deploy_id, 5);
 
-    // Save to SQLite deployments database (for web UI Deployments tab)
+    // Save to SQLite deployments database
     let conn = db::init_db().context("Failed to open deployments database")?;
     db::insert_deployment(
         &conn,
@@ -145,19 +209,21 @@ pub async fn run(params: DoRestoreParams) -> Result<()> {
     };
     let record_path = record.save()?;
 
-    println!("\n--- Restore Complete ---");
-    println!("  Deploy ID:   {deploy_id}");
-    println!("  Hostname:    {hostname}");
-    println!("  IP Address:  {ip}");
-    println!("  Region:      {region}");
-    println!("  Size:        {size}");
-    println!("  Snapshot:    {}", params.snapshot_name);
-    println!("  SSH Key:     {}", keypair.private_key_path.display());
-    println!("  Record:      {}", record_path.display());
-    println!(
-        "\n  SSH access:  ssh -i {} root@{ip}",
-        keypair.private_key_path.display()
+    progress::emit(tx, "\n--- Restore Complete ---");
+    progress::emit(tx, &format!("  Deploy ID:   {deploy_id}"));
+    progress::emit(tx, &format!("  Hostname:    {hostname}"));
+    progress::emit(tx, &format!("  IP Address:  {ip}"));
+    progress::emit(tx, &format!("  Snapshot:    {}", params.snapshot_name));
+    progress::emit(
+        tx,
+        &format!("  SSH Key:     {}", keypair.private_key_path.display()),
     );
+    progress::emit(tx, &format!("  Record:      {}", record_path.display()));
 
-    Ok(())
+    Ok(RestoreResult {
+        deploy_id,
+        hostname,
+        ip_address: ip,
+        ssh_key_path: keypair.private_key_path.display().to_string(),
+    })
 }

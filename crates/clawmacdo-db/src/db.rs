@@ -230,6 +230,56 @@ pub fn get_deploy_steps(conn: &Connection, deploy_id: &str) -> Result<Vec<Deploy
     Ok(rows)
 }
 
+// ── Convenience wrappers for optional Db handles ────────────────────────────
+// These accept `Option<Arc<Mutex<Connection>>>` so callers (snapshot, restore,
+// deploy commands) can pass `None` in CLI mode and `Some(db)` in web/serve mode
+// without duplicating the lock-and-ignore-error boilerplate.
+
+use std::sync::{Arc, Mutex};
+
+pub fn record_step_start(
+    db: &Option<Arc<Mutex<Connection>>>,
+    op_id: &str,
+    step: i32,
+    total: i32,
+    label: &str,
+) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = insert_deploy_step(&conn, op_id, step, total, label);
+        }
+    }
+}
+
+pub fn record_step_complete(db: &Option<Arc<Mutex<Connection>>>, op_id: &str, step: i32) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = complete_deploy_step(&conn, op_id, step);
+        }
+    }
+}
+
+pub fn record_step_failed(
+    db: &Option<Arc<Mutex<Connection>>>,
+    op_id: &str,
+    step: i32,
+    error_msg: &str,
+) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = fail_deploy_step(&conn, op_id, step, error_msg);
+        }
+    }
+}
+
+pub fn record_step_skipped(db: &Option<Arc<Mutex<Connection>>>, op_id: &str, step: i32) {
+    if let Some(db) = db {
+        if let Ok(conn) = db.lock() {
+            let _ = skip_deploy_step(&conn, op_id, step);
+        }
+    }
+}
+
 // ── Single deployment lookups ───────────────────────────────────────────────
 
 pub fn get_deployment_by_id(conn: &Connection, id: &str) -> Result<Option<DeploymentRow>> {

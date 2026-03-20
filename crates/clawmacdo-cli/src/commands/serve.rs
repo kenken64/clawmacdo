@@ -306,6 +306,8 @@ struct SnapshotDeploymentRequest {
 struct SnapshotDeploymentResponse {
     ok: bool,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1455,6 +1457,7 @@ async fn snapshot_deployment_handler(
                     Json(SnapshotDeploymentResponse {
                         ok: false,
                         message: "Deployment not found.".into(),
+                        operation_id: None,
                     }),
                 )
             }
@@ -1464,138 +1467,25 @@ async fn snapshot_deployment_handler(
                     Json(SnapshotDeploymentResponse {
                         ok: false,
                         message: format!("DB error: {e}"),
+                        operation_id: None,
                     }),
                 )
             }
         }
     };
 
+    // Validate provider-specific credentials up front
     match provider.as_str() {
         "digitalocean" => {
-            let do_token = &req.do_token;
-            if do_token.is_empty() {
+            if req.do_token.is_empty() {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(SnapshotDeploymentResponse {
                         ok: false,
                         message: "do_token is required.".into(),
+                        operation_id: None,
                     }),
                 );
-            }
-            let client = match clawmacdo_cloud::digitalocean::DoClient::new(do_token) {
-                Ok(c) => c,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Invalid DO token: {e}"),
-                        }),
-                    )
-                }
-            };
-            // Find droplet by hostname
-            let droplets = match client.list_droplets().await {
-                Ok(d) => d,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Failed to list droplets: {e}"),
-                        }),
-                    )
-                }
-            };
-            let droplet = match droplets.iter().find(|d| d.name == hostname) {
-                Some(d) => d,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Droplet '{hostname}' not found."),
-                        }),
-                    )
-                }
-            };
-            match client.create_snapshot(droplet.id, &req.snapshot_name).await {
-                Ok(action_id) => {
-                    match client
-                        .wait_for_action(action_id, std::time::Duration::from_secs(600))
-                        .await
-                    {
-                        Ok(_) => (
-                            StatusCode::OK,
-                            Json(SnapshotDeploymentResponse {
-                                ok: true,
-                                message: format!(
-                                    "Snapshot '{}' created for droplet '{hostname}'.",
-                                    req.snapshot_name
-                                ),
-                            }),
-                        ),
-                        Err(e) => (
-                            StatusCode::BAD_GATEWAY,
-                            Json(SnapshotDeploymentResponse {
-                                ok: false,
-                                message: format!("Snapshot timed out: {e}"),
-                            }),
-                        ),
-                    }
-                }
-                Err(e) => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(SnapshotDeploymentResponse {
-                        ok: false,
-                        message: format!("Failed to create snapshot: {e}"),
-                    }),
-                ),
-            }
-        }
-        "lightsail" => {
-            let ls_region = if req.aws_region.is_empty() {
-                if region.is_empty() {
-                    "ap-southeast-1".to_string()
-                } else {
-                    region
-                }
-            } else {
-                req.aws_region.clone()
-            };
-            let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(ls_region);
-            match provider.create_instance_snapshot(&hostname, &req.snapshot_name) {
-                Ok(_) => {
-                    match provider
-                        .wait_for_snapshot(&req.snapshot_name, std::time::Duration::from_secs(600))
-                        .await
-                    {
-                        Ok(_) => (
-                            StatusCode::OK,
-                            Json(SnapshotDeploymentResponse {
-                                ok: true,
-                                message: format!(
-                                    "Snapshot '{}' created for instance '{hostname}'.",
-                                    req.snapshot_name
-                                ),
-                            }),
-                        ),
-                        Err(e) => (
-                            StatusCode::BAD_GATEWAY,
-                            Json(SnapshotDeploymentResponse {
-                                ok: false,
-                                message: format!("Snapshot timed out: {e}"),
-                            }),
-                        ),
-                    }
-                }
-                Err(e) => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(SnapshotDeploymentResponse {
-                        ok: false,
-                        message: format!("Failed to create snapshot: {e}"),
-                    }),
-                ),
             }
         }
         "byteplus" => {
@@ -1605,119 +1495,266 @@ async fn snapshot_deployment_handler(
                     Json(SnapshotDeploymentResponse {
                         ok: false,
                         message: "BytePlus access key and secret key are required.".into(),
+                        operation_id: None,
                     }),
                 );
             }
-            let bp_region = if req.byteplus_region.is_empty() {
-                if region.is_empty() {
-                    "ap-southeast-1".to_string()
+        }
+        "lightsail" => {}
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(SnapshotDeploymentResponse {
+                    ok: false,
+                    message: format!("Snapshot not supported for provider '{other}'."),
+                    operation_id: None,
+                }),
+            );
+        }
+    }
+
+    // Spawn async task with SSE progress
+    let op_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let jobs = state.jobs.clone();
+    let db_handle = state.db.clone();
+
+    // Insert operation record
+    if let Ok(conn) = db_handle.lock() {
+        let _ = db::insert_deployment(
+            &conn, &op_id, "snapshot", "", &provider, &region, "", &hostname,
+        );
+    }
+
+    let job = DeployJob {
+        status: JobStatus::Running,
+        rx: Some(rx),
+    };
+    jobs.write().await.insert(op_id.clone(), job);
+
+    let op_id_clone = op_id.clone();
+    let jobs_clone = jobs.clone();
+    let db_clone = db_handle.clone();
+
+    tokio::spawn(async move {
+        let result = match provider.as_str() {
+            "digitalocean" => {
+                // Find droplet ID by hostname
+                let client = match clawmacdo_cloud::digitalocean::DoClient::new(&req.do_token) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:{e}"));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                let droplets = match client.list_droplets().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:Failed to list droplets: {e}"));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                let droplet = match droplets.iter().find(|d| d.name == hostname) {
+                    Some(d) => d,
+                    None => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:Droplet '{hostname}' not found."));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                crate::commands::do_snapshot::run(crate::commands::do_snapshot::DoSnapshotParams {
+                    do_token: req.do_token,
+                    droplet_id: droplet.id,
+                    snapshot_name: req.snapshot_name.clone(),
+                    power_off: false,
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                })
+                .await
+            }
+            "lightsail" => {
+                let ls_region = if req.aws_region.is_empty() {
+                    if region.is_empty() {
+                        "ap-southeast-1".to_string()
+                    } else {
+                        region.clone()
+                    }
                 } else {
-                    region
-                }
-            } else {
-                req.byteplus_region.clone()
-            };
-            let bp_client = match clawmacdo_cloud::byteplus::BytePlusClient::new(
-                &req.byteplus_access_key,
-                &req.byteplus_secret_key,
-                &bp_region,
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Invalid BytePlus credentials: {e}"),
-                        }),
-                    )
-                }
-            };
-            // Find instance by hostname
-            let instances = match bp_client.list_openclaw_instances().await {
-                Ok(i) => i,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Failed to list instances: {e}"),
-                        }),
-                    )
-                }
-            };
-            let instance = match instances.iter().find(|i| i.name == hostname) {
-                Some(i) => i,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Instance '{hostname}' not found."),
-                        }),
-                    )
-                }
-            };
-            // Find system volume
-            let volume_id = match bp_client.describe_system_volume(&instance.id).await {
-                Ok(v) => v,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Failed to find system volume: {e}"),
-                        }),
-                    )
-                }
-            };
-            // Create snapshot
-            let snapshot_id = match bp_client
-                .create_ebs_snapshot(&volume_id, &req.snapshot_name)
+                    req.aws_region.clone()
+                };
+                crate::commands::ls_snapshot::run(crate::commands::ls_snapshot::LsSnapshotParams {
+                    instance_name: hostname.clone(),
+                    snapshot_name: req.snapshot_name.clone(),
+                    region: ls_region,
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                })
                 .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        Json(SnapshotDeploymentResponse {
-                            ok: false,
-                            message: format!("Failed to create snapshot: {e}"),
-                        }),
-                    )
-                }
-            };
-            match bp_client
-                .wait_for_snapshot(&snapshot_id, std::time::Duration::from_secs(600))
+            }
+            "byteplus" => {
+                let bp_region = if req.byteplus_region.is_empty() {
+                    if region.is_empty() {
+                        "ap-southeast-1".to_string()
+                    } else {
+                        region.clone()
+                    }
+                } else {
+                    req.byteplus_region.clone()
+                };
+                let bp_client = match clawmacdo_cloud::byteplus::BytePlusClient::new(
+                    &req.byteplus_access_key,
+                    &req.byteplus_secret_key,
+                    &bp_region,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:{e}"));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                let instances = match bp_client.list_openclaw_instances().await {
+                    Ok(i) => i,
+                    Err(e) => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:Failed to list instances: {e}"));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                let instance_id = match instances.iter().find(|i| i.name == hostname) {
+                    Some(i) => i.id.clone(),
+                    None => {
+                        let _ = tx.send(format!("SNAPSHOT_ERROR:Instance '{hostname}' not found."));
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &op_id_clone,
+                                "failed",
+                                None,
+                                None,
+                            );
+                        }
+                        if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                            job.status = JobStatus::Failed;
+                        }
+                        return;
+                    }
+                };
+                crate::commands::bp_snapshot::run(crate::commands::bp_snapshot::BpSnapshotParams {
+                    access_key: req.byteplus_access_key,
+                    secret_key: req.byteplus_secret_key,
+                    instance_id,
+                    snapshot_name: req.snapshot_name.clone(),
+                    region: bp_region,
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                })
                 .await
-            {
-                Ok(_) => (
-                    StatusCode::OK,
-                    Json(SnapshotDeploymentResponse {
-                        ok: true,
-                        message: format!(
-                            "Snapshot '{}' (ID {}) created for instance '{hostname}'.",
-                            req.snapshot_name, snapshot_id
-                        ),
-                    }),
-                ),
-                Err(e) => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(SnapshotDeploymentResponse {
-                        ok: false,
-                        message: format!("Snapshot timed out: {e}"),
-                    }),
-                ),
+            }
+            _ => return,
+        };
+
+        match result {
+            Ok(_) => {
+                let payload = serde_json::json!({
+                    "snapshot_name": req.snapshot_name,
+                    "hostname": hostname,
+                })
+                .to_string();
+                let _ = tx.send(format!("SNAPSHOT_COMPLETE_JSON:{payload}"));
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(
+                        &conn,
+                        &op_id_clone,
+                        "completed",
+                        None,
+                        Some(&hostname),
+                    );
+                }
+                if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                    job.status = JobStatus::Completed;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(format!("SNAPSHOT_ERROR:{e:#}"));
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(&conn, &op_id_clone, "failed", None, None);
+                }
+                if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                    job.status = JobStatus::Failed;
+                }
             }
         }
-        other => (
-            StatusCode::BAD_REQUEST,
-            Json(SnapshotDeploymentResponse {
-                ok: false,
-                message: format!("Snapshot not supported for provider '{other}'."),
-            }),
-        ),
-    }
+    });
+
+    (
+        StatusCode::OK,
+        Json(SnapshotDeploymentResponse {
+            ok: true,
+            message: "Snapshot operation started.".into(),
+            operation_id: Some(op_id),
+        }),
+    )
 }
 
 async fn toggle_funnel_handler(
@@ -2114,97 +2151,178 @@ async fn list_snapshots_handler(
     Json(serde_json::json!({ "snapshots": snapshots }))
 }
 
-async fn restore_snapshot_handler(Json(req): Json<RestoreSnapshotRequest>) -> impl IntoResponse {
+async fn restore_snapshot_handler(
+    State(state): State<AppState>,
+    Json(req): Json<RestoreSnapshotRequest>,
+) -> impl IntoResponse {
+    // Validate provider up front
     match req.provider.as_str() {
         "byteplus" => {
             if req.byteplus_access_key.is_empty() || req.byteplus_secret_key.is_empty() {
-                return Json(
-                    serde_json::json!({ "ok": false, "message": "BytePlus access key and secret key are required." }),
-                );
-            }
-            let params = crate::commands::bp_restore::BpRestoreParams {
-                access_key: req.byteplus_access_key,
-                secret_key: req.byteplus_secret_key,
-                snapshot_name: req.snapshot_name.clone(),
-                region: if req.byteplus_region.is_empty() {
-                    "ap-southeast-1".to_string()
-                } else {
-                    req.byteplus_region
-                },
-                size: if req.size.is_empty() {
-                    None
-                } else {
-                    Some(req.size)
-                },
-                spot: req.spot,
-            };
-            match crate::commands::bp_restore::run(params).await {
-                Ok(_) => Json(serde_json::json!({
-                    "ok": true,
-                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
-                })),
-                Err(e) => Json(serde_json::json!({
+                return Json(serde_json::json!({
                     "ok": false,
-                    "message": format!("Restore failed: {e}")
-                })),
-            }
-        }
-        "lightsail" => {
-            let params = crate::commands::ls_restore::LsRestoreParams {
-                snapshot_name: req.snapshot_name.clone(),
-                region: if req.aws_region.is_empty() {
-                    "ap-southeast-1".to_string()
-                } else {
-                    req.aws_region
-                },
-                size: if req.size.is_empty() {
-                    None
-                } else {
-                    Some(req.size)
-                },
-            };
-            match crate::commands::ls_restore::run(params).await {
-                Ok(_) => Json(serde_json::json!({
-                    "ok": true,
-                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
-                })),
-                Err(e) => Json(serde_json::json!({
-                    "ok": false,
-                    "message": format!("Restore failed: {e}")
-                })),
+                    "message": "BytePlus access key and secret key are required."
+                }));
             }
         }
         "digitalocean" => {
-            let params = crate::commands::do_restore::DoRestoreParams {
-                do_token: req.do_token,
-                snapshot_name: req.snapshot_name.clone(),
-                region: Some(if req.aws_region.is_empty() {
-                    "sgp1".to_string()
-                } else {
-                    req.aws_region
-                }),
-                size: if req.size.is_empty() {
-                    None
-                } else {
-                    Some(req.size)
-                },
-            };
-            match crate::commands::do_restore::run(params).await {
-                Ok(_) => Json(serde_json::json!({
-                    "ok": true,
-                    "message": format!("Instance restored from snapshot '{}'.", req.snapshot_name)
-                })),
-                Err(e) => Json(serde_json::json!({
+            if req.do_token.is_empty() {
+                return Json(serde_json::json!({
                     "ok": false,
-                    "message": format!("Restore failed: {e}")
-                })),
+                    "message": "do_token is required."
+                }));
             }
         }
-        other => Json(serde_json::json!({
-            "ok": false,
-            "message": format!("Restore not supported for provider '{other}'.")
-        })),
+        "lightsail" => {}
+        other => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "message": format!("Restore not supported for provider '{other}'.")
+            }));
+        }
     }
+
+    let op_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let jobs = state.jobs.clone();
+    let db_handle = state.db.clone();
+
+    // Insert operation record
+    if let Ok(conn) = db_handle.lock() {
+        let _ = db::insert_deployment(
+            &conn,
+            &op_id,
+            "snapshot-restore",
+            "",
+            &req.provider,
+            "",
+            "",
+            "",
+        );
+    }
+
+    let job = DeployJob {
+        status: JobStatus::Running,
+        rx: Some(rx),
+    };
+    jobs.write().await.insert(op_id.clone(), job);
+
+    let op_id_clone = op_id.clone();
+    let jobs_clone = jobs.clone();
+    let db_clone = db_handle.clone();
+
+    tokio::spawn(async move {
+        let result = match req.provider.as_str() {
+            "byteplus" => {
+                let params = crate::commands::bp_restore::BpRestoreParams {
+                    access_key: req.byteplus_access_key,
+                    secret_key: req.byteplus_secret_key,
+                    snapshot_name: req.snapshot_name.clone(),
+                    region: if req.byteplus_region.is_empty() {
+                        "ap-southeast-1".to_string()
+                    } else {
+                        req.byteplus_region
+                    },
+                    size: if req.size.is_empty() {
+                        None
+                    } else {
+                        Some(req.size)
+                    },
+                    spot: req.spot,
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                };
+                crate::commands::bp_restore::run(params)
+                    .await
+                    .map(|r| (r.deploy_id, r.hostname, r.ip_address, r.ssh_key_path))
+            }
+            "lightsail" => {
+                let params = crate::commands::ls_restore::LsRestoreParams {
+                    snapshot_name: req.snapshot_name.clone(),
+                    region: if req.aws_region.is_empty() {
+                        "ap-southeast-1".to_string()
+                    } else {
+                        req.aws_region
+                    },
+                    size: if req.size.is_empty() {
+                        None
+                    } else {
+                        Some(req.size)
+                    },
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                };
+                crate::commands::ls_restore::run(params)
+                    .await
+                    .map(|r| (r.deploy_id, r.hostname, r.ip_address, r.ssh_key_path))
+            }
+            "digitalocean" => {
+                let params = crate::commands::do_restore::DoRestoreParams {
+                    do_token: req.do_token,
+                    snapshot_name: req.snapshot_name.clone(),
+                    region: Some(if req.aws_region.is_empty() {
+                        "sgp1".to_string()
+                    } else {
+                        req.aws_region
+                    }),
+                    size: if req.size.is_empty() {
+                        None
+                    } else {
+                        Some(req.size)
+                    },
+                    progress_tx: Some(tx.clone()),
+                    db: Some(db_clone.clone()),
+                    op_id: Some(op_id_clone.clone()),
+                };
+                crate::commands::do_restore::run(params)
+                    .await
+                    .map(|r| (r.deploy_id, r.hostname, r.ip_address, r.ssh_key_path))
+            }
+            _ => return,
+        };
+
+        match result {
+            Ok((deploy_id, hostname, ip, ssh_key_path)) => {
+                let payload = serde_json::json!({
+                    "deploy_id": deploy_id,
+                    "hostname": hostname,
+                    "ip": ip,
+                    "ssh_key_path": ssh_key_path,
+                })
+                .to_string();
+                let _ = tx.send(format!("RESTORE_COMPLETE_JSON:{payload}"));
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(
+                        &conn,
+                        &op_id_clone,
+                        "completed",
+                        Some(&ip),
+                        Some(&hostname),
+                    );
+                }
+                if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                    job.status = JobStatus::Completed;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(format!("RESTORE_ERROR:{e:#}"));
+                if let Ok(conn) = db_clone.lock() {
+                    let _ = db::update_deployment_status(&conn, &op_id_clone, "failed", None, None);
+                }
+                if let Some(job) = jobs_clone.write().await.get_mut(&op_id_clone) {
+                    job.status = JobStatus::Failed;
+                }
+            }
+        }
+    });
+
+    Json(serde_json::json!({
+        "ok": true,
+        "message": "Restore operation started.",
+        "operation_id": op_id,
+    }))
 }
 
 async fn config_handler() -> impl IntoResponse {
