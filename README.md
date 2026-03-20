@@ -5,8 +5,10 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.26.0
+## ✨ What's New in v0.27.0
 
+- **`update-model` subcommand** — change the AI model on a running OpenClaw instance without redeploying (updates API keys, provider config, model settings, and restarts the gateway)
+- **Snapshot/restore progress tracking** — snapshot and restore operations are now async with step-by-step progress via SSE; the frontend can display real-time progress bars using `GET /api/deploy/{operation_id}/events`
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID, with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
 - **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps, and EIP is now created inline with the instance (`ReleaseWithInstance: true`) so it auto-releases on destroy
 - **BytePlus spot instances** — new `--spot` flag on deploy enables `SpotAsPriceGo` strategy for up to ~80% compute cost savings
@@ -287,6 +289,30 @@ clawmacdo deploy --provider do --customer-email "user@example.com" \
 | Google Gemini | `gemini` | `google/gemini-2.5-flash` | `--gemini-key` |
 | BytePlus ARK | `byteplus` | `byteplus/ark-code-latest` | `--byteplus-ark-api-key` |
 
+### Update AI Model on a Running Instance
+
+Change the primary AI model or failover chain on a deployed OpenClaw instance without redeploying.
+
+```bash
+# Switch to OpenAI as primary
+clawmacdo update-model --instance <deploy-id> \
+  --primary-model openai --openai-key "$OPENAI_API_KEY"
+
+# Switch to BytePlus ARK with Anthropic failover
+clawmacdo update-model --instance <deploy-id> \
+  --primary-model byteplus --failover-1 anthropic \
+  --byteplus-ark-api-key "$BYTEPLUS_ARK_API_KEY" \
+  --anthropic-key "$ANTHROPIC_API_KEY"
+
+# Multi-model failover chain
+clawmacdo update-model --instance <deploy-id> \
+  --primary-model anthropic --failover-1 openai --failover-2 gemini \
+  --anthropic-key "$ANTHROPIC_API_KEY" \
+  --openai-key "$OPENAI_API_KEY" --gemini-key "$GEMINI_API_KEY"
+```
+
+The command updates API keys in `.env`, configures provider settings (BytePlus `openclaw.json`), sets the model via `openclaw models set`, adds failovers, and restarts the gateway service. API keys are optional — if omitted, the existing key on the instance is preserved.
+
 ### ARK API Key Management
 
 Generate temporary BytePlus ARK API keys or list available endpoints.
@@ -441,6 +467,30 @@ clawmacdo destroy \
   --byteplus-access-key "$BYTEPLUS_ACCESS_KEY" \
   --byteplus-secret-key "$BYTEPLUS_SECRET_KEY" \
   --name "openclaw-abc123"
+```
+
+### Snapshot/Restore Progress Tracking
+
+Snapshot and restore operations return an `operation_id` immediately and run asynchronously. Track progress via SSE:
+
+```bash
+# Start a snapshot (returns operation_id immediately)
+curl -X POST http://localhost:3456/api/deployments/{id}/snapshot \
+  -H 'Content-Type: application/json' \
+  -d '{"snapshot_name": "my-backup", "do_token": "$DO_TOKEN"}'
+# Response: {"ok": true, "message": "Snapshot operation started.", "operation_id": "abc-123"}
+
+# Start a restore (returns operation_id immediately)
+curl -X POST http://localhost:3456/api/snapshots/restore \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "digitalocean", "snapshot_name": "my-backup", "do_token": "$DO_TOKEN"}'
+# Response: {"ok": true, "message": "Restore operation started.", "operation_id": "def-456"}
+
+# Stream progress via SSE
+curl -N http://localhost:3456/api/deploy/{operation_id}/events
+# SSE messages include [Step N/T] for progress bars
+# Terminal: SNAPSHOT_COMPLETE_JSON:{...} or RESTORE_COMPLETE_JSON:{...}
+# Error: SNAPSHOT_ERROR:... or RESTORE_ERROR:...
 ```
 
 ### Track Deploy Progress
@@ -663,5 +713,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.26.0
+**Current version:** 0.27.0
 **Architecture version:** 2.0 (modular workspace)

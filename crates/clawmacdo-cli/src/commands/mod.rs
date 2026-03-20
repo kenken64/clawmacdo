@@ -23,4 +23,5 @@ pub mod skill;
 pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;
+pub mod update_model;
 pub mod whatsapp;
