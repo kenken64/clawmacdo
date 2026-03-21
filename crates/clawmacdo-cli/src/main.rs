@@ -440,6 +440,12 @@ enum Commands {
         #[arg(long, default_value = "", env = "BYTEPLUS_ARK_API_KEY")]
         byteplus_ark_api_key: String,
     },
+    /// Refresh the IP address of a deployed instance from the cloud provider
+    UpdateIp {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
     /// Start the web UI server
     #[cfg(feature = "web-ui")]
     Serve {
@@ -792,6 +798,7 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
         }
+        Commands::UpdateIp { instance } => commands::update_ip::run(&instance).await,
         #[cfg(feature = "web-ui")]
         Commands::Serve { port } => commands::serve::run(port).await,
     }
