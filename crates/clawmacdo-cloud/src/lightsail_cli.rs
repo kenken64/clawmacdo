@@ -202,6 +202,12 @@ impl LightsailCliProvider {
         if let Some(sk) = &self.secret_key {
             cmd.env("AWS_SECRET_ACCESS_KEY", sk);
         }
+        // Prevent stale credentials in ~/.aws/credentials from overriding
+        // the explicitly provided keys.
+        if self.access_key.is_some() || self.secret_key.is_some() {
+            cmd.env("AWS_SHARED_CREDENTIALS_FILE", "/dev/null");
+            cmd.env("AWS_CONFIG_FILE", "/dev/null");
+        }
         let output = cmd
             .output()
             .map_err(|e| AppError::CloudProviderError(format!("Failed to execute AWS CLI: {e}")))?;

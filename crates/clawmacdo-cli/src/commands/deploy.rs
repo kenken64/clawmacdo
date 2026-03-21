@@ -1572,14 +1572,32 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         bail!("AWS credentials required. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY");
     }
 
-    // Set AWS credentials as environment variables for the CLI
+    // Set AWS credentials as environment variables for the CLI.
     env::set_var("AWS_ACCESS_KEY_ID", &params.aws_access_key_id);
     env::set_var("AWS_SECRET_ACCESS_KEY", &params.aws_secret_access_key);
     env::set_var("AWS_DEFAULT_REGION", &params.aws_region);
 
-    // Initialize Lightsail provider — ensure AWS CLI is available first
+    // Also write to ~/.aws/credentials so the AWS CLI always picks up the
+    // latest keys from the web UI, overriding any stale/rotated credentials.
+    if let Ok(home) = env::var("HOME") {
+        let home = std::path::PathBuf::from(home);
+        let aws_dir = home.join(".aws");
+        let _ = std::fs::create_dir_all(&aws_dir);
+        let creds_content = format!(
+            "[default]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
+            params.aws_access_key_id, params.aws_secret_access_key
+        );
+        let _ = std::fs::write(aws_dir.join("credentials"), creds_content);
+    }
+
+    // Initialize Lightsail provider with explicit credentials so they
+    // override any stale keys in ~/.aws/credentials.
     clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
-    let lightsail = LightsailCliProvider::new(params.aws_region.clone());
+    let lightsail = LightsailCliProvider::with_credentials(
+        params.aws_region.clone(),
+        params.aws_access_key_id.clone(),
+        params.aws_secret_access_key.clone(),
+    );
     record_step_complete(step_db, &deploy_id, 1);
 
     // Step 2: Generate SSH keypair

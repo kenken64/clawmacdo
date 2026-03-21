@@ -10,6 +10,7 @@ use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use chrono::TimeZone;
+use clawmacdo_cloud::CloudProvider;
 use clawmacdo_core::config;
 use clawmacdo_db as db;
 use clawmacdo_provision::provision::commands::{
@@ -263,6 +264,10 @@ struct DestroyDeploymentRequest {
     tencent_secret_id: String,
     #[serde(default)]
     tencent_secret_key: String,
+    #[serde(default)]
+    aws_access_key_id: String,
+    #[serde(default)]
+    aws_secret_access_key: String,
     #[serde(default)]
     aws_region: String,
     #[serde(default)]
@@ -633,6 +638,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/backups", get(list_backups_handler))
         .route("/api/deploy", post(start_deploy_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
+        .route("/api/deploy/steps/{id}", get(deploy_steps_handler))
         .route(
             "/api/telegram/pairing/approve",
             post(approve_telegram_pairing_handler),
@@ -650,6 +656,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             "/api/deployments/{id}/snapshot",
             post(snapshot_deployment_handler),
         )
+        .route("/api/deployments/{id}/refresh-ip", post(refresh_ip_handler))
         .route("/api/deployments/{id}/funnel", post(toggle_funnel_handler))
         .route(
             "/api/deployments/{id}/funnel/status",
@@ -812,12 +819,28 @@ async fn start_deploy_handler(
     let customer_name = req.customer_name.clone();
     let customer_email = req.customer_email.clone();
 
-    tokio::spawn(async move {
-        let provider_str = req.provider.clone();
-        let region_str = req.region.clone();
-        let size_str = req.size.clone();
-        let hostname_str = req.hostname.clone();
+    // Insert deployment record BEFORE spawning so it's immediately visible
+    // in the Deployments tab even if the user navigates away instantly.
+    {
+        let provider_str = &req.provider;
+        let region_str = &req.region;
+        let size_str = &req.size;
+        let hostname_str = &req.hostname;
+        if let Ok(conn) = db.lock() {
+            let _ = db::insert_deployment(
+                &conn,
+                &id,
+                &customer_name,
+                &customer_email,
+                provider_str,
+                region_str,
+                size_str,
+                hostname_str,
+            );
+        }
+    }
 
+    tokio::spawn(async move {
         let params = DeployParams {
             deploy_id: Some(id.clone()),
             customer_name: customer_name.clone(),
@@ -875,20 +898,6 @@ async fn start_deploy_handler(
             db: Some(db_clone.clone()),
         };
 
-        // Insert deployment record into SQLite
-        if let Ok(conn) = db_clone.lock() {
-            let _ = db::insert_deployment(
-                &conn,
-                &id,
-                &customer_name,
-                &customer_email,
-                &provider_str,
-                &region_str,
-                &size_str,
-                &hostname_str,
-            );
-        }
-
         // Dry-run mode: simulate deploy without real cloud calls
         if is_dry_run() {
             let _ = tx.send("[Dry-run] Deploy simulation started".to_string());
@@ -914,10 +923,10 @@ async fn start_deploy_handler(
                 let _ = tx.send(step.to_string());
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            let dry_hostname = if hostname_str.is_empty() {
+            let dry_hostname = if params.hostname.as_deref().unwrap_or("").is_empty() {
                 format!("openclaw-{}", &id[..8])
             } else {
-                hostname_str.clone()
+                params.hostname.clone().unwrap_or_default()
             };
             if let Ok(conn) = db_clone.lock() {
                 let _ = db::update_deployment_status(
@@ -1004,7 +1013,157 @@ async fn deploy_events_handler(
     Sse::new(stream.map(|msg| Ok(Event::default().data(msg))))
 }
 
-/// AApprove telegram pairing handler.
+/// Return deploy/operation steps from SQLite for progress polling.
+async fn deploy_steps_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let conn = state.db.lock().unwrap();
+    match db::get_deploy_steps(&conn, &id) {
+        Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{e}") })),
+        ),
+    }
+}
+
+/// Refresh the IP address of a deployment by querying the cloud provider.
+async fn refresh_ip_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let (provider, hostname, region, old_ip) = {
+        let conn = state.db.lock().unwrap();
+        match db::get_deployment_by_id(&conn, &id) {
+            Ok(Some(d)) => (
+                d.provider.unwrap_or_default(),
+                d.hostname.unwrap_or_default(),
+                d.region.unwrap_or_default(),
+                d.ip_address.unwrap_or_default(),
+            ),
+            Ok(None) => {
+                return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." }))
+            }
+            Err(e) => {
+                return Json(
+                    serde_json::json!({ "ok": false, "message": format!("DB error: {e}") }),
+                )
+            }
+        }
+    };
+
+    if hostname.is_empty() {
+        return Json(
+            serde_json::json!({ "ok": false, "message": "No hostname in deploy record." }),
+        );
+    }
+
+    let new_ip = match provider.as_str() {
+        "lightsail" => {
+            let ls_region = if region.is_empty() {
+                "ap-southeast-1".to_string()
+            } else {
+                region
+            };
+            let ls = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(ls_region);
+            match ls.wait_for_active(&hostname, 5).await {
+                Ok(info) => match info.public_ip {
+                    Some(ip) => ip,
+                    None => {
+                        return Json(serde_json::json!({
+                            "ok": false, "message": "Instance has no public IP."
+                        }))
+                    }
+                },
+                Err(e) => {
+                    return Json(serde_json::json!({
+                        "ok": false, "message": format!("Failed to query instance: {e}")
+                    }))
+                }
+            }
+        }
+        "digitalocean" => {
+            let token = std::env::var("DO_TOKEN").unwrap_or_default();
+            if token.is_empty() {
+                return Json(serde_json::json!({
+                    "ok": false, "message": "DO_TOKEN env var required."
+                }));
+            }
+            let client = match clawmacdo_cloud::digitalocean::DoClient::new(&token) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Json(serde_json::json!({
+                        "ok": false, "message": format!("Invalid DO token: {e}")
+                    }))
+                }
+            };
+            match client.list_droplets().await {
+                Ok(droplets) => match droplets.iter().find(|d| d.name == hostname) {
+                    Some(d) => match d.public_ip() {
+                        Some(ip) => ip,
+                        None => {
+                            return Json(serde_json::json!({
+                                "ok": false, "message": "Droplet has no public IP."
+                            }))
+                        }
+                    },
+                    None => {
+                        return Json(serde_json::json!({
+                            "ok": false, "message": format!("Droplet '{hostname}' not found.")
+                        }))
+                    }
+                },
+                Err(e) => {
+                    return Json(serde_json::json!({
+                        "ok": false, "message": format!("Failed to list droplets: {e}")
+                    }))
+                }
+            }
+        }
+        other => {
+            return Json(serde_json::json!({
+                "ok": false, "message": format!("Refresh IP not supported for provider '{other}'.")
+            }))
+        }
+    };
+
+    if new_ip == old_ip {
+        return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip }));
+    }
+
+    // Update SQLite
+    {
+        let conn = state.db.lock().unwrap();
+        let _ =
+            db::update_deployment_status(&conn, &id, "completed", Some(&new_ip), Some(&hostname));
+    }
+
+    // Update JSON deploy record
+    if let Ok(deploys_dir) = config::deploys_dir() {
+        let path = deploys_dir.join(format!("{id}.json"));
+        if path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(mut raw) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    raw["ip_address"] = serde_json::Value::String(new_ip.clone());
+                    let _ = std::fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&raw).unwrap_or_default(),
+                    );
+                }
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "message": format!("IP updated: {old_ip} -> {new_ip}"),
+        "ip": new_ip,
+        "old_ip": old_ip,
+    }))
+}
+
+/// Approve telegram pairing handler.
 async fn approve_telegram_pairing_handler(
     Json(req): Json<TelegramPairingApproveRequest>,
 ) -> impl IntoResponse {
@@ -1362,6 +1521,24 @@ async fn destroy_deployment_handler(
             }
         }
     };
+
+    // Write AWS credentials to ~/.aws/credentials if provided (Lightsail)
+    if provider == "lightsail"
+        && !req.aws_access_key_id.is_empty()
+        && !req.aws_secret_access_key.is_empty()
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let aws_dir = std::path::PathBuf::from(&home).join(".aws");
+            let _ = std::fs::create_dir_all(&aws_dir);
+            let creds_content = format!(
+                "[default]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
+                req.aws_access_key_id, req.aws_secret_access_key
+            );
+            let _ = std::fs::write(aws_dir.join("credentials"), creds_content);
+        }
+        std::env::set_var("AWS_ACCESS_KEY_ID", &req.aws_access_key_id);
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", &req.aws_secret_access_key);
+    }
 
     // Build destroy params and run
     let destroy_params = crate::commands::destroy::DestroyParams {
@@ -2094,6 +2271,19 @@ async fn list_snapshots_handler(
                 .get("secret_key")
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            // Write AWS credentials so the CLI picks them up
+            if !ak.is_empty() && !sk.is_empty() {
+                if let Ok(home) = std::env::var("HOME") {
+                    let aws_dir = std::path::PathBuf::from(&home).join(".aws");
+                    let _ = std::fs::create_dir_all(&aws_dir);
+                    let creds = format!(
+                        "[default]\naws_access_key_id = {ak}\naws_secret_access_key = {sk}\n"
+                    );
+                    let _ = std::fs::write(aws_dir.join("credentials"), creds);
+                }
+                std::env::set_var("AWS_ACCESS_KEY_ID", &ak);
+                std::env::set_var("AWS_SECRET_ACCESS_KEY", &sk);
+            }
             let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::with_credentials(
                 region, ak, sk,
             );
@@ -3531,7 +3721,11 @@ function panelShowSummary(panel, ip, keyPath, hostname) {
     </div>
     <div class="mt-3 border border-slate-700 rounded-lg p-3">
       <p class="text-slate-300 font-semibold mb-2">Agent Docker Access</p>
-      <p class="text-xs text-slate-400 mb-2">If bot replies with docker socket permission errors, run this fix.</p>
+      <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-3">
+        <p class="text-xs text-amber-300 font-medium mb-1">Common Error</p>
+        <p class="text-[10px] text-amber-200/80 font-mono leading-relaxed">Agent failed before reply: Failed to inspect sandbox image: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock</p>
+        <p class="text-xs text-amber-300 mt-2">Click the button below to fix this error.</p>
+      </div>
       <button type="button" onclick="fixAgentDockerAccess(this)" class="agent-docker-fix-btn bg-rose-600 hover:bg-rose-500 text-white font-semibold px-4 py-2 rounded-lg">Fix Agent Docker Access</button>
       <pre class="agent-docker-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 font-mono text-[10px] leading-3 whitespace-pre text-slate-300 min-h-[12rem] max-h-[40vh] overflow-auto"></pre>
     </div>
@@ -3924,7 +4118,7 @@ function switchTab(tab) {
 // ── Deployments table ───────────────────────────────────────────────────
 let depCurrentPage = 1;
 
-function statusBadge(status) {
+function statusBadge(status, deployId) {
   const colors = {
     'completed': 'bg-green-500/20 text-green-300 border-green-500/30',
     'running':   'bg-blue-500/20 text-blue-300 border-blue-500/30',
@@ -3932,7 +4126,16 @@ function statusBadge(status) {
     'dry-run':   'bg-yellow-500/20 text-yellow-300 border-yellow-500/30',
   };
   const cls = colors[status] || 'bg-slate-500/20 text-slate-300 border-slate-500/30';
-  return '<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-full border ' + cls + '">' + (status || 'unknown') + '</span>';
+  let html = '<span class="inline-block px-2 py-0.5 text-xs font-medium rounded-full border ' + cls + '">' + (status || 'unknown') + '</span>';
+  if (status === 'running' && deployId) {
+    html += '<div id="progress-' + esc(deployId) + '" class="mt-1.5">' +
+      '<div class="w-full bg-slate-700 rounded-full h-1.5 overflow-hidden">' +
+        '<div class="bg-blue-500 h-1.5 rounded-full transition-all duration-500 animate-pulse" style="width:0%"></div>' +
+      '</div>' +
+      '<div class="text-[10px] text-slate-500 mt-0.5">loading...</div>' +
+    '</div>';
+  }
+  return html;
 }
 
 async function loadDeployments(page) {
@@ -3960,13 +4163,21 @@ async function loadDeployments(page) {
           '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.hostname || '-') + '</td>' +
           '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.ip_address || '-') + '</td>' +
           '<td class="px-4 py-3 text-slate-400">' + esc(d.region || '-') + '</td>' +
-          '<td class="px-4 py-3">' + statusBadge(d.status) + '</td>' +
+          '<td class="px-4 py-3">' + statusBadge(d.status, d.id) + '</td>' +
           '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
           '<td class="px-4 py-3">' +
-            '<div class="flex gap-1 items-center">' +
-              '<button id="funnel-btn-' + esc(d.id) + '" onclick="toggleFunnel(\'' + esc(d.id) + '\',this)" class="text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors" title="Toggle Tailscale Funnel">Off</button>' +
-              '<button id="funnel-open-' + esc(d.id) + '" onclick="openFunnel(\'' + esc(d.id) + '\')" class="hidden text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 ml-1" title="Open webchat (auto-approves device)">Open</button>' +
-              '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
+            '<div class="flex flex-col gap-1">' +
+              '<div class="flex gap-1 items-center">' +
+                '<button id="funnel-btn-' + esc(d.id) + '" onclick="toggleFunnel(\'' + esc(d.id) + '\',this)" class="text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors" title="Toggle Tailscale Funnel">Off</button>' +
+                '<button id="funnel-open-' + esc(d.id) + '" onclick="openFunnel(\'' + esc(d.id) + '\')" class="hidden text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 ml-1" title="Open webchat (auto-approves device)">Open</button>' +
+                '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
+              '</div>' +
+              '<div id="funnel-progress-' + esc(d.id) + '" class="hidden">' +
+                '<div class="w-full bg-slate-700 rounded-full h-1 overflow-hidden">' +
+                  '<div class="bg-blue-500 h-1 rounded-full transition-all duration-500 animate-pulse" style="width:0%"></div>' +
+                '</div>' +
+                '<div class="text-[9px] text-slate-500 mt-0.5">Verifying funnel...</div>' +
+              '</div>' +
             '</div>' +
           '</td>' +
           '<td class="px-4 py-3">' +
@@ -3975,6 +4186,7 @@ async function loadDeployments(page) {
                 '<button onclick="depRepairWhatsApp(\'' + esc(d.id) + '\',this)" class="text-amber-400 hover:text-amber-300 text-xs font-medium px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors" title="Install/Repair WhatsApp Support">WhatsApp</button>' +
                 '<button onclick="depFetchWhatsAppQr(\'' + esc(d.id) + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors" title="Fetch WhatsApp QR Code">QR</button>' +
                 '<button onclick="depSnapshot(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\')" class="text-cyan-400 hover:text-cyan-300 text-xs font-medium px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 transition-colors" title="Create snapshot">Snapshot</button>' +
+                '<button onclick="refreshIp(\'' + esc(d.id) + '\',this)" class="text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors" title="Refresh IP from cloud provider">Refresh IP</button>' +
                 '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
               '</div>' +
               '<pre id="wa-output-' + esc(d.id) + '" class="hidden mt-1 bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
@@ -3990,15 +4202,74 @@ async function loadDeployments(page) {
     document.getElementById('dep-next').disabled = depCurrentPage >= totalPages;
 
     // Probe funnel status for each completed deployment
+    // and poll progress for running deployments
     if (data.deployments) {
       for (const d of data.deployments) {
-        if (d.status !== 'completed') continue;
-        checkFunnelStatus(d.id);
+        if (d.status === 'completed') checkFunnelStatus(d.id);
+        if (d.status === 'running') pollDeployProgress(d.id);
       }
     }
   } catch (e) {
     console.error('Failed to load deployments:', e);
   }
+}
+
+// Track active progress pollers to avoid duplicates
+const _activePollers = new Set();
+
+async function pollDeployProgress(deployId) {
+  if (_activePollers.has(deployId)) return;
+  _activePollers.add(deployId);
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/deploy/steps/' + deployId);
+      const data = await res.json();
+      const el = document.getElementById('progress-' + deployId);
+      if (!el) { _activePollers.delete(deployId); return; }
+
+      const steps = data.steps || [];
+      if (steps.length === 0) {
+        el.querySelector('div > div').style.width = '5%';
+        el.querySelector('div + div').textContent = 'Starting...';
+      } else {
+        const total = steps[0].total_steps || 16;
+        const completed = steps.filter(s => s.status === 'completed').length;
+        const running = steps.find(s => s.status === 'running');
+        const failed = steps.find(s => s.status === 'failed');
+        const pct = Math.round(((completed + (running ? 0.5 : 0)) / total) * 100);
+        const bar = el.querySelector('div > div');
+        const label = el.querySelector('div + div');
+        bar.style.width = pct + '%';
+        if (failed) {
+          bar.className = 'bg-red-500 h-1.5 rounded-full transition-all duration-500';
+          label.textContent = 'Step ' + failed.step_number + '/' + total + ': ' + failed.label + ' (failed)';
+          label.className = 'text-[10px] text-red-400 mt-0.5';
+          _activePollers.delete(deployId);
+          setTimeout(() => loadDeployments(), 2000);
+          return;
+        } else if (running) {
+          label.textContent = 'Step ' + running.step_number + '/' + total + ': ' + running.label;
+        } else if (completed === total) {
+          bar.style.width = '100%';
+          bar.className = 'bg-green-500 h-1.5 rounded-full transition-all duration-500';
+          label.textContent = 'Complete';
+          label.className = 'text-[10px] text-green-400 mt-0.5';
+          _activePollers.delete(deployId);
+          setTimeout(() => loadDeployments(), 2000);
+          return;
+        } else {
+          const last = steps[steps.length - 1];
+          label.textContent = 'Step ' + last.step_number + '/' + total + ': ' + last.label;
+        }
+      }
+      // Continue polling every 3 seconds
+      setTimeout(poll, 3000);
+    } catch (e) {
+      _activePollers.delete(deployId);
+    }
+  }
+  poll();
 }
 
 async function checkFunnelStatus(id) {
@@ -4047,7 +4318,9 @@ function showDestroyModal(id, provider, hostname, ip) {
     credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretId <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKID...">' + eyeBtn() + '</div></div>' +
       '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretKey <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-key" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>';
   } else if (provider === 'lightsail') {
-    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="destroy-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent"></div>';
+    credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">AWS Access Key ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-aws-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKIA...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Secret Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-aws-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="destroy-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent"></div>';
   } else if (provider === 'azure') {
     credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">Tenant ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-tenant" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
       '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Subscription ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-azure-sub" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
@@ -4112,6 +4385,8 @@ async function confirmDestroy(id, provider) {
     body.tencent_secret_id = (document.getElementById('destroy-tencent-id') || {}).value || '';
     body.tencent_secret_key = (document.getElementById('destroy-tencent-key') || {}).value || '';
   } else if (provider === 'lightsail') {
+    body.aws_access_key_id = (document.getElementById('destroy-aws-ak') || {}).value || '';
+    body.aws_secret_access_key = (document.getElementById('destroy-aws-sk') || {}).value || '';
     body.aws_region = (document.getElementById('destroy-aws-region') || {}).value || 'ap-southeast-1';
   } else if (provider === 'azure') {
     body.azure_tenant_id = (document.getElementById('destroy-azure-tenant') || {}).value || '';
@@ -4167,11 +4442,70 @@ async function toggleFunnel(id, btn) {
     const openBtn = document.getElementById('funnel-open-' + id);
     const urlVal = document.getElementById('funnel-url-val-' + id);
     if (data.ok && action === 'on') {
-      btn.textContent = 'On';
-      btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
-      if (data.funnel_url && openBtn && urlVal) {
+      btn.textContent = 'Verifying...';
+      btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+      if (data.funnel_url && urlVal) {
         urlVal.value = data.funnel_url;
-        openBtn.classList.remove('hidden');
+      }
+      // Show progress bar
+      const progressEl = document.getElementById('funnel-progress-' + id);
+      if (progressEl) {
+        progressEl.classList.remove('hidden');
+        const bar = progressEl.querySelector('div > div');
+        const label = progressEl.querySelector('div + div');
+        bar.style.width = '10%';
+        label.textContent = 'Verifying funnel is reachable...';
+      }
+      // Poll funnel status until it is confirmed active before showing Open
+      const funnelUrl = data.funnel_url || '';
+      const maxAttempts = 10;
+      let verified = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const pct = Math.round(((attempt + 1) / maxAttempts) * 100);
+        if (progressEl) {
+          const bar = progressEl.querySelector('div > div');
+          const label = progressEl.querySelector('div + div');
+          bar.style.width = pct + '%';
+          label.textContent = 'Checking funnel status... (' + (attempt + 1) + '/' + maxAttempts + ')';
+        }
+        try {
+          const statusRes = await fetch('/api/deployments/' + encodeURIComponent(id) + '/funnel/status');
+          const statusData = await statusRes.json();
+          if (statusData.ok && statusData.active) {
+            verified = true;
+            if (statusData.funnel_url && urlVal) urlVal.value = statusData.funnel_url;
+            break;
+          }
+        } catch (_) {}
+      }
+      if (progressEl) {
+        const bar = progressEl.querySelector('div > div');
+        const label = progressEl.querySelector('div + div');
+        bar.style.width = '100%';
+        if (verified) {
+          bar.className = 'bg-green-500 h-1 rounded-full transition-all duration-500';
+          label.textContent = 'Funnel verified and active';
+          label.className = 'text-[9px] text-green-400 mt-0.5';
+        } else {
+          bar.className = 'bg-amber-500 h-1 rounded-full transition-all duration-500';
+          label.textContent = 'Could not verify — funnel may still be starting';
+          label.className = 'text-[9px] text-amber-400 mt-0.5';
+        }
+        setTimeout(() => { progressEl.classList.add('hidden'); }, 5000);
+      }
+      if (verified) {
+        btn.textContent = 'On';
+        btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
+        if (openBtn && urlVal && urlVal.value) {
+          openBtn.classList.remove('hidden');
+        }
+      } else {
+        btn.textContent = 'On (unverified)';
+        btn.className = 'text-amber-400 text-xs font-medium px-2 py-1 rounded bg-amber-500/20 border border-amber-500/30';
+        if (funnelUrl && openBtn && urlVal) {
+          openBtn.classList.remove('hidden');
+        }
       }
     } else if (data.ok && action === 'off') {
       btn.textContent = 'Off';
@@ -4193,6 +4527,34 @@ async function toggleFunnel(id, btn) {
     setTimeout(() => {
       btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
     }, 2000);
+  }
+  btn.disabled = false;
+}
+
+async function refreshIp(id, btn) {
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing...';
+  btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+  try {
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/refresh-ip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = data.old_ip ? 'Updated' : 'Unchanged';
+      btn.className = 'text-green-400 text-xs font-medium px-2 py-1 rounded bg-green-500/20 border border-green-500/30';
+      setTimeout(() => loadDeployments(), 1500);
+    } else {
+      alert('Refresh IP failed: ' + (data.message || 'Unknown error'));
+      btn.textContent = origText;
+      btn.className = 'text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
+    }
+  } catch (e) {
+    alert('Network error: ' + e.message);
+    btn.textContent = origText;
+    btn.className = 'text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
   }
   btn.disabled = false;
 }

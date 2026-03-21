@@ -35,6 +35,20 @@ pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<Docke
     // Ensure Docker is installed before attempting repair
     let install_output = ensure_docker_installed(ip, key).await?;
 
+    // Restart the systemd user service manager so the openclaw process picks
+    // up the docker group added after the service was originally started.
+    let uid_cmd = "id -u openclaw";
+    let uid_out = ssh_root_async(ip, key, uid_cmd).await.unwrap_or_default();
+    let uid = uid_out.trim();
+    if !uid.is_empty() {
+        let restart_user_mgr = format!(
+            "systemctl stop user@{uid}.service 2>/dev/null || true; \
+             sleep 1; \
+             systemctl start user@{uid}.service 2>/dev/null || true",
+        );
+        let _ = ssh_root_async(ip, key, &restart_user_mgr).await;
+    }
+
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
