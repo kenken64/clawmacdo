@@ -1462,6 +1462,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
            OC_EXT=$(find {home}/.local/share/pnpm -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
            if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
            sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
+           sed -i 's/^KillMode=process/KillMode=control-group/' \"$SVC\"; \
            sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
          fi; \
          ({sandbox_setup_cmd} || true) && \

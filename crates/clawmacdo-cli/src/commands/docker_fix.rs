@@ -60,6 +60,7 @@ pub async fn repair_access(ip: &str, key: &Path, ssh_user: &str) -> Result<Docke
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          if [ -f \"$SVC\" ]; then \
            sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
+           sed -i 's/^KillMode=process/KillMode=control-group/' \"$SVC\"; \
            sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
          fi && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
