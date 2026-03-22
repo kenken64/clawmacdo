@@ -704,7 +704,17 @@ This prevents circular dependencies and enables clean testing.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Copyright (c) 2026 Kenneth Phang
+
+This software is licensed under a dual license model:
+
+1. **GNU General Public License v3.0** — for open source use
+   See [LICENSE-GPL.md](LICENSE-GPL.md) for details.
+
+2. **Commercial License** — for proprietary/commercial use
+   See [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) for details.
+
+For licensing inquiries, contact: bunnyppl@gmail.com
 
 ## Changelog
 
