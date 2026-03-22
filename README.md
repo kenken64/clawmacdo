@@ -716,6 +716,20 @@ This software is licensed under a dual license model:
 
 For licensing inquiries, contact: bunnyppl@gmail.com
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [CLI Usage Guide](docs/clawmacdo_usage.md) | Complete reference for all subcommands with examples and sample responses |
+| [Deployment Architecture](docs/DEPLOYMENT_ARCHITECTURE_RESEARCH.md) | Cloud provider architecture research and design decisions |
+| [Codebase Logic & Data Flow](docs/CODEBASE_LOGIC_AND_DATA_FLOW.md) | End-to-end logic flow, module boundaries, and data structures |
+| [Tracking Architecture](docs/TRACKING_ARCHITECTURE.md) | Deploy/snapshot/restore progress tracking system design |
+| [TanStack Progress Tracking](docs/tanstack-progress-tracking.md) | Frontend integration guide for TanStack (React Query) progress bars |
+| [Security Scan](docs/SECURITY_SCAN.md) | Security scanning CLI and vulnerability assessment |
+| [Security Flaw Evaluation](docs/EVAL_SECURITY_FLAW.md) | Security flaw evaluation report and findings |
+| [Tencent Cloud Plan](docs/TENCENT_PLAN.md) | Tencent Cloud provider support plan |
+| [Repository Guidelines](docs/AGENTS.md) | Contribution guidelines and repository conventions |
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
