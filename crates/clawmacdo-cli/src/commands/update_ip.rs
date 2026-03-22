@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+#[cfg(feature = "lightsail")]
 use clawmacdo_cloud::CloudProvider;
 use clawmacdo_core::config::{self, CloudProviderType};
 use clawmacdo_db as db;
@@ -41,7 +42,8 @@ pub async fn run(query: &str) -> Result<()> {
 
     println!("Looking up current IP for '{hostname}' on {provider}...");
 
-    let new_ip = match provider {
+    let new_ip: String = match provider {
+        #[cfg(feature = "lightsail")]
         CloudProviderType::Lightsail => {
             let ls =
                 clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(record.region.clone());
@@ -53,6 +55,7 @@ pub async fn run(query: &str) -> Result<()> {
                 .public_ip
                 .ok_or_else(|| anyhow::anyhow!("Instance '{hostname}' has no public IP"))?
         }
+        #[cfg(feature = "digitalocean")]
         CloudProviderType::DigitalOcean => {
             // DO requires a token — try from env
             let token =
