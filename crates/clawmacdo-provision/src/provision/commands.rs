@@ -2,6 +2,16 @@ use clawmacdo_core::error::AppError;
 use clawmacdo_ssh as ssh;
 use std::path::Path;
 
+fn ssh_with_stdin_as(
+    ip: &str,
+    key: &Path,
+    remote_command: &str,
+    script: &str,
+    ssh_user: &str,
+) -> Result<String, AppError> {
+    ssh::exec_with_input_as(ip, key, remote_command, script.as_bytes(), ssh_user)
+}
+
 /// Execute a command on the remote host with root privileges.
 /// When ssh_user is "root", runs the command directly.
 /// Otherwise, connects as the given user and wraps the command with `sudo`.
@@ -15,10 +25,7 @@ pub fn ssh_root_as(ip: &str, key: &Path, cmd: &str, ssh_user: &str) -> Result<St
     if ssh_user == "root" {
         ssh::exec(ip, key, cmd)
     } else {
-        // Wrap entire command in sudo bash -c so pipes, ||, && all run as root
-        let escaped = cmd.replace('\'', "'\\''");
-        let sudo_cmd = format!("sudo bash -c '{escaped}'");
-        ssh::exec_as(ip, key, &sudo_cmd, ssh_user)
+        ssh_with_stdin_as(ip, key, "sudo /bin/bash -se", cmd, ssh_user)
     }
 }
 
@@ -50,11 +57,15 @@ pub async fn ssh_root_as_async(
 }
 
 /// Execute a command on the remote host as the openclaw user via root SSH.
-/// Uses `su - openclaw -c '...'` so we only need root's SSH key.
+/// Uses a stdin-fed shell so command contents are not re-quoted through `su -c`.
 /// SSsh as openclaw.
 pub fn ssh_as_openclaw(ip: &str, key: &Path, cmd: &str) -> Result<String, AppError> {
-    let wrapped = format!("su - openclaw -c {}", shell_escape(cmd));
-    ssh::exec(ip, key, &wrapped)
+    ssh::exec_with_input(
+        ip,
+        key,
+        "su - openclaw -s /bin/bash -c '/bin/bash -se'",
+        cmd.as_bytes(),
+    )
 }
 
 /// Execute a command as the openclaw user using the specified SSH user.
@@ -65,13 +76,21 @@ pub fn ssh_as_openclaw_with_user(
     cmd: &str,
     ssh_user: &str,
 ) -> Result<String, AppError> {
-    let escaped = shell_escape(cmd);
     if ssh_user == "root" {
-        let wrapped = format!("su - openclaw -c {escaped}");
-        ssh::exec(ip, key, &wrapped)
+        ssh::exec_with_input(
+            ip,
+            key,
+            "su - openclaw -s /bin/bash -c '/bin/bash -se'",
+            cmd.as_bytes(),
+        )
     } else {
-        let wrapped = format!("sudo su - openclaw -c {escaped}");
-        ssh::exec_as(ip, key, &wrapped, ssh_user)
+        ssh_with_stdin_as(
+            ip,
+            key,
+            "sudo su - openclaw -s /bin/bash -c '/bin/bash -se'",
+            cmd,
+            ssh_user,
+        )
     }
 }
 
@@ -102,8 +121,3 @@ pub async fn ssh_as_openclaw_with_user_async(
         .map_err(|e| AppError::Ssh(format!("spawn_blocking join: {e}")))?
 }
 
-/// Shell-escape a string for use in `su -c '...'`.
-/// SShell escape.
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}

@@ -11,6 +11,8 @@ pub struct DestroyParams {
     pub do_token: String,
     pub tencent_secret_id: String,
     pub tencent_secret_key: String,
+    pub aws_access_key_id: String,
+    pub aws_secret_access_key: String,
     pub aws_region: String,
     pub azure_tenant_id: String,
     pub azure_subscription_id: String,
@@ -136,7 +138,11 @@ async fn run_lightsail(params: DestroyParams) -> Result<()> {
     use clawmacdo_cloud::CloudProvider;
 
     clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
-    let provider = LightsailCliProvider::new(params.aws_region.clone());
+    let provider = LightsailCliProvider::with_credentials(
+        params.aws_region.clone(),
+        params.aws_access_key_id.clone(),
+        params.aws_secret_access_key.clone(),
+    );
 
     println!("Fetching openclaw instances (Lightsail)...");
     let instances = provider.list_instances("openclaw").await?;
