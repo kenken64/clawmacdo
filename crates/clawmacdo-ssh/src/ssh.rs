@@ -1,7 +1,7 @@
 use clawmacdo_core::config;
 use clawmacdo_core::error::AppError;
 use ssh2::Session;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 
@@ -179,46 +179,7 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
     Ok(sess)
 }
 
-/// Execute a command on the remote host as a specific user.
-pub fn exec_as(
-    ip: &str,
-    private_key_path: &Path,
-    command: &str,
-    username: &str,
-) -> Result<String, AppError> {
-    let sess = connect_as(ip, private_key_path, username)?;
-    let mut channel = sess
-        .channel_session()
-        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
-    channel
-        .exec(&format!("{{ {command}\n}} 2>&1"))
-        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
-    let mut output = String::new();
-    channel
-        .read_to_string(&mut output)
-        .map_err(|e| AppError::Ssh(format!("Read output: {e}")))?;
-    channel
-        .wait_close()
-        .map_err(|e| AppError::Ssh(format!("Wait close: {e}")))?;
-    Ok(output)
-}
-
-/// Execute a command on the remote host and return stdout.
-/// EExec.
-pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, AppError> {
-    let sess = connect(ip, private_key_path)?;
-    let mut channel = sess
-        .channel_session()
-        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
-
-    // Merge stderr into stdout to avoid read deadlock.
-    // libssh2 read_to_string(stdout) blocks if remote wrote to stderr
-    // and the SSH window fills up, causing a deadlock.
-    // Use \n before } so heredocs inside the command don't break bash parsing.
-    channel
-        .exec(&format!("{{ {command}\n}} 2>&1"))
-        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
-
+fn read_command_output(mut channel: ssh2::Channel) -> Result<String, AppError> {
     let mut output = String::new();
     channel
         .read_to_string(&mut output)
@@ -244,6 +205,76 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
     Ok(output)
 }
 
+pub fn exec_with_input_as(
+    ip: &str,
+    private_key_path: &Path,
+    command: &str,
+    input: &[u8],
+    username: &str,
+) -> Result<String, AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+    channel
+        .exec(command)
+        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+    channel
+        .write_all(input)
+        .map_err(|e| AppError::Ssh(format!("Write stdin: {e}")))?;
+    channel
+        .send_eof()
+        .map_err(|e| AppError::Ssh(format!("Send EOF: {e}")))?;
+
+    read_command_output(channel)
+}
+
+pub fn exec_with_input(
+    ip: &str,
+    private_key_path: &Path,
+    command: &str,
+    input: &[u8],
+) -> Result<String, AppError> {
+    exec_with_input_as(ip, private_key_path, command, input, "root")
+}
+
+/// Execute a command on the remote host as a specific user.
+pub fn exec_as(
+    ip: &str,
+    private_key_path: &Path,
+    command: &str,
+    username: &str,
+) -> Result<String, AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+    channel
+        .exec(&format!("{{ {command}\n}} 2>&1"))
+        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+
+    read_command_output(channel)
+}
+
+/// Execute a command on the remote host and return stdout.
+/// EExec.
+pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, AppError> {
+    let sess = connect(ip, private_key_path)?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+
+    // Merge stderr into stdout to avoid read deadlock.
+    // libssh2 read_to_string(stdout) blocks if remote wrote to stderr
+    // and the SSH window fills up, causing a deadlock.
+    // Use \n before } so heredocs inside the command don't break bash parsing.
+    channel
+        .exec(&format!("{{ {command}\n}} 2>&1"))
+        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+
+    read_command_output(channel)
+}
+
 /// Upload a local file to the remote host via SCP as a specific user.
 pub fn scp_upload_as(
     ip: &str,
@@ -262,7 +293,6 @@ pub fn scp_upload_as(
         .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
 
     let local_data = std::fs::read(local_path)?;
-    use std::io::Write;
     remote_file
         .write_all(&local_data)
         .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
@@ -302,7 +332,6 @@ pub fn scp_upload(
         .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
 
     let local_data = std::fs::read(local_path)?;
-    use std::io::Write;
     remote_file
         .write_all(&local_data)
         .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
@@ -340,7 +369,6 @@ pub fn scp_upload_bytes(
         .scp_send(Path::new(remote_path), mode, data.len() as u64, None)
         .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
 
-    use std::io::Write;
     remote_file
         .write_all(data)
         .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;

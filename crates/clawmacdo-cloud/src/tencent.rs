@@ -420,6 +420,9 @@ impl TencentClient {
             .ok_or_else(|| AppError::TencentCloud("Missing SecurityGroupId".into()))?
             .to_string();
 
+        let ssh_cidr = std::env::var("CLAWMACDO_TENCENT_SSH_CIDR")
+            .unwrap_or_else(|_| "127.0.0.1/32".to_string());
+
         // Add ingress rules: SSH (22), HTTP (80), HTTPS (443)
         let rules_payload = serde_json::json!({
             "SecurityGroupId": sg_id,
@@ -428,7 +431,7 @@ impl TencentClient {
                     {
                         "Protocol": "TCP",
                         "Port": "22",
-                        "CidrBlock": "0.0.0.0/0",
+                        "CidrBlock": ssh_cidr,
                         "Action": "ACCEPT",
                         "PolicyDescription": "SSH"
                     },

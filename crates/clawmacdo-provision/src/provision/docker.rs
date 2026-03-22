@@ -3,7 +3,7 @@ use clawmacdo_core::config::OPENCLAW_USER;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
 
-/// Step 11: Configure Docker daemon and add openclaw to docker group.
+/// Step 11: Configure Docker daemon without granting openclaw direct Docker access.
 /// Docker CE is expected from cloud-init, but on some images (e.g. BytePlus)
 /// the `docker.io` package is unavailable. When Docker is missing this step
 /// installs it via the official convenience script before configuring it.
@@ -54,32 +54,18 @@ DJEOF
             message: e.to_string(),
         })?;
 
-    // Add openclaw user to docker group
+    // Remove any stale direct Docker access. Docker group membership is effectively
+    // root-equivalent on Linux, so the gateway should not inherit it.
     ssh_root_as_async(
         ip,
         key,
-        &format!("usermod -aG docker {OPENCLAW_USER}"),
+        &format!("gpasswd -d {OPENCLAW_USER} docker >/dev/null 2>&1 || true"),
         ssh_user,
     )
     .await?;
 
     // Restart docker to pick up daemon.json changes
     ssh_root_as_async(ip, key, "systemctl restart docker", ssh_user).await?;
-
-    // Restart the systemd user service manager so the openclaw gateway process
-    // picks up the docker group that was just added above.
-    let uid_cmd = format!("id -u {OPENCLAW_USER}");
-    if let Ok(uid_out) = ssh_root_as_async(ip, key, &uid_cmd, ssh_user).await {
-        let uid = uid_out.trim();
-        if !uid.is_empty() {
-            let restart_cmd = format!(
-                "systemctl stop user@{uid}.service 2>/dev/null || true; \
-                 sleep 1; \
-                 systemctl start user@{uid}.service 2>/dev/null || true"
-            );
-            let _ = ssh_root_as_async(ip, key, &restart_cmd, ssh_user).await;
-        }
-    }
 
     Ok(())
 }

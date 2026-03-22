@@ -11,6 +11,7 @@ use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_db as db;
 use clawmacdo_provision::{self as provision, ProvisionOpts};
 use clawmacdo_ssh as ssh;
+use std::path::Component;
 use clawmacdo_ui::{progress, ui};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -224,6 +225,98 @@ fn collect_failovers<'a>(
     out
 }
 
+fn require_public_ip(public_ip: Option<String>, resource: &str) -> Result<String> {
+    public_ip.ok_or_else(|| anyhow::anyhow!("{resource} did not expose a public IP"))
+}
+
+fn validate_backup_archive(path: &std::path::Path) -> Result<()> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open backup archive {}", path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut saw_entries = false;
+
+    for entry in archive.entries().context("Failed to read backup archive entries")? {
+        let entry = entry.context("Failed to parse backup archive entry")?;
+        let entry_path = entry.path().context("Failed to read backup archive path")?;
+
+        if entry_path.is_absolute() {
+            bail!("Backup archive contains an absolute path: {}", entry_path.display());
+        }
+
+        for component in entry_path.components() {
+            if matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
+            {
+                bail!(
+                    "Backup archive contains an unsafe path: {}",
+                    entry_path.display()
+                );
+            }
+        }
+
+        saw_entries = true;
+    }
+
+    if !saw_entries {
+        bail!("Backup archive is empty")
+    }
+
+    Ok(())
+}
+
+fn backup_restore_cmd(use_sudo: bool) -> String {
+    let prefix = if use_sudo { "sudo " } else { "" };
+    format!(
+        "{prefix}mkdir -p /root/.openclaw /tmp/clawmacdo-restore && \
+         {prefix}tar --extract --gzip --file /tmp/openclaw_backup.tar.gz --directory /tmp/clawmacdo-restore --no-same-owner --no-same-permissions && \
+         [ -d /tmp/clawmacdo-restore/openclaw ] && \
+         {prefix}cp -a /tmp/clawmacdo-restore/openclaw/. /root/.openclaw/ && \
+         {prefix}rm -rf /tmp/clawmacdo-restore /tmp/openclaw_backup.tar.gz && echo ok"
+    )
+}
+
+fn anthropic_onboard_arg(anthropic_api_key: &str) -> &'static str {
+    if has_value(anthropic_api_key) {
+        " --auth-choice apiKey"
+    } else {
+        ""
+    }
+}
+
+fn byteplus_onboard_arg(byteplus_ark_api_key: &str) -> &'static str {
+    if has_value(byteplus_ark_api_key) {
+        " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    }
+}
+
+fn secure_sandbox_setup_cmd(home: &str) -> String {
+    format!(
+        "if [ -f {home}/.openclaw/openclaw.json ]; then \
+           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";delete cfg.agents.defaults.sandbox.docker;fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+         fi"
+    )
+}
+
+fn emit_sandbox_security_notice(
+    tx: &Option<mpsc::UnboundedSender<String>>,
+    enable_sandbox: bool,
+) {
+    if enable_sandbox {
+        progress::emit(
+            tx,
+            "  Sandbox was requested but is being disabled to avoid granting root-equivalent Docker access.",
+        );
+    }
+}
+
+fn bundled_extensions_copy_cmd(home: &str) -> String {
+    format!(
+        "if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && mkdir -p {home}/.openclaw/bundled-extensions && cp -a \"$OC_EXT\"/. {home}/.openclaw/bundled-extensions/; fi;"
+    )
+}
+
 /// Resolve the cloud provider type from the --provider flag.
 fn resolve_provider(provider: &str) -> Result<CloudProviderType> {
     match provider {
@@ -238,6 +331,12 @@ fn resolve_provider(provider: &str) -> Result<CloudProviderType> {
 
 /// Run the full deploy flow. Dispatches to provider-specific function.
 pub async fn run(params: DeployParams) -> Result<DeployRecord> {
+    let mut params = params;
+    params.hostname = match params.hostname.as_deref() {
+        Some(hostname) => config::normalize_hostname(hostname).map_err(anyhow::Error::from)?,
+        None => None,
+    };
+
     let provider = resolve_provider(&params.provider)?;
     match provider {
         CloudProviderType::DigitalOcean => run_do(params).await,
@@ -546,7 +645,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         .wait_for_running(&instance_id, std::time::Duration::from_secs(300))
         .await
         .context("Instance did not become RUNNING within 5 minutes")?;
-    let ip = instance.public_ip.unwrap();
+    let ip = require_public_ip(instance.public_ip, "Tencent instance")?;
     let msg = format!("[Step 5/16] Instance active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
@@ -589,16 +688,17 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
         let sp = ui::spinner("[Step 8/16] Uploading and restoring backup...");
+        validate_backup_archive(bp)?;
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
         let bp_c = bp.to_path_buf();
         tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
             .await??;
-        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let extract_cmd = backup_restore_cmd(false);
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, &extract_cmd)).await??;
         sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
@@ -644,26 +744,10 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     );
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
-        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
-    } else {
-        ""
-    };
-    let openai_onboard_arg = if has_value(&params.openai_key) {
-        " --openai-api-key \"$OPENAI_API_KEY\""
-    } else {
-        ""
-    };
-    let gemini_onboard_arg = if has_value(&params.gemini_key) {
-        " --gemini-api-key \"$GEMINI_API_KEY\""
-    } else {
-        ""
-    };
-    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
-        " --auth-choice byteplus-api-key"
-    } else {
-        ""
-    };
+    let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
+    let openai_onboard_arg = "";
+    let gemini_onboard_arg = "";
+    let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -686,29 +770,15 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    let sandbox_setup_cmd = if params.enable_sandbox {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi && \
-             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
-        )
-    } else {
-        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
-        // requires Docker. Without Docker the agent fails on first message.
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi"
-        )
-    };
+    emit_sandbox_security_notice(tx, params.enable_sandbox);
+    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -734,14 +804,14 @@ Environment=HOME={home}\n\
 Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
 Environment=OPENCLAW_NO_RESPAWN=1\n\
 Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
-EnvironmentFile=-{home}/.openclaw/.env\n\
+EnvironmentFile=-{home}/.openclaw/gateway.env\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n\
 SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         {bundled_extensions_copy} \
          ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
@@ -944,7 +1014,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
         .wait_for_running(&instance_id, std::time::Duration::from_secs(300))
         .await
         .context("Instance did not become RUNNING within 5 minutes")?;
-    let ip = instance.public_ip.unwrap();
+    let ip = require_public_ip(instance.public_ip, "BytePlus instance")?;
     let msg = format!("[Step 5/16] Instance active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
@@ -1018,16 +1088,17 @@ fi"#;
         record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
         let sp = ui::spinner("[Step 8/16] Uploading and restoring backup...");
+        validate_backup_archive(bp)?;
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
         let bp_c = bp.to_path_buf();
         tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
             .await??;
-        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let extract_cmd = backup_restore_cmd(false);
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, &extract_cmd)).await??;
         sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
@@ -1069,27 +1140,11 @@ fi"#;
     );
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
-        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
-    } else {
-        ""
-    };
-    let openai_onboard_arg = if has_value(&params.openai_key) {
-        " --openai-api-key \"$OPENAI_API_KEY\""
-    } else {
-        ""
-    };
-    let gemini_onboard_arg = if has_value(&params.gemini_key) {
-        " --gemini-api-key \"$GEMINI_API_KEY\""
-    } else {
-        ""
-    };
+    let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
+    let openai_onboard_arg = "";
+    let gemini_onboard_arg = "";
     // BytePlus ARK: use openclaw onboard --auth-choice byteplus-api-key
-    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
-        " --auth-choice byteplus-api-key"
-    } else {
-        ""
-    };
+    let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     // Write BytePlus ARK provider config into openclaw.json (Coding Plan base URL)
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
@@ -1113,29 +1168,15 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    let sandbox_setup_cmd = if params.enable_sandbox {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi && \
-             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
-        )
-    } else {
-        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
-        // requires Docker. Without Docker the agent fails on first message.
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi"
-        )
-    };
+    emit_sandbox_security_notice(tx, params.enable_sandbox);
+    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1161,14 +1202,14 @@ Environment=HOME={home}\n\
 Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
 Environment=OPENCLAW_NO_RESPAWN=1\n\
 Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
-EnvironmentFile=-{home}/.openclaw/.env\n\
+EnvironmentFile=-{home}/.openclaw/gateway.env\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n\
 SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         {bundled_extensions_copy} \
          ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
@@ -1303,7 +1344,7 @@ async fn deploy_steps_5_through_16(
         .wait_for_active(droplet_id, std::time::Duration::from_secs(300))
         .await
         .context("Droplet did not become active within 5 minutes")?;
-    let ip = droplet.public_ip().unwrap();
+    let ip = require_public_ip(droplet.public_ip(), "DigitalOcean droplet")?;
     let msg = format!("[Step 5/16] Droplet active at {ip}");
     sp.finish_with_message(msg.clone());
     progress::emit(tx, &msg);
@@ -1342,16 +1383,17 @@ async fn deploy_steps_5_through_16(
     if let Some(bp) = backup_path {
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
         let sp = ui::spinner("[Step 8/16] Uploading and restoring backup...");
+        validate_backup_archive(bp)?;
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
         let key_c = private_key_path.to_path_buf();
         let bp_c = bp.to_path_buf();
         tokio::task::spawn_blocking(move || ssh::scp_upload(&ip_c, &key_c, &bp_c, remote_archive))
             .await??;
-        let extract_cmd = "mkdir -p /root/.openclaw && cd /tmp && tar xzf openclaw_backup.tar.gz && cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let extract_cmd = backup_restore_cmd(false);
         let ip_c = ip.clone();
         let key_c = private_key_path.to_path_buf();
-        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, extract_cmd)).await??;
+        tokio::task::spawn_blocking(move || ssh::exec(&ip_c, &key_c, &extract_cmd)).await??;
         sp.finish_with_message("[Step 8/16] Backup uploaded and restored");
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
@@ -1390,26 +1432,10 @@ async fn deploy_steps_5_through_16(
     progress::emit(tx, "\n[Step 15/16] Starting OpenClaw gateway...");
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(anthropic_api_key) {
-        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
-    } else {
-        ""
-    };
-    let openai_onboard_arg = if has_value(openai_key) {
-        " --openai-api-key \"$OPENAI_API_KEY\""
-    } else {
-        ""
-    };
-    let gemini_onboard_arg = if has_value(gemini_key) {
-        " --gemini-api-key \"$GEMINI_API_KEY\""
-    } else {
-        ""
-    };
-    let byteplus_onboard_arg = if has_value(byteplus_ark_api_key) {
-        " --auth-choice byteplus-api-key"
-    } else {
-        ""
-    };
+    let anthropic_onboard_arg = anthropic_onboard_arg(anthropic_api_key);
+    let openai_onboard_arg = "";
+    let gemini_onboard_arg = "";
+    let byteplus_onboard_arg = byteplus_onboard_arg(byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -1429,27 +1455,15 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    let sandbox_setup_cmd = if enable_sandbox {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi && \
-             /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
-        )
-    } else {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi"
-        )
-    };
+    emit_sandbox_security_notice(tx, enable_sandbox);
+    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1460,14 +1474,13 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          SVC={home}/.config/systemd/user/openclaw-gateway.service; \
          if [ -f \"$SVC\" ]; then \
            OC_EXT=$(find {home}/.local/share/pnpm -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-           if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+                     {bundled_extensions_copy} \
            sed -i '/^SupplementaryGroups=/d' \"$SVC\"; \
            sed -i 's/^KillMode=process/KillMode=control-group/' \"$SVC\"; \
-           sed -i '/^ExecStart=/{{s|^ExecStart=|ExecStart=/usr/bin/sg docker -c \"|;s|$|\"|;}}' \"$SVC\"; \
          fi; \
          ({sandbox_setup_cmd} || true) && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
-         printf '[Service]\nEnvironmentFile=-{home}/.openclaw/.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
+                 printf '[Service]\nEnvironmentFile=-{home}/.openclaw/gateway.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
@@ -1556,7 +1569,6 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
 #[cfg(feature = "lightsail")]
 async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     use clawmacdo_cloud::CloudProvider;
-    use std::env;
 
     config::ensure_dirs()?;
     let deploy_id = params
@@ -1573,26 +1585,8 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         bail!("AWS credentials required. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY");
     }
 
-    // Set AWS credentials as environment variables for the CLI.
-    env::set_var("AWS_ACCESS_KEY_ID", &params.aws_access_key_id);
-    env::set_var("AWS_SECRET_ACCESS_KEY", &params.aws_secret_access_key);
-    env::set_var("AWS_DEFAULT_REGION", &params.aws_region);
-
-    // Also write to ~/.aws/credentials so the AWS CLI always picks up the
-    // latest keys from the web UI, overriding any stale/rotated credentials.
-    if let Ok(home) = env::var("HOME") {
-        let home = std::path::PathBuf::from(home);
-        let aws_dir = home.join(".aws");
-        let _ = std::fs::create_dir_all(&aws_dir);
-        let creds_content = format!(
-            "[default]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
-            params.aws_access_key_id, params.aws_secret_access_key
-        );
-        let _ = std::fs::write(aws_dir.join("credentials"), creds_content);
-    }
-
     // Initialize Lightsail provider with explicit credentials so they
-    // override any stale keys in ~/.aws/credentials.
+    // stay scoped to the child AWS CLI processes.
     clawmacdo_cloud::lightsail_cli::ensure_aws_cli()?;
     let lightsail = LightsailCliProvider::with_credentials(
         params.aws_region.clone(),
@@ -1730,6 +1724,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     let backup_restored: Option<String>;
     if let Some(bp) = params.backup.as_deref() {
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
+        validate_backup_archive(bp)?;
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
@@ -1738,10 +1733,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
             ssh::scp_upload_as(&ip_c, &key_c, &bp_c, remote_archive, "ubuntu")
         })
         .await??;
-        let extract_cmd = "sudo mkdir -p /root/.openclaw && cd /tmp && sudo tar xzf openclaw_backup.tar.gz && sudo cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; sudo rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let extract_cmd = backup_restore_cmd(true);
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, extract_cmd, "ubuntu"))
+        tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, &extract_cmd, "ubuntu"))
             .await??;
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         backup_restored = Some(bp.display().to_string());
@@ -1785,26 +1780,10 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         "\n[Step 15/16] Starting OpenClaw gateway (user service)...",
     );
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
-        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
-    } else {
-        ""
-    };
-    let openai_onboard_arg = if has_value(&params.openai_key) {
-        " --openai-api-key \"$OPENAI_API_KEY\""
-    } else {
-        ""
-    };
-    let gemini_onboard_arg = if has_value(&params.gemini_key) {
-        " --gemini-api-key \"$GEMINI_API_KEY\""
-    } else {
-        ""
-    };
-    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
-        " --auth-choice byteplus-api-key"
-    } else {
-        ""
-    };
+    let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
+    let openai_onboard_arg = "";
+    let gemini_onboard_arg = "";
+    let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -1827,29 +1806,15 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    let sandbox_setup_cmd = if params.enable_sandbox {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi && \
-             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
-        )
-    } else {
-        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
-        // requires Docker. Without Docker the agent fails on first message.
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi"
-        )
-    };
+    emit_sandbox_security_notice(tx, params.enable_sandbox);
+    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1875,14 +1840,14 @@ Environment=HOME={home}\n\
 Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
 Environment=OPENCLAW_NO_RESPAWN=1\n\
 Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
-EnvironmentFile=-{home}/.openclaw/.env\n\
+EnvironmentFile=-{home}/.openclaw/gateway.env\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n\
 SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         {bundled_extensions_copy} \
          ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
@@ -2178,6 +2143,7 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     if let Some(bp) = backup_path.as_deref() {
         record_step_start(step_db, &deploy_id, 8, "Upload & restore backup");
         progress::emit(tx, "\n[Step 8/16] Uploading and restoring backup...");
+        validate_backup_archive(bp)?;
         let remote_archive = "/tmp/openclaw_backup.tar.gz";
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
@@ -2186,10 +2152,10 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
             ssh::scp_upload_as(&ip_c, &key_c, &bp_c, remote_archive, "azureuser")
         })
         .await??;
-        let extract_cmd = "sudo mkdir -p /root/.openclaw && cd /tmp && sudo tar xzf openclaw_backup.tar.gz && sudo cp -a /tmp/openclaw/* /root/.openclaw/ 2>/dev/null; sudo rm -rf /tmp/openclaw /tmp/openclaw_backup.tar.gz && echo ok";
+        let extract_cmd = backup_restore_cmd(true);
         let ip_c = ip.clone();
         let key_c = keypair.private_key_path.clone();
-        tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, extract_cmd, "azureuser"))
+        tokio::task::spawn_blocking(move || ssh::exec_as(&ip_c, &key_c, &extract_cmd, "azureuser"))
             .await??;
         progress::emit(tx, "[Step 8/16] Backup uploaded and restored");
         record_step_complete(step_db, &deploy_id, 8);
@@ -2231,26 +2197,10 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     );
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
-    let anthropic_onboard_arg = if has_value(&anthropic_api_key) {
-        " --auth-choice apiKey --anthropic-api-key \"$ANTHROPIC_API_KEY\""
-    } else {
-        ""
-    };
-    let openai_onboard_arg = if has_value(&params.openai_key) {
-        " --openai-api-key \"$OPENAI_API_KEY\""
-    } else {
-        ""
-    };
-    let gemini_onboard_arg = if has_value(&params.gemini_key) {
-        " --gemini-api-key \"$GEMINI_API_KEY\""
-    } else {
-        ""
-    };
-    let byteplus_onboard_arg = if has_value(&params.byteplus_ark_api_key) {
-        " --auth-choice byteplus-api-key"
-    } else {
-        ""
-    };
+    let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
+    let openai_onboard_arg = "";
+    let gemini_onboard_arg = "";
+    let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -2273,29 +2223,15 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    let sandbox_setup_cmd = if params.enable_sandbox {
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi && \
-             docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
-              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)"
-        )
-    } else {
-        // Explicitly disable sandbox — onboard wizard defaults to "non-main" which
-        // requires Docker. Without Docker the agent fails on first message.
-        format!(
-            "if [ -f {home}/.openclaw/openclaw.json ]; then \
-               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-             fi"
-        )
-    };
+    emit_sandbox_security_notice(tx, params.enable_sandbox);
+    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --secret-input-mode plaintext --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -2321,14 +2257,14 @@ Environment=HOME={home}\n\
 Environment=PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\n\
 Environment=OPENCLAW_NO_RESPAWN=1\n\
 Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache\n\
-EnvironmentFile=-{home}/.openclaw/.env\n\
+EnvironmentFile=-{home}/.openclaw/gateway.env\n\
 \n\
 [Install]\n\
 WantedBy=default.target\n\
 SVCEOF\n\
          mkdir -p /var/tmp/openclaw-compile-cache && \
          OC_EXT=$(find {home}/.local/share/pnpm /usr/lib/node_modules -path '*/openclaw/extensions' -type d 2>/dev/null | head -1); \
-         if [ -n \"$OC_EXT\" ]; then rm -rf {home}/.openclaw/bundled-extensions && cp -rL \"$OC_EXT\" {home}/.openclaw/bundled-extensions; fi; \
+         {bundled_extensions_copy} \
          ({sandbox_setup_cmd} || true) && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \

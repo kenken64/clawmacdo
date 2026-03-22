@@ -62,6 +62,19 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 - **5 cloud providers** — DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, BytePlus Cloud
 - **npm distribution** — `npm install -g clawmacdo`
 
+## Security Hardening
+
+- Privileged remote provisioning commands now run through stdin-fed shells instead of nested quoted `sudo` / `su -c` wrappers.
+- User-supplied hostnames are normalized and validated before any deploy flow uses them.
+- The web UI now only accepts backup archives from `~/.clawmacdo/backups` and SSH keys from `~/.clawmacdo/keys`.
+- Backup restore validates the local `.tar.gz` before upload and extracts remotely with `--no-same-owner` and `--no-same-permissions` into a dedicated restore directory.
+- The gateway service now reads `~/.openclaw/gateway.env` instead of the broader `.env`, so setup-only secrets such as `ANTHROPIC_SETUP_TOKEN` are not inherited by the long-running service.
+- Direct Docker-group access for `openclaw` has been removed. If sandbox mode is requested during deploy, the deploy now forces sandbox mode off until a safer non-root mediation path exists.
+- Lightsail credentials are passed only to the child AWS CLI processes instead of mutating process-global environment variables or writing `~/.aws/credentials`.
+- Tencent's optional security-group helper now takes SSH ingress from `CLAWMACDO_TENCENT_SSH_CIDR` and defaults to `127.0.0.1/32` instead of opening SSH to the world.
+
+See [docs/HIGH_SECURITY_FIXES.md](docs/HIGH_SECURITY_FIXES.md) for the finding-by-finding code map, rationale, and functionality impact.
+
 ## 🏗️ Project Structure
 
 ```
@@ -727,6 +740,7 @@ For licensing inquiries, contact: bunnyppl@gmail.com
 | [TanStack Progress Tracking](docs/tanstack-progress-tracking.md) | Frontend integration guide for TanStack (React Query) progress bars |
 | [Security Scan](docs/SECURITY_SCAN.md) | Security scanning CLI and vulnerability assessment |
 | [Security Flaw Evaluation](docs/EVAL_SECURITY_FLAW.md) | Security flaw evaluation report and findings |
+| [High Security Fixes](docs/HIGH_SECURITY_FIXES.md) | Code-level remediation map for all HIGH findings |
 | [Tencent Cloud Plan](docs/TENCENT_PLAN.md) | Tencent Cloud provider support plan |
 | [Repository Guidelines](docs/AGENTS.md) | Contribution guidelines and repository conventions |
 

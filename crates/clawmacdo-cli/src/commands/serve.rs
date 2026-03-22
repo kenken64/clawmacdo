@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -217,6 +217,20 @@ struct ListDeploymentsQuery {
 
 fn default_page() -> u32 {
     1
+}
+
+fn db_lock_error() -> Response {
+  (
+    StatusCode::INTERNAL_SERVER_ERROR,
+    Json(ErrorResponse {
+      message: "Database lock poisoned".into(),
+    }),
+  )
+    .into_response()
+}
+
+fn lock_db(db: &Db) -> Result<MutexGuard<'_, rusqlite::Connection>, Response> {
+  db.lock().map_err(|_| db_lock_error())
 }
 
 #[derive(Serialize)]
@@ -800,11 +814,34 @@ async fn start_deploy_handler(
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
-    // Parse backup path
+    let hostname = match config::normalize_hostname(&req.hostname) {
+      Ok(value) => value,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(ErrorResponse {
+            message: err.to_string(),
+          }),
+        )
+          .into_response();
+      }
+    };
+
     let backup: Option<PathBuf> = if req.backup.is_empty() || req.backup == "none" {
-        None
+      None
     } else {
-        Some(PathBuf::from(&req.backup))
+      match config::resolve_backup_path(&req.backup) {
+        Ok(path) => Some(path),
+        Err(err) => {
+          return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+              message: err.to_string(),
+            }),
+          )
+            .into_response();
+        }
+      }
     };
 
     let job = DeployJob {
@@ -825,7 +862,7 @@ async fn start_deploy_handler(
         let provider_str = &req.provider;
         let region_str = &req.region;
         let size_str = &req.size;
-        let hostname_str = &req.hostname;
+        let hostname_str = hostname.as_deref().unwrap_or("");
         if let Ok(conn) = db.lock() {
             let _ = db::insert_deployment(
                 &conn,
@@ -874,11 +911,7 @@ async fn start_deploy_handler(
             } else {
                 Some(req.size)
             },
-            hostname: if req.hostname.is_empty() {
-                None
-            } else {
-                Some(req.hostname)
-            },
+            hostname,
             backup,
             enable_backups: req.enable_backups,
             enable_sandbox: req.enable_sandbox,
@@ -1017,14 +1050,18 @@ async fn deploy_events_handler(
 async fn deploy_steps_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
+) -> Response {
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::get_deploy_steps(&conn, &id) {
-        Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))),
+    Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
-        ),
+    )
+      .into_response(),
     }
 }
 
@@ -1032,9 +1069,12 @@ async fn deploy_steps_handler(
 async fn refresh_ip_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     let (provider, hostname, region, old_ip) = {
-        let conn = state.db.lock().unwrap();
+    let conn = match lock_db(&state.db) {
+      Ok(conn) => conn,
+      Err(resp) => return resp,
+    };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1043,12 +1083,13 @@ async fn refresh_ip_handler(
                 d.ip_address.unwrap_or_default(),
             ),
             Ok(None) => {
-                return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." }))
+              return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." })).into_response()
             }
             Err(e) => {
-                return Json(
+              return Json(
                     serde_json::json!({ "ok": false, "message": format!("DB error: {e}") }),
                 )
+              .into_response()
             }
         }
     };
@@ -1056,7 +1097,8 @@ async fn refresh_ip_handler(
     if hostname.is_empty() {
         return Json(
             serde_json::json!({ "ok": false, "message": "No hostname in deploy record." }),
-        );
+          )
+          .into_response();
     }
 
     let new_ip = match provider.as_str() {
@@ -1074,12 +1116,14 @@ async fn refresh_ip_handler(
                         return Json(serde_json::json!({
                             "ok": false, "message": "Instance has no public IP."
                         }))
+                      .into_response()
                     }
                 },
                 Err(e) => {
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Failed to query instance: {e}")
                     }))
+                    .into_response()
                 }
             }
         }
@@ -1088,7 +1132,8 @@ async fn refresh_ip_handler(
             if token.is_empty() {
                 return Json(serde_json::json!({
                     "ok": false, "message": "DO_TOKEN env var required."
-                }));
+              }))
+              .into_response();
             }
             let client = match clawmacdo_cloud::digitalocean::DoClient::new(&token) {
                 Ok(c) => c,
@@ -1096,6 +1141,7 @@ async fn refresh_ip_handler(
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Invalid DO token: {e}")
                     }))
+                .into_response()
                 }
             };
             match client.list_droplets().await {
@@ -1106,18 +1152,21 @@ async fn refresh_ip_handler(
                             return Json(serde_json::json!({
                                 "ok": false, "message": "Droplet has no public IP."
                             }))
+                          .into_response()
                         }
                     },
                     None => {
                         return Json(serde_json::json!({
                             "ok": false, "message": format!("Droplet '{hostname}' not found.")
                         }))
+                        .into_response()
                     }
                 },
                 Err(e) => {
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Failed to list droplets: {e}")
                     }))
+                      .into_response()
                 }
             }
         }
@@ -1125,16 +1174,20 @@ async fn refresh_ip_handler(
             return Json(serde_json::json!({
                 "ok": false, "message": format!("Refresh IP not supported for provider '{other}'.")
             }))
+                  .into_response()
         }
     };
 
     if new_ip == old_ip {
-        return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip }));
+                return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip })).into_response();
     }
 
     // Update SQLite
     {
-        let conn = state.db.lock().unwrap();
+        let conn = match lock_db(&state.db) {
+            Ok(conn) => conn,
+            Err(resp) => return resp,
+        };
         let _ =
             db::update_deployment_status(&conn, &id, "completed", Some(&new_ip), Some(&hostname));
     }
@@ -1161,6 +1214,7 @@ async fn refresh_ip_handler(
         "ip": new_ip,
         "old_ip": old_ip,
     }))
+    .into_response()
 }
 
 /// Approve telegram pairing handler.
@@ -1192,7 +1246,18 @@ async fn approve_telegram_pairing_handler(
         }
     };
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(TelegramPairingApproveResponse {
+            ok: false,
+            message: err.to_string(),
+          }),
+        )
+      }
+    };
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
@@ -1285,7 +1350,19 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(WhatsAppQrResponse {
+            ok: false,
+            message: err.to_string(),
+            qr_output: String::new(),
+          }),
+        )
+      }
+    };
     // Use 45s timeout — enough to capture the first QR code
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
@@ -1351,7 +1428,19 @@ async fn repair_whatsapp_handler(Json(req): Json<WhatsAppRepairRequest>) -> impl
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(WhatsAppRepairResponse {
+            ok: false,
+            message: err.to_string(),
+            repair_output: String::new(),
+          }),
+        )
+      }
+    };
     match whatsapp::repair_support(&ip, &key).await {
         Ok(result) => {
             let message = if result.supported {
@@ -1399,7 +1488,19 @@ async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl 
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(DockerFixResponse {
+            ok: false,
+            message: err.to_string(),
+            fix_output: String::new(),
+          }),
+        )
+      }
+    };
     let ssh_user = ssh_user_for_provider(req.provider.as_deref());
     match docker_fix::repair_access(&ip, &key, ssh_user).await {
         Ok(result) => {
@@ -1448,7 +1549,10 @@ async fn list_deployments_handler(
 ) -> impl IntoResponse {
     let page = if q.page == 0 { 1 } else { q.page };
     let per_page: u32 = 20;
-    let conn = state.db.lock().unwrap();
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::list_deployments_paginated(&conn, page, per_page) {
         Ok((deployments, total)) => {
             let total_pages = total.div_ceil(per_page);
@@ -1475,7 +1579,10 @@ async fn delete_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::delete_deployment(&conn, &id) {
         Ok(_) => Json(DeleteResponse { ok: true }).into_response(),
         Err(e) => (
@@ -1492,10 +1599,13 @@ async fn destroy_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<DestroyDeploymentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // Look up deployment to get provider and hostname
     let (provider, hostname) = {
-        let conn = state.db.lock().unwrap();
+      let conn = match lock_db(&state.db) {
+        Ok(conn) => conn,
+        Err(resp) => return resp,
+      };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1509,6 +1619,7 @@ async fn destroy_deployment_handler(
                         message: "Deployment not found.".into(),
                     }),
                 )
+                .into_response()
             }
             Err(e) => {
                 return (
@@ -1518,27 +1629,10 @@ async fn destroy_deployment_handler(
                         message: format!("DB error: {e}"),
                     }),
                 )
+                    .into_response()
             }
         }
     };
-
-    // Write AWS credentials to ~/.aws/credentials if provided (Lightsail)
-    if provider == "lightsail"
-        && !req.aws_access_key_id.is_empty()
-        && !req.aws_secret_access_key.is_empty()
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let aws_dir = std::path::PathBuf::from(&home).join(".aws");
-            let _ = std::fs::create_dir_all(&aws_dir);
-            let creds_content = format!(
-                "[default]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
-                req.aws_access_key_id, req.aws_secret_access_key
-            );
-            let _ = std::fs::write(aws_dir.join("credentials"), creds_content);
-        }
-        std::env::set_var("AWS_ACCESS_KEY_ID", &req.aws_access_key_id);
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", &req.aws_secret_access_key);
-    }
 
     // Build destroy params and run
     let destroy_params = crate::commands::destroy::DestroyParams {
@@ -1546,6 +1640,8 @@ async fn destroy_deployment_handler(
         do_token: req.do_token,
         tencent_secret_id: req.tencent_secret_id,
         tencent_secret_key: req.tencent_secret_key,
+      aws_access_key_id: req.aws_access_key_id,
+      aws_secret_access_key: req.aws_secret_access_key,
         aws_region: if req.aws_region.is_empty() {
             "ap-southeast-1".to_string()
         } else {
@@ -1589,7 +1685,10 @@ async fn destroy_deployment_handler(
     if cloud_ok {
         // Clean up local DB record and JSON deploy file
         {
-            let conn = state.db.lock().unwrap();
+            let conn = match lock_db(&state.db) {
+                Ok(conn) => conn,
+                Err(resp) => return resp,
+            };
             let _ = db::delete_deployment(&conn, &id);
         }
         if let Ok(deploys_dir) = config::deploys_dir() {
@@ -1604,6 +1703,7 @@ async fn destroy_deployment_handler(
                 message: format!("{cloud_msg} Local record deleted."),
             }),
         )
+        .into_response()
     } else {
         (
             StatusCode::BAD_GATEWAY,
@@ -1612,6 +1712,7 @@ async fn destroy_deployment_handler(
                 message: cloud_msg,
             }),
         )
+        .into_response()
     }
 }
 
@@ -1619,9 +1720,12 @@ async fn snapshot_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<SnapshotDeploymentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let (provider, hostname, region) = {
-        let conn = state.db.lock().unwrap();
+    let conn = match lock_db(&state.db) {
+      Ok(conn) => conn,
+      Err(resp) => return resp,
+    };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1637,6 +1741,7 @@ async fn snapshot_deployment_handler(
                         operation_id: None,
                     }),
                 )
+                    .into_response()
             }
             Err(e) => {
                 return (
@@ -1647,6 +1752,7 @@ async fn snapshot_deployment_handler(
                         operation_id: None,
                     }),
                 )
+                    .into_response()
             }
         }
     };
@@ -1662,7 +1768,8 @@ async fn snapshot_deployment_handler(
                         message: "do_token is required.".into(),
                         operation_id: None,
                     }),
-                );
+                )
+                .into_response();
             }
         }
         "byteplus" => {
@@ -1674,7 +1781,8 @@ async fn snapshot_deployment_handler(
                         message: "BytePlus access key and secret key are required.".into(),
                         operation_id: None,
                     }),
-                );
+                    )
+                    .into_response();
             }
         }
         "lightsail" => {}
@@ -1686,7 +1794,8 @@ async fn snapshot_deployment_handler(
                     message: format!("Snapshot not supported for provider '{other}'."),
                     operation_id: None,
                 }),
-            );
+                )
+                .into_response();
         }
     }
 
@@ -1932,6 +2041,7 @@ async fn snapshot_deployment_handler(
             operation_id: Some(op_id),
         }),
     )
+    .into_response()
 }
 
 async fn toggle_funnel_handler(
@@ -2100,7 +2210,11 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
             Err(_) => continue,
         };
         if record.id == id || record.hostname == id || record.ip_address == id {
-            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
+          let key_path = match config::resolve_key_path(&record.ssh_key_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+          };
+          return Ok((record.ip_address, key_path));
         }
     }
     Err(format!("No deploy record found for '{id}'."))
@@ -2271,19 +2385,6 @@ async fn list_snapshots_handler(
                 .get("secret_key")
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            // Write AWS credentials so the CLI picks them up
-            if !ak.is_empty() && !sk.is_empty() {
-                if let Ok(home) = std::env::var("HOME") {
-                    let aws_dir = std::path::PathBuf::from(&home).join(".aws");
-                    let _ = std::fs::create_dir_all(&aws_dir);
-                    let creds = format!(
-                        "[default]\naws_access_key_id = {ak}\naws_secret_access_key = {sk}\n"
-                    );
-                    let _ = std::fs::write(aws_dir.join("credentials"), creds);
-                }
-                std::env::set_var("AWS_ACCESS_KEY_ID", &ak);
-                std::env::set_var("AWS_SECRET_ACCESS_KEY", &sk);
-            }
             let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::with_credentials(
                 region, ak, sk,
             );
