@@ -3219,21 +3219,20 @@ tailwind.config = {
       <p class="mt-2 text-sm text-slate-400">Review endpoints, trigger actions, and manage completed or in-flight environments.</p>
     </div>
   </div>
-  <div class="section-shell overflow-hidden">
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm text-left">
+  <div class="section-shell overflow-visible">
+    <div class="overflow-visible">
+      <table class="w-full table-fixed text-xs sm:text-sm text-left">
         <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
           <tr>
-            <th class="px-4 py-3">Customer</th>
-            <th class="px-4 py-3">Email</th>
-            <th class="px-4 py-3">Provider</th>
-            <th class="px-4 py-3">Hostname</th>
-            <th class="px-4 py-3">IP</th>
-            <th class="px-4 py-3">Region</th>
-            <th class="px-4 py-3">Status</th>
-            <th class="px-4 py-3">Created</th>
-            <th class="px-4 py-3">Funnel</th>
-            <th class="px-4 py-3">Actions</th>
+            <th class="w-[8%] px-3 py-3">Customer</th>
+            <th class="w-[14%] px-3 py-3">Email</th>
+            <th class="w-[7%] px-3 py-3">Provider</th>
+            <th class="w-[14%] px-3 py-3">Hostname</th>
+            <th class="w-[9%] px-3 py-3">IP</th>
+            <th class="w-[9%] px-3 py-3">Region</th>
+            <th class="w-[10%] px-3 py-3">Status</th>
+            <th class="w-[13%] px-3 py-3">Created</th>
+            <th class="w-[16%] px-3 py-3">Actions</th>
           </tr>
         </thead>
         <tbody id="deployments-tbody" class="divide-y divide-slate-800"></tbody>
@@ -4518,6 +4517,112 @@ function statusBadge(status, deployId) {
   return html;
 }
 
+function deploymentActionButton(label, className, title, handler, extraAttrs) {
+  return '<button type="button" data-label="' + esc(label) + '" onclick="' + handler + '" ' + (extraAttrs || '') + ' class="w-full text-left text-xs font-medium px-3 py-2 rounded-xl border transition-colors ' + className + '" title="' + esc(title) + '">' + esc(label) + '</button>';
+}
+
+function funnelToggleButtonClass(state) {
+  if (state === 'on') return 'text-green-400 hover:text-green-300 bg-green-500/20 hover:bg-green-500/30 border-green-500/30';
+  if (state === 'unverified') return 'text-amber-400 hover:text-amber-300 bg-amber-500/20 hover:bg-amber-500/30 border-amber-500/30';
+  if (state === 'verifying') return 'text-yellow-400 bg-yellow-500/20 border-yellow-500/30 cursor-wait';
+  if (state === 'error') return 'text-red-400 hover:text-red-300 bg-red-500/20 hover:bg-red-500/30 border-red-500/30';
+  return 'text-slate-300 hover:text-blue-300 bg-slate-800/70 hover:bg-blue-500/20 border-slate-600 hover:border-blue-500/30';
+}
+
+function funnelToggleLabel(state) {
+  if (state === 'on' || state === 'unverified') return 'Funnel: Turn Off';
+  if (state === 'verifying') return 'Funnel: Verifying...';
+  if (state === 'error') return 'Funnel: Retry';
+  return 'Funnel: Turn On';
+}
+
+function setFunnelToggleState(btn, state, disabled) {
+  if (!btn) return;
+  btn.dataset.funnelState = state;
+  btn.textContent = funnelToggleLabel(state);
+  btn.disabled = !!disabled;
+  btn.className = 'w-full text-left text-xs font-medium px-3 py-2 rounded-xl border transition-colors ' + funnelToggleButtonClass(state);
+}
+
+function setFunnelOpenState(btn, enabled) {
+  if (!btn) return;
+  btn.disabled = !enabled;
+  btn.className = enabled
+    ? 'w-full text-left text-xs font-medium px-3 py-2 rounded-xl border transition-colors text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/20'
+    : 'w-full text-left text-xs font-medium px-3 py-2 rounded-xl border transition-colors text-slate-500 bg-slate-900/70 border-slate-700 cursor-not-allowed';
+}
+
+function deploymentActionsMenu(d) {
+  const id = esc(d.id);
+  const provider = esc(d.provider || '');
+  const hostname = esc(d.hostname || '');
+  const ip = esc(d.ip_address || '');
+
+  return '<div class="deployment-action-shell relative w-full max-w-[8.5rem] text-left">' +
+    '<button type="button" onclick="toggleDeploymentActions(this)" data-deploy-actions-toggle aria-expanded="false" class="flex w-full items-center justify-between rounded-xl border border-slate-600 bg-slate-800/70 px-2.5 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-200 transition hover:border-slate-500 hover:bg-slate-700/80">' +
+      '<span>Action</span>' +
+      '<svg data-deploy-actions-chevron class="h-3.5 w-3.5 text-slate-400 transition-transform duration-200" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" clip-rule="evenodd"></path></svg>' +
+    '</button>' +
+    '<div class="deployment-actions-menu hidden absolute right-0 top-full z-30 mt-2 flex min-w-[13rem] flex-col gap-1.5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.35)] backdrop-blur">' +
+      '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Funnel</div>' +
+      deploymentActionButton('Funnel: Turn On', funnelToggleButtonClass('off'), 'Step 1: Toggle Tailscale Funnel', 'toggleFunnel(\'' + id + '\',this)', 'id="funnel-btn-' + id + '" data-funnel-state="off"') +
+      deploymentActionButton('Open Funnel URL', 'text-slate-500 bg-slate-900/70 border-slate-700 cursor-not-allowed', 'Step 2: Open the Funnel URL after it becomes available', 'closeDeploymentActionMenu(this); openFunnel(\'' + id + '\')', 'id="funnel-open-' + id + '" disabled') +
+      '<div class="my-1 h-px bg-slate-800"></div>' +
+      '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Instance</div>' +
+      deploymentActionButton('Repair WhatsApp', 'text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/20', 'Install/Repair WhatsApp Support', 'closeDeploymentActionMenu(this); depRepairWhatsApp(\'' + id + '\',this)') +
+      deploymentActionButton('WhatsApp QR', 'text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/20', 'Fetch WhatsApp QR Code', 'closeDeploymentActionMenu(this); depFetchWhatsAppQr(\'' + id + '\',this)') +
+      deploymentActionButton('Snapshot', 'text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20', 'Create snapshot', 'closeDeploymentActionMenu(this); depSnapshot(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\')') +
+      deploymentActionButton('Refresh IP', 'text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20', 'Refresh IP from cloud provider', 'closeDeploymentActionMenu(this); refreshIp(\'' + id + '\',this)') +
+      deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')') +
+    '</div>' +
+  '</div>';
+}
+
+function closeDeploymentActionMenus() {
+  document.querySelectorAll('.deployment-action-shell').forEach(shell => {
+    const menu = shell.querySelector('.deployment-actions-menu');
+    const toggle = shell.querySelector('[data-deploy-actions-toggle]');
+    const chevron = shell.querySelector('[data-deploy-actions-chevron]');
+    if (menu) menu.classList.add('hidden');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    if (chevron) chevron.classList.remove('rotate-180');
+  });
+}
+
+function closeDeploymentActionMenu(el) {
+  const shell = el.closest('.deployment-action-shell');
+  if (!shell) return;
+  const menu = shell.querySelector('.deployment-actions-menu');
+  const toggle = shell.querySelector('[data-deploy-actions-toggle]');
+  const chevron = shell.querySelector('[data-deploy-actions-chevron]');
+  if (menu) menu.classList.add('hidden');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  if (chevron) chevron.classList.remove('rotate-180');
+}
+
+function toggleDeploymentActions(btn) {
+  const shell = btn.closest('.deployment-action-shell');
+  if (!shell) return;
+  const menu = shell.querySelector('.deployment-actions-menu');
+  const chevron = shell.querySelector('[data-deploy-actions-chevron]');
+  if (!menu) return;
+  const shouldOpen = menu.classList.contains('hidden');
+  closeDeploymentActionMenus();
+  if (!shouldOpen) return;
+  menu.classList.remove('hidden');
+  btn.setAttribute('aria-expanded', 'true');
+  if (chevron) chevron.classList.add('rotate-180');
+}
+
+document.addEventListener('click', event => {
+  if (event.target.closest('.deployment-action-shell')) return;
+  closeDeploymentActionMenus();
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') closeDeploymentActionMenus();
+});
+
 async function loadDeployments(page) {
   if (page) depCurrentPage = page;
   try {
@@ -4537,39 +4642,25 @@ async function loadDeployments(page) {
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-slate-800/50';
         tr.innerHTML =
-          '<td class="px-4 py-3 text-slate-200">' + esc(d.customer_name) + '</td>' +
-          '<td class="px-4 py-3 text-slate-400">' + esc(d.customer_email) + '</td>' +
-          '<td class="px-4 py-3 text-slate-400">' + esc(d.provider || '-') + '</td>' +
-          '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.hostname || '-') + '</td>' +
-          '<td class="px-4 py-3 text-slate-300 font-mono text-xs">' + esc(d.ip_address || '-') + '</td>' +
-          '<td class="px-4 py-3 text-slate-400">' + esc(d.region || '-') + '</td>' +
-          '<td class="px-4 py-3">' + statusBadge(d.status, d.id) + '</td>' +
-          '<td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
-          '<td class="px-4 py-3">' +
-            '<div class="flex flex-col gap-1">' +
-              '<div class="flex gap-1 items-center">' +
-                '<button id="funnel-btn-' + esc(d.id) + '" onclick="toggleFunnel(\'' + esc(d.id) + '\',this)" class="text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors" title="Toggle Tailscale Funnel">Off</button>' +
-                '<button id="funnel-open-' + esc(d.id) + '" onclick="openFunnel(\'' + esc(d.id) + '\')" class="hidden text-xs text-blue-400 hover:text-blue-300 px-1.5 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 ml-1" title="Open webchat (auto-approves device)">Open</button>' +
-                '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
-              '</div>' +
-              '<div id="funnel-progress-' + esc(d.id) + '" class="hidden">' +
+          '<td class="px-3 py-3 align-top text-slate-200 leading-4 break-words">' + esc(d.customer_name) + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-400 leading-4 break-all">' + esc(d.customer_email) + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-400 break-words">' + esc(d.provider || '-') + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-300 font-mono text-[11px] leading-4 break-all">' + esc(d.hostname || '-') + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-300 font-mono text-[11px] leading-4 break-all">' + esc(d.ip_address || '-') + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-400 leading-4 break-words">' + esc(d.region || '-') + '</td>' +
+          '<td class="px-3 py-3 align-top">' + statusBadge(d.status, d.id) + '</td>' +
+          '<td class="px-3 py-3 align-top text-slate-500 text-[11px] leading-4 break-words">' + formatSGT(d.created_at) + '</td>' +
+          '<td class="px-3 py-3 align-top">' +
+            '<div class="flex flex-col items-start gap-2">' +
+              deploymentActionsMenu(d) +
+              '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
+              '<div id="funnel-progress-' + esc(d.id) + '" class="hidden w-full max-w-[13rem]">' +
                 '<div class="w-full bg-slate-700 rounded-full h-1 overflow-hidden">' +
                   '<div class="bg-blue-500 h-1 rounded-full transition-all duration-500 animate-pulse" style="width:0%"></div>' +
                 '</div>' +
                 '<div class="text-[9px] text-slate-500 mt-0.5">Verifying funnel...</div>' +
               '</div>' +
-            '</div>' +
-          '</td>' +
-          '<td class="px-4 py-3">' +
-            '<div class="flex flex-col gap-1">' +
-              '<div class="grid grid-cols-2 gap-1">' +
-                '<button onclick="depRepairWhatsApp(\'' + esc(d.id) + '\',this)" class="text-amber-400 hover:text-amber-300 text-xs font-medium px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors" title="Install/Repair WhatsApp Support">WhatsApp</button>' +
-                '<button onclick="depFetchWhatsAppQr(\'' + esc(d.id) + '\',this)" class="text-blue-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-colors" title="Fetch WhatsApp QR Code">QR</button>' +
-                '<button onclick="depSnapshot(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\')" class="text-cyan-400 hover:text-cyan-300 text-xs font-medium px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 transition-colors" title="Create snapshot">Snapshot</button>' +
-                '<button onclick="refreshIp(\'' + esc(d.id) + '\',this)" class="text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors" title="Refresh IP from cloud provider">Refresh IP</button>' +
-                '<button onclick="showDestroyModal(\'' + esc(d.id) + '\',\'' + esc(d.provider || '') + '\',\'' + esc(d.hostname || '') + '\',\'' + esc(d.ip_address || '') + '\')" class="text-red-400 hover:text-red-300 text-xs font-medium px-2 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors">Destroy</button>' +
-              '</div>' +
-              '<pre id="wa-output-' + esc(d.id) + '" class="hidden mt-1 bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
+              '<pre id="wa-output-' + esc(d.id) + '" class="hidden bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
             '</div>' +
           '</td>';
         tbody.appendChild(tr);
@@ -4661,12 +4752,15 @@ async function checkFunnelStatus(id) {
     const urlVal = document.getElementById('funnel-url-val-' + id);
     if (!btn) return;
     if (data.ok && data.active) {
-      btn.textContent = 'On';
-      btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
+      setFunnelToggleState(btn, 'on', false);
       if (data.funnel_url && openBtn && urlVal) {
         urlVal.value = data.funnel_url;
-        openBtn.classList.remove('hidden');
+        setFunnelOpenState(openBtn, true);
       }
+    } else {
+      setFunnelToggleState(btn, 'off', false);
+      if (openBtn) setFunnelOpenState(openBtn, false);
+      if (urlVal) urlVal.value = '';
     }
   } catch (e) {
     // Silently ignore — button stays as Off
@@ -4805,12 +4899,14 @@ async function confirmDestroy(id, provider) {
 }
 
 async function toggleFunnel(id, btn) {
-  const isOn = btn.textContent.trim() === 'On';
-  const action = isOn ? 'off' : 'on';
-  const origText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = action === 'on' ? 'Enabling...' : 'Disabling...';
-  btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+  const state = btn.dataset.funnelState || 'off';
+  const action = state === 'on' || state === 'unverified' ? 'off' : 'on';
+  const origState = state;
+  const openBtn = document.getElementById('funnel-open-' + id);
+  const urlVal = document.getElementById('funnel-url-val-' + id);
+  const progressEl = document.getElementById('funnel-progress-' + id);
+  setFunnelToggleState(btn, 'verifying', true);
+  if (openBtn) setFunnelOpenState(openBtn, false);
 
   try {
     const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/funnel', {
@@ -4819,16 +4915,12 @@ async function toggleFunnel(id, btn) {
       body: JSON.stringify({ action: action, port: 18789 }),
     });
     const data = await res.json();
-    const openBtn = document.getElementById('funnel-open-' + id);
-    const urlVal = document.getElementById('funnel-url-val-' + id);
     if (data.ok && action === 'on') {
-      btn.textContent = 'Verifying...';
-      btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+      setFunnelToggleState(btn, 'verifying', true);
       if (data.funnel_url && urlVal) {
         urlVal.value = data.funnel_url;
       }
       // Show progress bar
-      const progressEl = document.getElementById('funnel-progress-' + id);
       if (progressEl) {
         progressEl.classList.remove('hidden');
         const bar = progressEl.querySelector('div > div');
@@ -4875,47 +4967,42 @@ async function toggleFunnel(id, btn) {
         setTimeout(() => { progressEl.classList.add('hidden'); }, 5000);
       }
       if (verified) {
-        btn.textContent = 'On';
-        btn.className = 'text-green-400 hover:text-green-300 text-xs font-medium px-2 py-1 rounded bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 transition-colors';
+        setFunnelToggleState(btn, 'on', false);
         if (openBtn && urlVal && urlVal.value) {
-          openBtn.classList.remove('hidden');
+          setFunnelOpenState(openBtn, true);
         }
       } else {
-        btn.textContent = 'On (unverified)';
-        btn.className = 'text-amber-400 text-xs font-medium px-2 py-1 rounded bg-amber-500/20 border border-amber-500/30';
+        setFunnelToggleState(btn, 'unverified', false);
         if (funnelUrl && openBtn && urlVal) {
-          openBtn.classList.remove('hidden');
+          setFunnelOpenState(openBtn, true);
         }
       }
     } else if (data.ok && action === 'off') {
-      btn.textContent = 'Off';
-      btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
-      if (openBtn) { openBtn.classList.add('hidden'); }
+      setFunnelToggleState(btn, 'off', false);
+      if (openBtn) { setFunnelOpenState(openBtn, false); }
       if (urlVal) { urlVal.value = ''; }
+      if (progressEl) { progressEl.classList.add('hidden'); }
     } else {
-      btn.textContent = origText;
-      btn.className = 'text-red-400 text-xs font-medium px-2 py-1 rounded bg-red-500/20 border border-red-500/30';
+      setFunnelToggleState(btn, 'error', false);
       alert('Funnel toggle failed: ' + (data.message || 'Unknown error'));
       setTimeout(() => {
-        btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
+        setFunnelToggleState(btn, origState, false);
       }, 2000);
     }
   } catch (e) {
-    btn.textContent = origText;
-    btn.className = 'text-red-400 text-xs font-medium px-2 py-1 rounded bg-red-500/20 border border-red-500/30';
+    setFunnelToggleState(btn, 'error', false);
     alert('Network error: ' + e.message);
     setTimeout(() => {
-      btn.className = 'text-slate-400 hover:text-blue-300 text-xs font-medium px-2 py-1 rounded bg-slate-700/50 hover:bg-blue-500/20 border border-slate-600 hover:border-blue-500/30 transition-colors';
+      setFunnelToggleState(btn, origState, false);
     }, 2000);
   }
-  btn.disabled = false;
 }
 
 async function refreshIp(id, btn) {
   const origText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Refreshing...';
-  btn.className = 'text-yellow-400 text-xs font-medium px-2 py-1 rounded bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
+  btn.className = 'w-full text-left text-yellow-400 text-xs font-medium px-3 py-2 rounded-xl bg-yellow-500/20 border border-yellow-500/30 cursor-wait';
   try {
     const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/refresh-ip', {
       method: 'POST',
@@ -4924,17 +5011,17 @@ async function refreshIp(id, btn) {
     const data = await res.json();
     if (data.ok) {
       btn.textContent = data.old_ip ? 'Updated' : 'Unchanged';
-      btn.className = 'text-green-400 text-xs font-medium px-2 py-1 rounded bg-green-500/20 border border-green-500/30';
+      btn.className = 'w-full text-left text-green-400 text-xs font-medium px-3 py-2 rounded-xl bg-green-500/20 border border-green-500/30';
       setTimeout(() => loadDeployments(), 1500);
     } else {
       alert('Refresh IP failed: ' + (data.message || 'Unknown error'));
       btn.textContent = origText;
-      btn.className = 'text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
+      btn.className = 'w-full text-left text-purple-400 hover:text-purple-300 text-xs font-medium px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
     }
   } catch (e) {
     alert('Network error: ' + e.message);
     btn.textContent = origText;
-    btn.className = 'text-purple-400 hover:text-purple-300 text-xs font-medium px-2 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
+    btn.className = 'w-full text-left text-purple-400 hover:text-purple-300 text-xs font-medium px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 transition-colors';
   }
   btn.disabled = false;
 }
@@ -5002,7 +5089,7 @@ async function depFetchWhatsAppQr(id, btn) {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'QR';
+      btn.textContent = btn.dataset.label || 'WhatsApp QR';
     }
   }
 }
