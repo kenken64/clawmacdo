@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -217,6 +217,21 @@ struct ListDeploymentsQuery {
 
 fn default_page() -> u32 {
     1
+}
+
+fn db_lock_error() -> Response {
+  (
+    StatusCode::INTERNAL_SERVER_ERROR,
+    Json(ErrorResponse {
+      message: "Database lock poisoned".into(),
+    }),
+  )
+    .into_response()
+}
+
+#[allow(clippy::result_large_err)]
+fn lock_db(db: &Db) -> Result<MutexGuard<'_, rusqlite::Connection>, Response> {
+  db.lock().map_err(|_| db_lock_error())
 }
 
 #[derive(Serialize)]
@@ -800,11 +815,34 @@ async fn start_deploy_handler(
     let deploy_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
-    // Parse backup path
+    let hostname = match config::normalize_hostname(&req.hostname) {
+      Ok(value) => value,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(ErrorResponse {
+            message: err.to_string(),
+          }),
+        )
+          .into_response();
+      }
+    };
+
     let backup: Option<PathBuf> = if req.backup.is_empty() || req.backup == "none" {
-        None
+      None
     } else {
-        Some(PathBuf::from(&req.backup))
+      match config::resolve_backup_path(&req.backup) {
+        Ok(path) => Some(path),
+        Err(err) => {
+          return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+              message: err.to_string(),
+            }),
+          )
+            .into_response();
+        }
+      }
     };
 
     let job = DeployJob {
@@ -825,7 +863,7 @@ async fn start_deploy_handler(
         let provider_str = &req.provider;
         let region_str = &req.region;
         let size_str = &req.size;
-        let hostname_str = &req.hostname;
+        let hostname_str = hostname.as_deref().unwrap_or("");
         if let Ok(conn) = db.lock() {
             let _ = db::insert_deployment(
                 &conn,
@@ -874,11 +912,7 @@ async fn start_deploy_handler(
             } else {
                 Some(req.size)
             },
-            hostname: if req.hostname.is_empty() {
-                None
-            } else {
-                Some(req.hostname)
-            },
+            hostname,
             backup,
             enable_backups: req.enable_backups,
             enable_sandbox: req.enable_sandbox,
@@ -1017,14 +1051,18 @@ async fn deploy_events_handler(
 async fn deploy_steps_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
+) -> Response {
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::get_deploy_steps(&conn, &id) {
-        Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))),
+    Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
-        ),
+    )
+      .into_response(),
     }
 }
 
@@ -1032,9 +1070,12 @@ async fn deploy_steps_handler(
 async fn refresh_ip_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     let (provider, hostname, region, old_ip) = {
-        let conn = state.db.lock().unwrap();
+    let conn = match lock_db(&state.db) {
+      Ok(conn) => conn,
+      Err(resp) => return resp,
+    };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1043,12 +1084,13 @@ async fn refresh_ip_handler(
                 d.ip_address.unwrap_or_default(),
             ),
             Ok(None) => {
-                return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." }))
+              return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." })).into_response()
             }
             Err(e) => {
-                return Json(
+              return Json(
                     serde_json::json!({ "ok": false, "message": format!("DB error: {e}") }),
                 )
+              .into_response()
             }
         }
     };
@@ -1056,7 +1098,8 @@ async fn refresh_ip_handler(
     if hostname.is_empty() {
         return Json(
             serde_json::json!({ "ok": false, "message": "No hostname in deploy record." }),
-        );
+          )
+          .into_response();
     }
 
     let new_ip = match provider.as_str() {
@@ -1074,12 +1117,14 @@ async fn refresh_ip_handler(
                         return Json(serde_json::json!({
                             "ok": false, "message": "Instance has no public IP."
                         }))
+                      .into_response()
                     }
                 },
                 Err(e) => {
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Failed to query instance: {e}")
                     }))
+                    .into_response()
                 }
             }
         }
@@ -1088,7 +1133,8 @@ async fn refresh_ip_handler(
             if token.is_empty() {
                 return Json(serde_json::json!({
                     "ok": false, "message": "DO_TOKEN env var required."
-                }));
+              }))
+              .into_response();
             }
             let client = match clawmacdo_cloud::digitalocean::DoClient::new(&token) {
                 Ok(c) => c,
@@ -1096,6 +1142,7 @@ async fn refresh_ip_handler(
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Invalid DO token: {e}")
                     }))
+                .into_response()
                 }
             };
             match client.list_droplets().await {
@@ -1106,18 +1153,21 @@ async fn refresh_ip_handler(
                             return Json(serde_json::json!({
                                 "ok": false, "message": "Droplet has no public IP."
                             }))
+                          .into_response()
                         }
                     },
                     None => {
                         return Json(serde_json::json!({
                             "ok": false, "message": format!("Droplet '{hostname}' not found.")
                         }))
+                        .into_response()
                     }
                 },
                 Err(e) => {
                     return Json(serde_json::json!({
                         "ok": false, "message": format!("Failed to list droplets: {e}")
                     }))
+                      .into_response()
                 }
             }
         }
@@ -1125,16 +1175,20 @@ async fn refresh_ip_handler(
             return Json(serde_json::json!({
                 "ok": false, "message": format!("Refresh IP not supported for provider '{other}'.")
             }))
+                  .into_response()
         }
     };
 
     if new_ip == old_ip {
-        return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip }));
+                return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip })).into_response();
     }
 
     // Update SQLite
     {
-        let conn = state.db.lock().unwrap();
+        let conn = match lock_db(&state.db) {
+            Ok(conn) => conn,
+            Err(resp) => return resp,
+        };
         let _ =
             db::update_deployment_status(&conn, &id, "completed", Some(&new_ip), Some(&hostname));
     }
@@ -1161,6 +1215,7 @@ async fn refresh_ip_handler(
         "ip": new_ip,
         "old_ip": old_ip,
     }))
+    .into_response()
 }
 
 /// Approve telegram pairing handler.
@@ -1192,7 +1247,18 @@ async fn approve_telegram_pairing_handler(
         }
     };
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(TelegramPairingApproveResponse {
+            ok: false,
+            message: err.to_string(),
+          }),
+        )
+      }
+    };
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
@@ -1285,7 +1351,19 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(WhatsAppQrResponse {
+            ok: false,
+            message: err.to_string(),
+            qr_output: String::new(),
+          }),
+        )
+      }
+    };
     // Use 45s timeout — enough to capture the first QR code
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
@@ -1351,7 +1429,19 @@ async fn repair_whatsapp_handler(Json(req): Json<WhatsAppRepairRequest>) -> impl
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(WhatsAppRepairResponse {
+            ok: false,
+            message: err.to_string(),
+            repair_output: String::new(),
+          }),
+        )
+      }
+    };
     match whatsapp::repair_support(&ip, &key).await {
         Ok(result) => {
             let message = if result.supported {
@@ -1399,7 +1489,19 @@ async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl 
         );
     }
 
-    let key = PathBuf::from(key_path);
+    let key = match config::resolve_key_path(&key_path) {
+      Ok(path) => path,
+      Err(err) => {
+        return (
+          StatusCode::BAD_REQUEST,
+          Json(DockerFixResponse {
+            ok: false,
+            message: err.to_string(),
+            fix_output: String::new(),
+          }),
+        )
+      }
+    };
     let ssh_user = ssh_user_for_provider(req.provider.as_deref());
     match docker_fix::repair_access(&ip, &key, ssh_user).await {
         Ok(result) => {
@@ -1448,7 +1550,10 @@ async fn list_deployments_handler(
 ) -> impl IntoResponse {
     let page = if q.page == 0 { 1 } else { q.page };
     let per_page: u32 = 20;
-    let conn = state.db.lock().unwrap();
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::list_deployments_paginated(&conn, page, per_page) {
         Ok((deployments, total)) => {
             let total_pages = total.div_ceil(per_page);
@@ -1475,7 +1580,10 @@ async fn delete_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
+  let conn = match lock_db(&state.db) {
+    Ok(conn) => conn,
+    Err(resp) => return resp,
+  };
     match db::delete_deployment(&conn, &id) {
         Ok(_) => Json(DeleteResponse { ok: true }).into_response(),
         Err(e) => (
@@ -1492,10 +1600,13 @@ async fn destroy_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<DestroyDeploymentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // Look up deployment to get provider and hostname
     let (provider, hostname) = {
-        let conn = state.db.lock().unwrap();
+      let conn = match lock_db(&state.db) {
+        Ok(conn) => conn,
+        Err(resp) => return resp,
+      };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1509,6 +1620,7 @@ async fn destroy_deployment_handler(
                         message: "Deployment not found.".into(),
                     }),
                 )
+                .into_response()
             }
             Err(e) => {
                 return (
@@ -1518,27 +1630,10 @@ async fn destroy_deployment_handler(
                         message: format!("DB error: {e}"),
                     }),
                 )
+                    .into_response()
             }
         }
     };
-
-    // Write AWS credentials to ~/.aws/credentials if provided (Lightsail)
-    if provider == "lightsail"
-        && !req.aws_access_key_id.is_empty()
-        && !req.aws_secret_access_key.is_empty()
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            let aws_dir = std::path::PathBuf::from(&home).join(".aws");
-            let _ = std::fs::create_dir_all(&aws_dir);
-            let creds_content = format!(
-                "[default]\naws_access_key_id = {}\naws_secret_access_key = {}\n",
-                req.aws_access_key_id, req.aws_secret_access_key
-            );
-            let _ = std::fs::write(aws_dir.join("credentials"), creds_content);
-        }
-        std::env::set_var("AWS_ACCESS_KEY_ID", &req.aws_access_key_id);
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", &req.aws_secret_access_key);
-    }
 
     // Build destroy params and run
     let destroy_params = crate::commands::destroy::DestroyParams {
@@ -1546,6 +1641,8 @@ async fn destroy_deployment_handler(
         do_token: req.do_token,
         tencent_secret_id: req.tencent_secret_id,
         tencent_secret_key: req.tencent_secret_key,
+      aws_access_key_id: req.aws_access_key_id,
+      aws_secret_access_key: req.aws_secret_access_key,
         aws_region: if req.aws_region.is_empty() {
             "ap-southeast-1".to_string()
         } else {
@@ -1589,7 +1686,10 @@ async fn destroy_deployment_handler(
     if cloud_ok {
         // Clean up local DB record and JSON deploy file
         {
-            let conn = state.db.lock().unwrap();
+            let conn = match lock_db(&state.db) {
+                Ok(conn) => conn,
+                Err(resp) => return resp,
+            };
             let _ = db::delete_deployment(&conn, &id);
         }
         if let Ok(deploys_dir) = config::deploys_dir() {
@@ -1604,6 +1704,7 @@ async fn destroy_deployment_handler(
                 message: format!("{cloud_msg} Local record deleted."),
             }),
         )
+        .into_response()
     } else {
         (
             StatusCode::BAD_GATEWAY,
@@ -1612,6 +1713,7 @@ async fn destroy_deployment_handler(
                 message: cloud_msg,
             }),
         )
+        .into_response()
     }
 }
 
@@ -1619,9 +1721,12 @@ async fn snapshot_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<SnapshotDeploymentRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let (provider, hostname, region) = {
-        let conn = state.db.lock().unwrap();
+    let conn = match lock_db(&state.db) {
+      Ok(conn) => conn,
+      Err(resp) => return resp,
+    };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1637,6 +1742,7 @@ async fn snapshot_deployment_handler(
                         operation_id: None,
                     }),
                 )
+                    .into_response()
             }
             Err(e) => {
                 return (
@@ -1647,6 +1753,7 @@ async fn snapshot_deployment_handler(
                         operation_id: None,
                     }),
                 )
+                    .into_response()
             }
         }
     };
@@ -1662,7 +1769,8 @@ async fn snapshot_deployment_handler(
                         message: "do_token is required.".into(),
                         operation_id: None,
                     }),
-                );
+                )
+                .into_response();
             }
         }
         "byteplus" => {
@@ -1674,7 +1782,8 @@ async fn snapshot_deployment_handler(
                         message: "BytePlus access key and secret key are required.".into(),
                         operation_id: None,
                     }),
-                );
+                    )
+                    .into_response();
             }
         }
         "lightsail" => {}
@@ -1686,7 +1795,8 @@ async fn snapshot_deployment_handler(
                     message: format!("Snapshot not supported for provider '{other}'."),
                     operation_id: None,
                 }),
-            );
+                )
+                .into_response();
         }
     }
 
@@ -1932,6 +2042,7 @@ async fn snapshot_deployment_handler(
             operation_id: Some(op_id),
         }),
     )
+    .into_response()
 }
 
 async fn toggle_funnel_handler(
@@ -2100,7 +2211,11 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
             Err(_) => continue,
         };
         if record.id == id || record.hostname == id || record.ip_address == id {
-            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
+          let key_path = match config::resolve_key_path(&record.ssh_key_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+          };
+          return Ok((record.ip_address, key_path));
         }
     }
     Err(format!("No deploy record found for '{id}'."))
@@ -2271,19 +2386,6 @@ async fn list_snapshots_handler(
                 .get("secret_key")
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            // Write AWS credentials so the CLI picks them up
-            if !ak.is_empty() && !sk.is_empty() {
-                if let Ok(home) = std::env::var("HOME") {
-                    let aws_dir = std::path::PathBuf::from(&home).join(".aws");
-                    let _ = std::fs::create_dir_all(&aws_dir);
-                    let creds = format!(
-                        "[default]\naws_access_key_id = {ak}\naws_secret_access_key = {sk}\n"
-                    );
-                    let _ = std::fs::write(aws_dir.join("credentials"), creds);
-                }
-                std::env::set_var("AWS_ACCESS_KEY_ID", &ak);
-                std::env::set_var("AWS_SECRET_ACCESS_KEY", &sk);
-            }
             let provider = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::with_credentials(
                 region, ak, sk,
             );
@@ -2737,24 +2839,69 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClawMacToDO — Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config={darkMode:'class'}</script>
+<style>
+  :root {
+    --ink-950: #07111d;
+    --ink-900: #0d1a2b;
+    --ink-850: #12233a;
+    --panel: rgba(10, 24, 40, 0.78);
+    --panel-border: rgba(148, 163, 184, 0.18);
+    --teal: #52e3c2;
+    --teal-deep: #1aa98c;
+    --amber: #ffb84d;
+  }
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(82, 227, 194, 0.18), transparent 28%),
+      radial-gradient(circle at top right, rgba(255, 184, 77, 0.14), transparent 26%),
+      linear-gradient(160deg, var(--ink-950), #08101b 46%, #06121f 100%);
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent 85%);
+    pointer-events: none;
+  }
+</style>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen flex items-center justify-center">
-<div class="w-full max-w-sm p-8 bg-gray-900 rounded-2xl border border-gray-800 shadow-xl">
-  <div class="text-center mb-6">
-    <h1 class="text-2xl font-bold text-white">ClawMacToDO</h1>
-    <p class="text-gray-400 text-sm mt-1">Enter your 6-digit PIN to continue</p>
+<body class="min-h-screen flex items-center justify-center px-4 py-8 text-slate-100">
+<div class="w-full max-w-lg rounded-[28px] border border-white/10 bg-[var(--panel)] shadow-[0_30px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl overflow-hidden">
+  <div class="border-b border-white/10 bg-gradient-to-r from-emerald-400/10 via-transparent to-amber-300/10 px-8 py-7">
+    <div class="inline-flex items-center gap-2 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-emerald-200">Secure Access Console</div>
+    <div class="mt-5 flex items-start gap-4">
+      <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-300 via-teal-400 to-cyan-500 text-slate-950 shadow-[0_12px_35px_rgba(52,211,153,0.35)]">
+        <svg class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </div>
+      <div>
+        <h1 class="text-3xl font-bold tracking-tight text-white">ClawMacToDO</h1>
+        <p class="mt-2 max-w-sm text-sm leading-6 text-slate-300">Enter the 6-digit session PIN to open the deployment cockpit and manage cloud rollouts.</p>
+      </div>
+    </div>
   </div>
   <!-- ERROR -->
-  <form method="POST" action="/login" novalidate class="space-y-4">
+  <form method="POST" action="/login" novalidate class="space-y-5 px-8 py-8">
+    <div>
+      <label class="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Session PIN</label>
     <input type="password" name="pin" maxlength="6" inputmode="numeric"
       placeholder="000000" autocomplete="off"
-      class="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-center text-2xl tracking-[0.5em] font-mono text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+      class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-4 text-center font-['IBM_Plex_Mono'] text-3xl tracking-[0.45em] text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-300/70 focus:border-transparent" />
+    </div>
     <button type="submit"
-      class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors">
+      class="w-full rounded-2xl bg-gradient-to-r from-emerald-300 via-teal-400 to-cyan-500 py-3.5 text-sm font-bold uppercase tracking-[0.2em] text-slate-950 transition-transform duration-200 hover:-translate-y-0.5 hover:brightness-105">
       Unlock
     </button>
+    <p class="text-center text-xs text-slate-500">Local-only session gate. The PIN rotates when the serve process restarts unless you set CLAWMACDO_PIN.</p>
   </form>
 </div>
 </body>
@@ -2766,12 +2913,19 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ClawMacToDO</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
   darkMode: 'class',
   theme: {
     extend: {
+      fontFamily: {
+        display: ['Space Grotesk', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'monospace'],
+      },
       colors: {
         slate: {
           850: '#172033',
@@ -2783,6 +2937,51 @@ tailwind.config = {
 }
 </script>
 <style>
+  :root {
+    --ink-950: #07111d;
+    --ink-930: #0b1524;
+    --ink-900: #0d1a2b;
+    --ink-850: #12233a;
+    --panel: rgba(9, 22, 37, 0.78);
+    --panel-strong: rgba(10, 24, 40, 0.92);
+    --panel-soft: rgba(14, 31, 51, 0.62);
+    --panel-border: rgba(148, 163, 184, 0.16);
+    --teal: #52e3c2;
+    --teal-deep: #1aa98c;
+    --amber: #ffb84d;
+    --text-strong: #eff8ff;
+    --text-soft: #93a5bc;
+  }
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(82, 227, 194, 0.2), transparent 25%),
+      radial-gradient(circle at 88% 12%, rgba(255, 184, 77, 0.12), transparent 24%),
+      radial-gradient(circle at 50% 100%, rgba(82, 227, 194, 0.08), transparent 32%),
+      linear-gradient(160deg, var(--ink-950), #07121f 45%, #05101a 100%);
+    color: var(--text-strong);
+  }
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent 82%);
+    pointer-events: none;
+  }
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(82, 227, 194, 0.16), transparent 24%),
+      radial-gradient(circle at 82% 8%, rgba(255, 184, 77, 0.14), transparent 18%);
+    filter: blur(60px);
+    pointer-events: none;
+  }
   @keyframes pulse-border { 0%,100%{border-color:rgba(59,130,246,0.5)} 50%{border-color:rgba(59,130,246,1)} }
   .pulse-border { animation: pulse-border 2s ease-in-out infinite; }
   .deploy-log-area::-webkit-scrollbar { width: 8px; }
@@ -2792,6 +2991,158 @@ tailwind.config = {
   .eye-btn:hover { color:#e2e8f0; }
   @media (min-width: 640px) { .eye-btn { right:12px; } }
   .deploy-summary-content p { word-break: break-all; }
+  .app-shell { position: relative; z-index: 1; max-width: 1440px; margin: 0 auto; }
+  .surface-panel {
+    background: linear-gradient(180deg, rgba(15, 31, 50, 0.82), rgba(8, 18, 30, 0.9));
+    border: 1px solid var(--panel-border);
+    box-shadow: 0 25px 80px rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(20px);
+  }
+  .hero-shell {
+    position: relative;
+    overflow: hidden;
+    border-radius: 28px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background:
+      radial-gradient(circle at top left, rgba(82, 227, 194, 0.18), transparent 34%),
+      radial-gradient(circle at bottom right, rgba(255, 184, 77, 0.14), transparent 30%),
+      linear-gradient(145deg, rgba(14, 30, 48, 0.94), rgba(7, 16, 26, 0.96));
+    box-shadow: 0 30px 100px rgba(0, 0, 0, 0.34);
+  }
+  .hero-shell::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,0.03), transparent 70%);
+    pointer-events: none;
+  }
+  .kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid rgba(82, 227, 194, 0.24);
+    background: rgba(82, 227, 194, 0.08);
+    padding: 0.45rem 0.85rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: #c6fff2;
+  }
+  .metric-pill {
+    border-radius: 18px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.04);
+    padding: 0.9rem 1rem;
+  }
+  .metric-pill strong {
+    display: block;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #f8fbff;
+  }
+  .metric-pill span {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-soft);
+  }
+  .app-tab {
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    padding: 0.78rem 1.1rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    transition: all 160ms ease;
+  }
+  .app-tab-active {
+    border-color: rgba(82, 227, 194, 0.28);
+    background: linear-gradient(135deg, rgba(82, 227, 194, 0.18), rgba(82, 227, 194, 0.08));
+    color: #dcfff7;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 12px 35px rgba(82, 227, 194, 0.14);
+  }
+  .app-tab-inactive {
+    color: #93a5bc;
+    background: rgba(255,255,255,0.02);
+  }
+  .app-tab-inactive:hover {
+    color: #f8fbff;
+    border-color: rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.05);
+  }
+  .section-shell {
+    border-radius: 26px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: linear-gradient(180deg, rgba(12, 25, 40, 0.88), rgba(7, 16, 26, 0.92));
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+  }
+  .field-block label,
+  #snapshots-view label,
+  #deploy-card-template label {
+    letter-spacing: 0.01em;
+  }
+  #deploy-view input[type="text"],
+  #deploy-view input[type="password"],
+  #deploy-view select,
+  #snapshots-view input[type="text"],
+  #snapshots-view input[type="password"],
+  #snapshots-view select {
+    background: rgba(4, 12, 20, 0.72) !important;
+    border-color: rgba(148, 163, 184, 0.14) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  #deploy-view input:focus,
+  #deploy-view select:focus,
+  #snapshots-view input:focus,
+  #snapshots-view select:focus {
+    box-shadow: 0 0 0 3px rgba(82, 227, 194, 0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
+  }
+  .cta-primary {
+    background: linear-gradient(135deg, #52e3c2, #22c1a1 58%, #13917d);
+    color: #041019 !important;
+    box-shadow: 0 16px 35px rgba(34, 193, 161, 0.22);
+  }
+  .cta-primary:hover { filter: brightness(1.05); transform: translateY(-1px); }
+  .cta-secondary {
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #d8e3f1 !important;
+  }
+  .deploy-card-shell {
+    position: relative;
+    overflow: hidden;
+    border-radius: 28px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: linear-gradient(180deg, rgba(12, 27, 43, 0.9), rgba(8, 18, 30, 0.96));
+    box-shadow: 0 26px 80px rgba(0, 0, 0, 0.28);
+  }
+  .deploy-card-shell::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(82, 227, 194, 0.48), transparent);
+  }
+  .deploy-card-shell fieldset {
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding-top: 1.25rem;
+  }
+  .deploy-card-shell fieldset:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .deploy-card-shell legend {
+    color: #d6e6f6 !important;
+    font-size: 0.76rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.18em !important;
+  }
+  .mono-ui { font-family: 'IBM Plex Mono', monospace; }
   @media (max-width: 639px) {
     .deploy-log-area { height: 200px; font-size: 0.75rem; padding: 0.75rem; }
   }
@@ -2800,23 +3151,27 @@ tailwind.config = {
 <body class="bg-slate-950 text-slate-200 min-h-screen">
 
 <!-- Header -->
-<header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-10">
-  <div class="w-full px-4 sm:px-8 lg:px-12 py-3 sm:py-4 flex items-center gap-2 sm:gap-3">
-    <svg class="w-7 h-7 sm:w-8 sm:h-8 text-blue-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
-    <h1 class="text-lg sm:text-xl font-bold tracking-tight">ClawMacToDO</h1>
-    <span class="text-xs sm:text-sm text-slate-500 ml-1 sm:ml-2 hidden sm:inline">Deploy OpenClaw to the Cloud</span>
-    <span class="ml-auto text-xs text-slate-600 font-mono hidden md:inline">v{version}</span>
-    <a href="/logout" class="ml-3 text-xs text-slate-500 hover:text-red-400 transition-colors" title="Logout">&#x2716; Logout</a>
+<header class="sticky top-0 z-10 border-b border-white/5 bg-slate-950/55 backdrop-blur-xl">
+  <div class="app-shell w-full px-4 sm:px-8 lg:px-12 py-4 sm:py-5 flex items-center gap-3 sm:gap-4">
+    <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-300 via-teal-400 to-cyan-500 text-slate-950 shadow-[0_14px_35px_rgba(52,211,153,0.28)]">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </div>
+    <div>
+      <h1 class="text-lg sm:text-xl font-bold tracking-tight text-white">ClawMacToDO</h1>
+      <div class="text-[11px] sm:text-xs uppercase tracking-[0.24em] text-slate-500">Cloud Deployment Console</div>
+    </div>
+    <span class="ml-auto hidden rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] text-slate-400 md:inline mono-ui">v{version}</span>
+    <a href="/logout" class="ml-1 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-400 transition-colors hover:text-red-300 hover:border-red-300/30" title="Logout">Logout</a>
   </div>
   <!-- Tab bar -->
-  <div class="w-full px-4 sm:px-8 lg:px-12 flex gap-0">
-    <button id="tab-deploy" onclick="switchTab('deploy')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors">Deploy</button>
-    <button id="tab-deployments" onclick="switchTab('deployments')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Deployments</button>
-    <button id="tab-snapshots" onclick="switchTab('snapshots')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors">Snapshots</button>
+  <div class="app-shell w-full px-4 sm:px-8 lg:px-12 pb-4 flex gap-2 sm:gap-3 overflow-x-auto">
+    <button id="tab-deploy" onclick="switchTab('deploy')" class="app-tab app-tab-active">Deploy</button>
+    <button id="tab-deployments" onclick="switchTab('deployments')" class="app-tab app-tab-inactive">Deployments</button>
+    <button id="tab-snapshots" onclick="switchTab('snapshots')" class="app-tab app-tab-inactive">Snapshots</button>
   </div>
 </header>
 
-<main class="w-full px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
+<main class="app-shell w-full px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
 
 <!-- Dry-run banner (shared) -->
 <div id="dry-run-banner" class="hidden mb-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 rounded-lg px-4 py-2 text-sm font-medium">
@@ -2827,19 +3182,30 @@ tailwind.config = {
 <div id="deploy-view">
 
 <!-- Hero -->
-<div class="flex flex-col sm:flex-row items-center gap-4 sm:gap-6 mb-8 bg-slate-900/50 border border-slate-800 rounded-xl p-4 sm:p-6">
-  <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-lg shadow-lg w-24 h-24 sm:w-32 sm:h-32 object-cover shrink-0">
-  <div class="flex-1 text-center sm:text-left">
-    <h2 class="text-xl sm:text-2xl font-bold text-slate-100 mb-1">Cloud Deployment Console</h2>
-    <p class="text-sm text-slate-400 mb-4">Provision OpenClaw instances across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
-    <div class="flex flex-col sm:flex-row gap-2">
-      <button type="button" onclick="addDeployCard()" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
+<div class="hero-shell mb-8 p-5 sm:p-7 lg:p-8">
+  <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-center">
+    <div class="flex flex-col sm:flex-row items-center gap-5 sm:gap-6">
+      <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-[24px] border border-white/10 shadow-[0_24px_60px_rgba(0,0,0,0.35)] w-28 h-28 sm:w-36 sm:h-36 object-cover shrink-0">
+      <div class="flex-1 text-center sm:text-left">
+        <div class="kicker">Operator Workspace</div>
+        <h2 class="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-white">Deploy OpenClaw with less friction and better control.</h2>
+        <p class="mt-3 max-w-2xl text-sm sm:text-base leading-7 text-slate-300">Provision fresh agents, resume saved deployments, and manage cloud snapshots from one console across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
+        <div class="mt-5 flex flex-col sm:flex-row gap-3">
+          <button type="button" onclick="addDeployCard()" class="cta-primary w-full sm:w-auto text-sm font-semibold py-3 px-5 rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-emerald-300/60 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         New Deployment
       </button>
-      <button type="button" onclick="resetSavedDeployments()" class="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium py-2 px-5 text-sm rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+          <button type="button" onclick="resetSavedDeployments()" class="cta-secondary w-full sm:w-auto font-medium py-3 px-5 text-sm rounded-2xl transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
         Reset Saved
       </button>
+        </div>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-3 sm:gap-4">
+      <div class="metric-pill"><strong>5</strong><span>Cloud providers</span></div>
+      <div class="metric-pill"><strong>16</strong><span>Tracked deploy steps</span></div>
+      <div class="metric-pill"><strong>1</strong><span>Console for deploys</span></div>
+      <div class="metric-pill"><strong>Local</strong><span>PIN-gated access</span></div>
     </div>
   </div>
 </div>
@@ -2851,7 +3217,14 @@ tailwind.config = {
 
 <!-- ═══ Deployments view ═══ -->
 <div id="deployments-view" class="hidden">
-  <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+  <div class="mb-4 flex items-end justify-between gap-4">
+    <div>
+      <div class="kicker">Active inventory</div>
+      <h2 class="mt-3 text-2xl font-bold tracking-tight text-white">Saved deployments</h2>
+      <p class="mt-2 text-sm text-slate-400">Review endpoints, trigger actions, and manage completed or in-flight environments.</p>
+    </div>
+  </div>
+  <div class="section-shell overflow-hidden">
     <div class="overflow-x-auto">
       <table class="w-full text-sm text-left">
         <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
@@ -2883,7 +3256,15 @@ tailwind.config = {
 
 <!-- ═══ Snapshots view ═══ -->
 <div id="snapshots-view" class="hidden">
-  <div class="mb-4 flex flex-wrap gap-3 items-end">
+  <div class="mb-5 flex items-end justify-between gap-4 flex-wrap">
+    <div>
+      <div class="kicker">Recovery tools</div>
+      <h2 class="mt-3 text-2xl font-bold tracking-tight text-white">Snapshot library</h2>
+      <p class="mt-2 text-sm text-slate-400">Load provider snapshots, inspect their state, and restore them into new deployments.</p>
+    </div>
+  </div>
+  <div class="section-shell mb-4 p-4 sm:p-5">
+  <div class="flex flex-wrap gap-3 items-end">
     <div>
       <label class="block text-xs text-slate-400 mb-1">Provider</label>
       <select id="snap-provider" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-blue-500 focus:border-blue-500">
@@ -2922,7 +3303,8 @@ tailwind.config = {
     </div>
     <button onclick="loadSnapshots()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors">Load Snapshots</button>
   </div>
-  <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+  </div>
+  <div class="section-shell overflow-hidden">
     <div class="overflow-x-auto">
       <table class="w-full text-sm text-left">
         <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
@@ -3160,10 +3542,13 @@ function addDeployCard(initialState) {
   const container = document.getElementById('deploys-container');
   const card = document.createElement('div');
   card.id = 'deploy-card-' + n;
-  card.className = 'bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-6 shadow-xl';
+  card.className = 'deploy-card-shell p-4 sm:p-6 lg:p-7';
   card.innerHTML = `
-    <div class="flex items-center justify-between mb-6">
-      <h2 class="text-lg font-semibold text-slate-100">Deployment #${n}</h2>
+    <div class="flex items-center justify-between gap-3 mb-6">
+      <div>
+        <div class="text-[11px] uppercase tracking-[0.24em] text-slate-500">Deployment workspace</div>
+        <h2 class="mt-1 text-xl font-semibold text-slate-100">Deployment #${n}</h2>
+      </div>
       <button type="button" onclick="removeCard(${n})" class="text-slate-500 hover:text-red-400 transition-colors" title="Remove">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
       </button>
@@ -3298,7 +3683,7 @@ function addDeployCard(initialState) {
           <span class="text-sm text-slate-300">Use spot instance — BytePlus only, up to ~80% cheaper (may be reclaimed)</span>
         </label>
       </fieldset>
-      <button type="submit" class="deploy-submit-btn w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 sm:py-3 text-sm sm:text-base rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-900">
+      <button type="submit" class="deploy-submit-btn cta-primary w-full font-semibold py-3 sm:py-3.5 text-sm sm:text-base rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-emerald-300/60 focus:ring-offset-2 focus:ring-offset-slate-900">
         Deploy
       </button>
     </form>
@@ -4089,8 +4474,8 @@ async function startDeploy(e, cardNum) {
 }
 
 // ── Tab switching ───────────────────────────────────────────────────────
-const TAB_INACTIVE = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 transition-colors';
-const TAB_ACTIVE = 'px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-400 transition-colors';
+const TAB_INACTIVE = 'app-tab app-tab-inactive';
+const TAB_ACTIVE = 'app-tab app-tab-active';
 function switchTab(tab) {
   const views = ['deploy', 'deployments', 'snapshots'];
   views.forEach(v => {

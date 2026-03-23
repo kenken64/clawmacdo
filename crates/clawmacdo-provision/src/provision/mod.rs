@@ -132,13 +132,13 @@ pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), A
             tailscale::TailscaleProvisionStatus::InstalledOnly => {
                 progress::emit(
                     tx,
-                    "  Tailscale installed (run `sudo tailscale up` on server to connect)",
+                    "  Tailscale installed (complete `tailscale up` from a privileged shell to connect)",
                 );
             }
             tailscale::TailscaleProvisionStatus::ConnectFailed(err) => {
                 progress::emit(
                     tx,
-                    "  Tailscale installed, but auto-connect failed; run `sudo tailscale up` manually",
+                    "  Tailscale installed, but auto-connect failed; complete `tailscale up` from a privileged shell",
                 );
                 progress::emit(tx, &format!("  Tailscale auto-connect error: {err}"));
             }

@@ -3,7 +3,7 @@ use clawmacdo_core::config::OPENCLAW_USER;
 use clawmacdo_core::error::AppError;
 use std::path::Path;
 
-/// Step 11: Configure Docker daemon and add openclaw to docker group.
+/// Step 11: Configure Docker daemon without granting openclaw direct Docker access.
 /// Docker CE is expected from cloud-init, but on some images (e.g. BytePlus)
 /// the `docker.io` package is unavailable. When Docker is missing this step
 /// installs it via the official convenience script before configuring it.

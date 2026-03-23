@@ -159,6 +159,12 @@ enum Commands {
         /// Tencent SecretKey
         #[arg(long, default_value = "", env = "TENCENT_SECRET_KEY")]
         tencent_secret_key: String,
+        /// AWS Access Key ID (Lightsail)
+        #[arg(long, default_value = "", env = "AWS_ACCESS_KEY_ID")]
+        aws_access_key_id: String,
+        /// AWS Secret Access Key (Lightsail)
+        #[arg(long, default_value = "", env = "AWS_SECRET_ACCESS_KEY")]
+        aws_secret_access_key: String,
         /// AWS region (Lightsail)
         #[arg(long, default_value = "ap-southeast-1")]
         aws_region: String,
@@ -577,6 +583,8 @@ async fn main() -> anyhow::Result<()> {
             do_token,
             tencent_secret_id,
             tencent_secret_key,
+            aws_access_key_id,
+            aws_secret_access_key,
             aws_region,
             azure_tenant_id,
             azure_subscription_id,
@@ -592,6 +600,8 @@ async fn main() -> anyhow::Result<()> {
                 do_token,
                 tencent_secret_id,
                 tencent_secret_key,
+                aws_access_key_id,
+                aws_secret_access_key,
                 aws_region,
                 azure_tenant_id,
                 azure_subscription_id,
