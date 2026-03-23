@@ -229,6 +229,7 @@ fn db_lock_error() -> Response {
     .into_response()
 }
 
+#[allow(clippy::result_large_err)]
 fn lock_db(db: &Db) -> Result<MutexGuard<'_, rusqlite::Connection>, Response> {
   db.lock().map_err(|_| db_lock_error())
 }

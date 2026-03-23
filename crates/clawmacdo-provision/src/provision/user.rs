@@ -108,12 +108,15 @@ chown {user}:{user} {home}/.bash_profile && chmod 644 {home}/.bash_profile"#,
 
 # Tailscale diagnostics + connect/disconnect
 {user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
+{user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale up *
 {user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale down
+{user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale ip *
 {user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale version
+{user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale ping *
+{user} ALL=(ALL) NOPASSWD: /usr/bin/tailscale whois *
 
 # Journal access - openclaw logs only
-{user} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw --no-pager
-{user} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw -n 200 --no-pager
+{user} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw *
 SUDOEOF
 chmod 440 /etc/sudoers.d/{user} && chown root:root /etc/sudoers.d/{user}
 visudo -cf /etc/sudoers.d/{user}"#,
