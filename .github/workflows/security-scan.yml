@@ -12,9 +12,9 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      - name: Make scripts executable
-        run: chmod +x scripts/*.sh || true
       - name: Run unit tests
-        run: ./tests/unit/test_format_and_eval.sh
+        shell: pwsh
+        run: ./tests/unit/test_format_and_eval.ps1
       - name: Run integration test
-        run: ./tests/integration/test_run_all.sh
+        shell: pwsh
+        run: ./tests/integration/test_run_all.ps1

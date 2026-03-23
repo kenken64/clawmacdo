@@ -601,7 +601,15 @@ async fn login_submit_handler(
     } else {
         Html(LOGIN_HTML.replace(
             "<!-- ERROR -->",
-            r#"<p style="color:#ef4444;margin-bottom:1rem;font-size:0.875rem">Invalid PIN. Please try again.</p>"#,
+            r##"<div role="alert" class="mx-8 mt-6 flex items-start gap-3 rounded-2xl border border-rose-400/35 bg-rose-500/12 px-4 py-3 text-rose-100 shadow-[0_12px_32px_rgba(244,63,94,0.14)]">
+  <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-rose-300/30 bg-rose-400/16 text-rose-200">
+    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86l-7.5 13A2 2 0 004.5 20h15a2 2 0 001.71-3.14l-7.5-13a2 2 0 00-3.42 0z"/></svg>
+  </div>
+  <div>
+    <p class="text-sm font-semibold tracking-[0.08em] text-rose-50">Invalid PIN</p>
+    <p class="mt-1 text-sm leading-6 text-rose-100/90">Please try again with the current 6-digit session PIN.</p>
+  </div>
+</div>"##,
         ))
         .into_response()
     }
@@ -2890,13 +2898,15 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
       <label class="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Session PIN</label>
     <input type="password" name="pin" maxlength="6" inputmode="numeric"
       placeholder="000000" autocomplete="off"
-      class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-4 text-center font-['IBM_Plex_Mono'] text-3xl tracking-[0.45em] text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-300/70 focus:border-transparent" />
+      class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-4 text-center font-['IBM_Plex_Mono'] text-3xl tracking-[0.45em] text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-300/70 focus:border-transparent"
+      aria-describedby="pin-help"
+      autofocus />
     </div>
     <button type="submit"
       class="w-full rounded-2xl bg-gradient-to-r from-emerald-300 via-teal-400 to-cyan-500 py-3.5 text-sm font-bold uppercase tracking-[0.2em] text-slate-950 transition-transform duration-200 hover:-translate-y-0.5 hover:brightness-105">
       Unlock
     </button>
-    <p class="text-center text-xs text-slate-500">Local-only session gate. The PIN rotates when the serve process restarts unless you set CLAWMACDO_PIN.</p>
+    <p id="pin-help" class="text-center text-xs text-slate-500">Local-only session gate. The PIN rotates when the serve process restarts unless you set CLAWMACDO_PIN.</p>
   </form>
 </div>
 </body>
