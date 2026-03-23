@@ -291,23 +291,21 @@ fn byteplus_onboard_arg(byteplus_ark_api_key: &str) -> &'static str {
     }
 }
 
-fn secure_sandbox_setup_cmd(home: &str) -> String {
-    format!(
-        "if [ -f {home}/.openclaw/openclaw.json ]; then \
-           node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";delete cfg.agents.defaults.sandbox.docker;fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
-         fi"
-    )
-}
-
-fn emit_sandbox_security_notice(
-    tx: &Option<mpsc::UnboundedSender<String>>,
-    enable_sandbox: bool,
-) {
+fn sandbox_setup_cmd(home: &str, enable_sandbox: bool) -> String {
     if enable_sandbox {
-        progress::emit(
-            tx,
-            "  Sandbox was requested but is being disabled to avoid granting root-equivalent Docker access.",
-        );
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"non-main\";cfg.agents.defaults.sandbox.scope=cfg.agents.defaults.sandbox.scope||\"session\";cfg.agents.defaults.sandbox.workspaceAccess=cfg.agents.defaults.sandbox.workspaceAccess||\"none\";cfg.agents.defaults.sandbox.docker=cfg.agents.defaults.sandbox.docker||{{}};cfg.agents.defaults.sandbox.docker.image=cfg.agents.defaults.sandbox.docker.image||\"openclaw-sandbox:bookworm-slim\";delete cfg.agents.defaults.sandbox.docker.volumes;fs.writeFileSync(p, JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi && \
+             /usr/bin/sg docker -c 'docker image inspect openclaw-sandbox:bookworm-slim >/dev/null 2>&1 || \
+              (docker pull openclaw-sandbox:latest >/dev/null 2>&1 && docker tag openclaw-sandbox:latest openclaw-sandbox:bookworm-slim >/dev/null 2>&1)'"
+        )
+    } else {
+        format!(
+            "if [ -f {home}/.openclaw/openclaw.json ]; then \
+               node -e 'const fs=require(\"fs\");const p=process.env.HOME+\"/.openclaw/openclaw.json\";const cfg=JSON.parse(fs.readFileSync(p,\"utf8\"));cfg.agents=cfg.agents||{{}};cfg.agents.defaults=cfg.agents.defaults||{{}};cfg.agents.defaults.sandbox=cfg.agents.defaults.sandbox||{{}};cfg.agents.defaults.sandbox.mode=\"off\";fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");'; \
+             fi"
+        )
     }
 }
 
@@ -745,8 +743,16 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
     let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
-    let openai_onboard_arg = "";
-    let gemini_onboard_arg = "";
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
@@ -770,8 +776,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    emit_sandbox_security_notice(tx, params.enable_sandbox);
-    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let sandbox_setup_cmd = sandbox_setup_cmd(home, params.enable_sandbox);
     let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -1141,8 +1146,16 @@ fi"#;
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
     let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
-    let openai_onboard_arg = "";
-    let gemini_onboard_arg = "";
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     // BytePlus ARK: use openclaw onboard --auth-choice byteplus-api-key
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     // Write BytePlus ARK provider config into openclaw.json (Coding Plan base URL)
@@ -1168,8 +1181,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    emit_sandbox_security_notice(tx, params.enable_sandbox);
-    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let sandbox_setup_cmd = sandbox_setup_cmd(home, params.enable_sandbox);
     let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -1433,8 +1445,16 @@ async fn deploy_steps_5_through_16(
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway...");
     let home = config::OPENCLAW_HOME;
     let anthropic_onboard_arg = anthropic_onboard_arg(anthropic_api_key);
-    let openai_onboard_arg = "";
-    let gemini_onboard_arg = "";
+    let openai_onboard_arg = if has_value(openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let byteplus_onboard_arg = byteplus_onboard_arg(byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(byteplus_ark_api_key) {
         format!(
@@ -1455,8 +1475,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    emit_sandbox_security_notice(tx, enable_sandbox);
-    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let sandbox_setup_cmd = sandbox_setup_cmd(home, enable_sandbox);
     let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\" && \
@@ -1781,8 +1800,16 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
     );
     let home = config::OPENCLAW_HOME;
     let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
-    let openai_onboard_arg = "";
-    let gemini_onboard_arg = "";
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
@@ -1806,8 +1833,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    emit_sandbox_security_notice(tx, params.enable_sandbox);
-    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let sandbox_setup_cmd = sandbox_setup_cmd(home, params.enable_sandbox);
     let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
@@ -2198,8 +2224,16 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
     let sp = ui::spinner("[Step 15/16] Starting OpenClaw gateway (user service)...");
     let home = config::OPENCLAW_HOME;
     let anthropic_onboard_arg = anthropic_onboard_arg(&anthropic_api_key);
-    let openai_onboard_arg = "";
-    let gemini_onboard_arg = "";
+    let openai_onboard_arg = if has_value(&params.openai_key) {
+        " --openai-api-key \"$OPENAI_API_KEY\""
+    } else {
+        ""
+    };
+    let gemini_onboard_arg = if has_value(&params.gemini_key) {
+        " --gemini-api-key \"$GEMINI_API_KEY\""
+    } else {
+        ""
+    };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
@@ -2223,8 +2257,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     } else {
         "true".to_string()
     };
-    emit_sandbox_security_notice(tx, params.enable_sandbox);
-    let sandbox_setup_cmd = secure_sandbox_setup_cmd(home);
+    let sandbox_setup_cmd = sandbox_setup_cmd(home, params.enable_sandbox);
     let bundled_extensions_copy = bundled_extensions_copy_cmd(home);
     let start_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:$PATH\" && \
