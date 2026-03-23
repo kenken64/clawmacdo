@@ -220,18 +220,18 @@ fn default_page() -> u32 {
 }
 
 fn db_lock_error() -> Response {
-  (
-    StatusCode::INTERNAL_SERVER_ERROR,
-    Json(ErrorResponse {
-      message: "Database lock poisoned".into(),
-    }),
-  )
-    .into_response()
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            message: "Database lock poisoned".into(),
+        }),
+    )
+        .into_response()
 }
 
 #[allow(clippy::result_large_err)]
 fn lock_db(db: &Db) -> Result<MutexGuard<'_, rusqlite::Connection>, Response> {
-  db.lock().map_err(|_| db_lock_error())
+    db.lock().map_err(|_| db_lock_error())
 }
 
 #[derive(Serialize)]
@@ -816,33 +816,33 @@ async fn start_deploy_handler(
     let (tx, rx) = mpsc::unbounded_channel::<String>();
 
     let hostname = match config::normalize_hostname(&req.hostname) {
-      Ok(value) => value,
-      Err(err) => {
-        return (
-          StatusCode::BAD_REQUEST,
-          Json(ErrorResponse {
-            message: err.to_string(),
-          }),
-        )
-          .into_response();
-      }
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    message: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
     };
 
     let backup: Option<PathBuf> = if req.backup.is_empty() || req.backup == "none" {
-      None
+        None
     } else {
-      match config::resolve_backup_path(&req.backup) {
-        Ok(path) => Some(path),
-        Err(err) => {
-          return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-              message: err.to_string(),
-            }),
-          )
-            .into_response();
+        match config::resolve_backup_path(&req.backup) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        message: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
         }
-      }
     };
 
     let job = DeployJob {
@@ -1048,34 +1048,28 @@ async fn deploy_events_handler(
 }
 
 /// Return deploy/operation steps from SQLite for progress polling.
-async fn deploy_steps_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
-  let conn = match lock_db(&state.db) {
-    Ok(conn) => conn,
-    Err(resp) => return resp,
-  };
+async fn deploy_steps_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let conn = match lock_db(&state.db) {
+        Ok(conn) => conn,
+        Err(resp) => return resp,
+    };
     match db::get_deploy_steps(&conn, &id) {
-    Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))).into_response(),
+        Ok(steps) => (StatusCode::OK, Json(serde_json::json!({ "steps": steps }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{e}") })),
-    )
-      .into_response(),
+        )
+            .into_response(),
     }
 }
 
 /// Refresh the IP address of a deployment by querying the cloud provider.
-async fn refresh_ip_handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+async fn refresh_ip_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let (provider, hostname, region, old_ip) = {
-    let conn = match lock_db(&state.db) {
-      Ok(conn) => conn,
-      Err(resp) => return resp,
-    };
+        let conn = match lock_db(&state.db) {
+            Ok(conn) => conn,
+            Err(resp) => return resp,
+        };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1084,13 +1078,14 @@ async fn refresh_ip_handler(
                 d.ip_address.unwrap_or_default(),
             ),
             Ok(None) => {
-              return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." })).into_response()
+                return Json(serde_json::json!({ "ok": false, "message": "Deployment not found." }))
+                    .into_response()
             }
             Err(e) => {
-              return Json(
+                return Json(
                     serde_json::json!({ "ok": false, "message": format!("DB error: {e}") }),
                 )
-              .into_response()
+                .into_response()
             }
         }
     };
@@ -1098,89 +1093,89 @@ async fn refresh_ip_handler(
     if hostname.is_empty() {
         return Json(
             serde_json::json!({ "ok": false, "message": "No hostname in deploy record." }),
-          )
-          .into_response();
+        )
+        .into_response();
     }
 
-    let new_ip = match provider.as_str() {
-        "lightsail" => {
-            let ls_region = if region.is_empty() {
-                "ap-southeast-1".to_string()
-            } else {
-                region
-            };
-            let ls = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(ls_region);
-            match ls.wait_for_active(&hostname, 5).await {
-                Ok(info) => match info.public_ip {
-                    Some(ip) => ip,
-                    None => {
-                        return Json(serde_json::json!({
-                            "ok": false, "message": "Instance has no public IP."
-                        }))
-                      .into_response()
-                    }
-                },
-                Err(e) => {
-                    return Json(serde_json::json!({
-                        "ok": false, "message": format!("Failed to query instance: {e}")
-                    }))
-                    .into_response()
-                }
-            }
-        }
-        "digitalocean" => {
-            let token = std::env::var("DO_TOKEN").unwrap_or_default();
-            if token.is_empty() {
-                return Json(serde_json::json!({
-                    "ok": false, "message": "DO_TOKEN env var required."
-              }))
-              .into_response();
-            }
-            let client = match clawmacdo_cloud::digitalocean::DoClient::new(&token) {
-                Ok(c) => c,
-                Err(e) => {
-                    return Json(serde_json::json!({
-                        "ok": false, "message": format!("Invalid DO token: {e}")
-                    }))
-                .into_response()
-                }
-            };
-            match client.list_droplets().await {
-                Ok(droplets) => match droplets.iter().find(|d| d.name == hostname) {
-                    Some(d) => match d.public_ip() {
+    let new_ip =
+        match provider.as_str() {
+            "lightsail" => {
+                let ls_region = if region.is_empty() {
+                    "ap-southeast-1".to_string()
+                } else {
+                    region
+                };
+                let ls = clawmacdo_cloud::lightsail_cli::LightsailCliProvider::new(ls_region);
+                match ls.wait_for_active(&hostname, 5).await {
+                    Ok(info) => match info.public_ip {
                         Some(ip) => ip,
                         None => {
                             return Json(serde_json::json!({
-                                "ok": false, "message": "Droplet has no public IP."
+                                "ok": false, "message": "Instance has no public IP."
                             }))
-                          .into_response()
+                            .into_response()
                         }
                     },
-                    None => {
+                    Err(e) => {
                         return Json(serde_json::json!({
-                            "ok": false, "message": format!("Droplet '{hostname}' not found.")
+                            "ok": false, "message": format!("Failed to query instance: {e}")
                         }))
                         .into_response()
                     }
-                },
-                Err(e) => {
-                    return Json(serde_json::json!({
-                        "ok": false, "message": format!("Failed to list droplets: {e}")
-                    }))
-                      .into_response()
                 }
             }
-        }
-        other => {
-            return Json(serde_json::json!({
+            "digitalocean" => {
+                let token = std::env::var("DO_TOKEN").unwrap_or_default();
+                if token.is_empty() {
+                    return Json(serde_json::json!({
+                          "ok": false, "message": "DO_TOKEN env var required."
+                    }))
+                    .into_response();
+                }
+                let client = match clawmacdo_cloud::digitalocean::DoClient::new(&token) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Json(serde_json::json!({
+                            "ok": false, "message": format!("Invalid DO token: {e}")
+                        }))
+                        .into_response()
+                    }
+                };
+                match client.list_droplets().await {
+                    Ok(droplets) => {
+                        match droplets.iter().find(|d| d.name == hostname) {
+                            Some(d) => match d.public_ip() {
+                                Some(ip) => ip,
+                                None => {
+                                    return Json(serde_json::json!({
+                                        "ok": false, "message": "Droplet has no public IP."
+                                    }))
+                                    .into_response()
+                                }
+                            },
+                            None => return Json(serde_json::json!({
+                                "ok": false, "message": format!("Droplet '{hostname}' not found.")
+                            }))
+                            .into_response(),
+                        }
+                    }
+                    Err(e) => {
+                        return Json(serde_json::json!({
+                            "ok": false, "message": format!("Failed to list droplets: {e}")
+                        }))
+                        .into_response()
+                    }
+                }
+            }
+            other => return Json(serde_json::json!({
                 "ok": false, "message": format!("Refresh IP not supported for provider '{other}'.")
             }))
-                  .into_response()
-        }
-    };
+            .into_response(),
+        };
 
     if new_ip == old_ip {
-                return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip })).into_response();
+        return Json(serde_json::json!({ "ok": true, "message": "IP unchanged.", "ip": new_ip }))
+            .into_response();
     }
 
     // Update SQLite
@@ -1248,16 +1243,16 @@ async fn approve_telegram_pairing_handler(
     };
 
     let key = match config::resolve_key_path(&key_path) {
-      Ok(path) => path,
-      Err(err) => {
-        return (
-          StatusCode::BAD_REQUEST,
-          Json(TelegramPairingApproveResponse {
-            ok: false,
-            message: err.to_string(),
-          }),
-        )
-      }
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(TelegramPairingApproveResponse {
+                    ok: false,
+                    message: err.to_string(),
+                }),
+            )
+        }
     };
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
@@ -1352,17 +1347,17 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
     }
 
     let key = match config::resolve_key_path(&key_path) {
-      Ok(path) => path,
-      Err(err) => {
-        return (
-          StatusCode::BAD_REQUEST,
-          Json(WhatsAppQrResponse {
-            ok: false,
-            message: err.to_string(),
-            qr_output: String::new(),
-          }),
-        )
-      }
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(WhatsAppQrResponse {
+                    ok: false,
+                    message: err.to_string(),
+                    qr_output: String::new(),
+                }),
+            )
+        }
     };
     // Use 45s timeout — enough to capture the first QR code
     let cmd = format!(
@@ -1430,17 +1425,17 @@ async fn repair_whatsapp_handler(Json(req): Json<WhatsAppRepairRequest>) -> impl
     }
 
     let key = match config::resolve_key_path(&key_path) {
-      Ok(path) => path,
-      Err(err) => {
-        return (
-          StatusCode::BAD_REQUEST,
-          Json(WhatsAppRepairResponse {
-            ok: false,
-            message: err.to_string(),
-            repair_output: String::new(),
-          }),
-        )
-      }
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(WhatsAppRepairResponse {
+                    ok: false,
+                    message: err.to_string(),
+                    repair_output: String::new(),
+                }),
+            )
+        }
     };
     match whatsapp::repair_support(&ip, &key).await {
         Ok(result) => {
@@ -1490,17 +1485,17 @@ async fn repair_agent_docker_handler(Json(req): Json<DockerFixRequest>) -> impl 
     }
 
     let key = match config::resolve_key_path(&key_path) {
-      Ok(path) => path,
-      Err(err) => {
-        return (
-          StatusCode::BAD_REQUEST,
-          Json(DockerFixResponse {
-            ok: false,
-            message: err.to_string(),
-            fix_output: String::new(),
-          }),
-        )
-      }
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DockerFixResponse {
+                    ok: false,
+                    message: err.to_string(),
+                    fix_output: String::new(),
+                }),
+            )
+        }
     };
     let ssh_user = ssh_user_for_provider(req.provider.as_deref());
     match docker_fix::repair_access(&ip, &key, ssh_user).await {
@@ -1550,10 +1545,10 @@ async fn list_deployments_handler(
 ) -> impl IntoResponse {
     let page = if q.page == 0 { 1 } else { q.page };
     let per_page: u32 = 20;
-  let conn = match lock_db(&state.db) {
-    Ok(conn) => conn,
-    Err(resp) => return resp,
-  };
+    let conn = match lock_db(&state.db) {
+        Ok(conn) => conn,
+        Err(resp) => return resp,
+    };
     match db::list_deployments_paginated(&conn, page, per_page) {
         Ok((deployments, total)) => {
             let total_pages = total.div_ceil(per_page);
@@ -1580,10 +1575,10 @@ async fn delete_deployment_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-  let conn = match lock_db(&state.db) {
-    Ok(conn) => conn,
-    Err(resp) => return resp,
-  };
+    let conn = match lock_db(&state.db) {
+        Ok(conn) => conn,
+        Err(resp) => return resp,
+    };
     match db::delete_deployment(&conn, &id) {
         Ok(_) => Json(DeleteResponse { ok: true }).into_response(),
         Err(e) => (
@@ -1603,10 +1598,10 @@ async fn destroy_deployment_handler(
 ) -> Response {
     // Look up deployment to get provider and hostname
     let (provider, hostname) = {
-      let conn = match lock_db(&state.db) {
-        Ok(conn) => conn,
-        Err(resp) => return resp,
-      };
+        let conn = match lock_db(&state.db) {
+            Ok(conn) => conn,
+            Err(resp) => return resp,
+        };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1620,7 +1615,7 @@ async fn destroy_deployment_handler(
                         message: "Deployment not found.".into(),
                     }),
                 )
-                .into_response()
+                    .into_response()
             }
             Err(e) => {
                 return (
@@ -1641,8 +1636,8 @@ async fn destroy_deployment_handler(
         do_token: req.do_token,
         tencent_secret_id: req.tencent_secret_id,
         tencent_secret_key: req.tencent_secret_key,
-      aws_access_key_id: req.aws_access_key_id,
-      aws_secret_access_key: req.aws_secret_access_key,
+        aws_access_key_id: req.aws_access_key_id,
+        aws_secret_access_key: req.aws_secret_access_key,
         aws_region: if req.aws_region.is_empty() {
             "ap-southeast-1".to_string()
         } else {
@@ -1704,7 +1699,7 @@ async fn destroy_deployment_handler(
                 message: format!("{cloud_msg} Local record deleted."),
             }),
         )
-        .into_response()
+            .into_response()
     } else {
         (
             StatusCode::BAD_GATEWAY,
@@ -1713,7 +1708,7 @@ async fn destroy_deployment_handler(
                 message: cloud_msg,
             }),
         )
-        .into_response()
+            .into_response()
     }
 }
 
@@ -1723,10 +1718,10 @@ async fn snapshot_deployment_handler(
     Json(req): Json<SnapshotDeploymentRequest>,
 ) -> Response {
     let (provider, hostname, region) = {
-    let conn = match lock_db(&state.db) {
-      Ok(conn) => conn,
-      Err(resp) => return resp,
-    };
+        let conn = match lock_db(&state.db) {
+            Ok(conn) => conn,
+            Err(resp) => return resp,
+        };
         match db::get_deployment_by_id(&conn, &id) {
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
@@ -1770,7 +1765,7 @@ async fn snapshot_deployment_handler(
                         operation_id: None,
                     }),
                 )
-                .into_response();
+                    .into_response();
             }
         }
         "byteplus" => {
@@ -1782,7 +1777,7 @@ async fn snapshot_deployment_handler(
                         message: "BytePlus access key and secret key are required.".into(),
                         operation_id: None,
                     }),
-                    )
+                )
                     .into_response();
             }
         }
@@ -1795,7 +1790,7 @@ async fn snapshot_deployment_handler(
                     message: format!("Snapshot not supported for provider '{other}'."),
                     operation_id: None,
                 }),
-                )
+            )
                 .into_response();
         }
     }
@@ -2042,7 +2037,7 @@ async fn snapshot_deployment_handler(
             operation_id: Some(op_id),
         }),
     )
-    .into_response()
+        .into_response()
 }
 
 async fn toggle_funnel_handler(
@@ -2211,11 +2206,11 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
             Err(_) => continue,
         };
         if record.id == id || record.hostname == id || record.ip_address == id {
-          let key_path = match config::resolve_key_path(&record.ssh_key_path) {
-            Ok(path) => path,
-            Err(_) => continue,
-          };
-          return Ok((record.ip_address, key_path));
+            let key_path = match config::resolve_key_path(&record.ssh_key_path) {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            return Ok((record.ip_address, key_path));
         }
     }
     Err(format!("No deploy record found for '{id}'."))
