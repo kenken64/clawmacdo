@@ -11,7 +11,7 @@ Node.js REST API serving OpenClaw skills data from MongoDB, with keyword search,
 npm install
 
 # Load skills data into MongoDB
-bash load-mongo.sh
+pwsh -File ./load-mongo.ps1
 
 # Start the server
 npm start
@@ -294,10 +294,10 @@ On Railway, set the `SKILLS_DIR` env var to your mounted volume path (e.g. `/ski
 
 ```bash
 # Uses default connection string
-bash load-mongo.sh
+pwsh -File ./load-mongo.ps1
 
 # Custom connection
-bash load-mongo.sh "mongodb://user:pass@host:port/" "mydb"
+pwsh -File ./load-mongo.ps1 "mongodb://user:pass@host:port/" "mydb"
 ```
 
 Loads `skills.json` into two collections:

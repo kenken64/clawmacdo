@@ -1,14 +1,20 @@
 {
   "name": "@clawmacdo/win32-x64",
-  "version": "0.34.0",
+  "version": "0.36.0",
   "description": "clawmacdo binary for Windows x86_64",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kenken64/clawmacdo.git"
   },
-  "os": ["win32"],
-  "cpu": ["x64"],
-  "files": ["bin"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
   "preferUnplugged": true
 }

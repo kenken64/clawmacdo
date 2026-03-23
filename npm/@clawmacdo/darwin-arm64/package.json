@@ -1,14 +1,20 @@
 {
   "name": "@clawmacdo/darwin-arm64",
-  "version": "0.34.0",
+  "version": "0.36.0",
   "description": "clawmacdo binary for macOS ARM64 (Apple Silicon)",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kenken64/clawmacdo.git"
   },
-  "os": ["darwin"],
-  "cpu": ["arm64"],
-  "files": ["bin"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin"
+  ],
   "preferUnplugged": true
 }

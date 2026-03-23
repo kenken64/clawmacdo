@@ -55,7 +55,7 @@ Use Semantic Versioning (SemVer: MAJOR.MINOR.PATCH). When asked to bump the vers
 
 ## Release Workflow
 
-Run `./scripts/release.sh [patch|minor|major]` to automate the full release:
+Run `pwsh -File ./scripts/release.ps1 [patch|minor|major]` to automate the full release:
 
 1. `cargo fmt --all` + `cargo clippy -- -D warnings`
 2. Bump version in all `Cargo.toml` (7 crates) and `package.json` (4 npm packages)
@@ -65,7 +65,7 @@ Run `./scripts/release.sh [patch|minor|major]` to automate the full release:
 6. Git commit, tag, push
 7. Create GitHub release (triggers `release.yml` + `npm-publish.yml` workflows)
 
-Default bump type is `minor`. Example: `./scripts/release.sh patch`
+Default bump type is `minor`. Example: `pwsh -File ./scripts/release.ps1 patch`
 
 ## Documentation Rule
 

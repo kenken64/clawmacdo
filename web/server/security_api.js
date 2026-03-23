@@ -1,4 +1,5 @@
 const express = require('express');
+const os = require('os');
 const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const app = express();
@@ -8,6 +9,7 @@ let idCounter = 1;
 const ROOT = path.resolve(__dirname, '..', '..');
 const KEY_DB = process.env.KEY_DB || path.join(ROOT,'keys.db');
 const VERIFY_SCRIPT = path.join(ROOT,'scripts','verify_apikey.py');
+const RUN_ALL_SCANS_SCRIPT = path.join(ROOT, 'scripts', 'run_all_scans.ps1');
 
 function checkApiKey(key){
   try{
@@ -28,9 +30,9 @@ app.use((req,res,next)=>{
 app.post('/api/security/scan', (req,res)=>{
   const id = String(idCounter++);
   const ts = Date.now();
-  const out = `/tmp/openclaw_security_scan_${ts}.json`;
+  const out = path.join(os.tmpdir(), `openclaw_security_scan_${ts}.json`);
   jobs[id] = { status:'running', out };
-  const child = spawn('/bin/bash',['scripts/run_all_scans.sh'],{cwd:ROOT});
+  const child = spawn('pwsh',['-NoProfile', '-File', RUN_ALL_SCANS_SCRIPT, '-OutFile', out],{cwd:ROOT});
   child.on('exit',(code)=>{ jobs[id].status = code===0? 'done':'error'; });
   res.json({jobId:id,status:'started',out});
 });
