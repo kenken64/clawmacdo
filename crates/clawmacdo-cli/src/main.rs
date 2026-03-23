@@ -446,6 +446,15 @@ enum Commands {
         #[arg(long, default_value = "", env = "BYTEPLUS_ARK_API_KEY")]
         byteplus_ark_api_key: String,
     },
+    /// Install an OpenClaw plugin on a deployed instance and restart the gateway
+    PluginInstall {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Plugin package name (e.g. @openguardrails/moltguard)
+        #[arg(long)]
+        plugin: String,
+    },
     /// Refresh the IP address of a deployed instance from the cloud provider
     UpdateIp {
         /// Deploy ID, hostname, or IP address of the instance
@@ -807,6 +816,9 @@ async fn main() -> anyhow::Result<()> {
                 byteplus_ark_api_key,
             })
             .await
+        }
+        Commands::PluginInstall { instance, plugin } => {
+            commands::plugin_install::run(&instance, &plugin).await
         }
         Commands::UpdateIp { instance } => commands::update_ip::run(&instance).await,
         #[cfg(feature = "web-ui")]
