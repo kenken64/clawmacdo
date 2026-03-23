@@ -758,6 +758,8 @@ For licensing inquiries, contact: bunnyppl@gmail.com
 | [TanStack Progress Tracking](docs/tanstack-progress-tracking.md) | Frontend integration guide for TanStack (React Query) progress bars |
 | [Security Scan](docs/SECURITY_SCAN.md) | Security scanning CLI and vulnerability assessment |
 | [Security Flaw Evaluation](docs/EVAL_SECURITY_FLAW.md) | Security flaw evaluation report and findings |
+
+Security scan scripts always write their main outputs to the system temp directory and only mirror them into `/root/.openclaw/workspace` when that directory is accessible.
 | [High Security Fixes](docs/HIGH_SECURITY_FIXES.md) | Code-level remediation map for all HIGH findings |
 | [Tencent Cloud Plan](docs/TENCENT_PLAN.md) | Tencent Cloud provider support plan |
 | [Repository Guidelines](docs/AGENTS.md) | Contribution guidelines and repository conventions |

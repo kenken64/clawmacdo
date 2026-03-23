@@ -62,7 +62,7 @@ if (Test-Path -LiteralPath $configOut) { $summaryLines += "- OpenClaw config: $c
 Set-Content -LiteralPath $SummaryFile -Value ($summaryLines -join [Environment]::NewLine) -Encoding utf8
 
 $workspaceDir = '/root/.openclaw/workspace'
-if (Test-Path -LiteralPath $workspaceDir) {
+if ([System.IO.Directory]::Exists($workspaceDir)) {
     try { Copy-Item -LiteralPath $OutFile -Destination (Join-Path $workspaceDir ([System.IO.Path]::GetFileName($OutFile))) -Force } catch {}
     try { Copy-Item -LiteralPath $SummaryFile -Destination (Join-Path $workspaceDir ([System.IO.Path]::GetFileName($SummaryFile))) -Force } catch {}
 }
