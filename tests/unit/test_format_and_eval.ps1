@@ -14,9 +14,12 @@ if ($textContent -notmatch 'sshd_permit_root') {
     throw 'FAIL: formatted text did not include sshd_permit_root'
 }
 
-& (Join-Path $root 'scripts/evaluate_risk.ps1') (Join-Path $root 'fixtures/sample_high_risk.json') | Out-Null
+$evaluator = Join-Path $root 'scripts/evaluate_risk.ps1'
+$fixture = Join-Path $root 'fixtures/sample_high_risk.json'
+pwsh -NoProfile -File $evaluator $fixture | Out-Null
 if ($LASTEXITCODE -eq 0) {
     throw 'FAIL: expected non-zero exit'
 }
 
 Write-Host 'PASS: evaluator returned non-zero for high risk'
+exit 0

@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-ssh"
-version = "0.36.0"
+version = "0.37.0"
 edition = "2021"
 description = "SSH/SCP operations and key management for ClawMacdo"
 
@@ -14,4 +14,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 clawmacdo-core = { workspace = true }
+
 
