@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_REGION: &str = "sgp1";
 pub const DEFAULT_SIZE: &str = "s-2vcpu-4gb";
@@ -98,6 +98,77 @@ pub fn ensure_dirs() -> Result<(), AppError> {
     std::fs::create_dir_all(keys_dir()?)?;
     std::fs::create_dir_all(deploys_dir()?)?;
     Ok(())
+}
+
+fn canonicalize_scoped_existing_path(
+    input: &str,
+    base_dir: &Path,
+    label: &str,
+) -> Result<PathBuf, AppError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Generic(format!("{label} path is required")));
+    }
+
+    let canonical = std::fs::canonicalize(trimmed)
+        .map_err(|e| AppError::Generic(format!("Invalid {label} path: {e}")))?;
+    let scoped_base = std::fs::canonicalize(base_dir)
+        .map_err(|e| AppError::Generic(format!("Invalid {label} directory: {e}")))?;
+
+    if !canonical.starts_with(&scoped_base) {
+        return Err(AppError::Generic(format!(
+            "{label} path must stay within {}",
+            scoped_base.display()
+        )));
+    }
+
+    Ok(canonical)
+}
+
+pub fn resolve_backup_path(input: &str) -> Result<PathBuf, AppError> {
+    let base = backups_dir()?;
+    canonicalize_scoped_existing_path(input, &base, "backup")
+}
+
+pub fn resolve_key_path(input: &str) -> Result<PathBuf, AppError> {
+    let base = keys_dir()?;
+    canonicalize_scoped_existing_path(input, &base, "SSH key")
+}
+
+pub fn normalize_hostname(input: &str) -> Result<Option<String>, AppError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let hostname = trimmed.to_ascii_lowercase();
+    if hostname.len() > 253 {
+        return Err(AppError::Generic(
+            "Hostname must be 253 characters or fewer".into(),
+        ));
+    }
+    if hostname.starts_with('.') || hostname.ends_with('.') || hostname.contains("..") {
+        return Err(AppError::Generic("Hostname format is invalid".into()));
+    }
+
+    for label in hostname.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err(AppError::Generic("Hostname format is invalid".into()));
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(AppError::Generic("Hostname format is invalid".into()));
+        }
+        if !label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(AppError::Generic(
+                "Hostname may only contain letters, numbers, hyphens, and dots".into(),
+            ));
+        }
+    }
+
+    Ok(Some(hostname))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

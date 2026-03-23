@@ -2,7 +2,7 @@
 
 **Project:** ClawMacToDO
 **Date:** 2026-03-14
-**Last Updated:** 2026-03-16
+**Last Updated:** 2026-03-22
 **Auditor:** GitHub Copilot (automated static analysis)
 **Scope:** Full Rust codebase (`crates/`), shell scripts (`scripts/`), and web server (`web/`)
 
@@ -13,14 +13,14 @@
 | Severity | Count | Fixed | Remaining |
 |----------|-------|-------|-----------|
 | CRITICAL | 4     | 4     | 0         |
-| HIGH     | 12    | 0     | 12        |
+| HIGH     | 12    | 12    | 0         |
 | MEDIUM   | 6     | 0     | 6         |
 | LOW      | 8     | 0     | 8         |
-| **Total** | **30** | **4** | **26**   |
+| **Total** | **30** | **16** | **14**   |
 
 ---
 
-## Remediation Status (as of v0.16.0)
+## Remediation Status (as of security-flaw branch)
 
 | ID | Severity | Status | Fix Description |
 |----|----------|--------|-----------------|
@@ -28,18 +28,18 @@
 | CRIT-02 | CRITICAL | **FIXED in v0.16.0** | SSH host key verification via TOFU with `~/.clawmacdo/known_hosts` |
 | CRIT-03 | CRITICAL | **FIXED in v0.16.0** | `.env` file written via SCP binary transfer instead of shell heredoc |
 | CRIT-04 | CRITICAL | **FIXED in v0.16.0** | `PermitRootLogin prohibit-password` in cloud-init + post-provision enforcement |
-| HIGH-01 | HIGH | OPEN | Manual shell escaping still in use |
-| HIGH-02 | HIGH | OPEN | No hostname validation regex |
-| HIGH-03 | HIGH | OPEN | Secrets still passed as command-line arguments |
-| HIGH-04 | HIGH | OPEN | tar extraction has no `--no-same-owner` or path filtering |
-| HIGH-05 | HIGH | OPEN | Docker group membership grants root equivalent |
-| HIGH-06 | HIGH | OPEN | Sudoers wildcard rules unchanged |
-| HIGH-07 | HIGH | OPEN | Backup path not canonicalized or validated |
-| HIGH-08 | HIGH | OPEN | ssh_key_path not restricted to keys directory |
-| HIGH-09 | HIGH | OPEN | EnvironmentFile still leaks all API keys |
-| HIGH-10 | HIGH | OPEN | unwrap() still present on cloud API data |
-| HIGH-11 | HIGH | OPEN | env::set_var() still used for AWS credentials |
-| HIGH-12 | HIGH | OPEN | SSH security group still opens to 0.0.0.0/0 |
+| HIGH-01 | HIGH | **FIXED on security-flaw branch** | Privileged SSH execution now uses stdin-fed shells instead of nested shell escaping |
+| HIGH-02 | HIGH | **FIXED on security-flaw branch** | Hostnames are normalized and validated centrally before deploy |
+| HIGH-03 | HIGH | **FIXED on security-flaw branch** | Secrets removed from `openclaw onboard` command-line arguments |
+| HIGH-04 | HIGH | **FIXED on security-flaw branch** | Backup archives validated locally and restored with safer tar flags |
+| HIGH-05 | HIGH | **FIXED on security-flaw branch** | `openclaw` no longer gets Docker-group access; sandbox forced off as secure default |
+| HIGH-06 | HIGH | **FIXED on security-flaw branch** | Sudoers rules narrowed to exact low-risk commands |
+| HIGH-07 | HIGH | **FIXED on security-flaw branch** | Web backup path canonicalized under `~/.clawmacdo/backups` |
+| HIGH-08 | HIGH | **FIXED on security-flaw branch** | Web SSH key path canonicalized under `~/.clawmacdo/keys` |
+| HIGH-09 | HIGH | **FIXED on security-flaw branch** | Gateway service now reads a scoped `gateway.env` instead of `.env` |
+| HIGH-10 | HIGH | **FIXED on security-flaw branch** | Public IP and DB mutex unwraps replaced with explicit error handling |
+| HIGH-11 | HIGH | **FIXED on security-flaw branch** | Lightsail credentials now stay scoped to explicit provider instances |
+| HIGH-12 | HIGH | **FIXED on security-flaw branch** | Tencent SSH ingress now uses a constrained CIDR instead of `0.0.0.0/0` |
 | MED-01 | MEDIUM | OPEN | Lightsail tags still use format!() |
 | MED-02 | MEDIUM | OPEN | IP field not validated in HTTP requests |
 | MED-03 | MEDIUM | OPEN | gen_apikey.sh shell-to-Python injection |
@@ -54,6 +54,12 @@
 | LOW-06 | LOW | OPEN | Tailwind CDN loaded without SRI |
 | LOW-07 | LOW | OPEN | Error messages leak internal state |
 | LOW-08 | LOW | OPEN | Symlink-following in extension copy |
+
+---
+
+## Implementation Notes
+
+The detailed code-to-fix mapping for the HIGH findings now lives in [docs/HIGH_SECURITY_FIXES.md](docs/HIGH_SECURITY_FIXES.md). That document records the exact files changed, why each remediation was chosen, and where behavior changed intentionally.
 
 ---
 
