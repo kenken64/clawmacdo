@@ -20,3 +20,4 @@ if ($null -eq $payload.PSObject.Properties['parts']) {
 }
 
 Write-Host "PASS: $json contains parts"
+exit 0

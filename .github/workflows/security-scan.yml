@@ -14,7 +14,7 @@ jobs:
           python-version: '3.11'
       - name: Run unit tests
         shell: pwsh
-        run: ./tests/unit/test_format_and_eval.ps1
+        run: pwsh -NoProfile -File ./tests/unit/test_format_and_eval.ps1
       - name: Run integration test
         shell: pwsh
-        run: ./tests/integration/test_run_all.ps1
+        run: pwsh -NoProfile -File ./tests/integration/test_run_all.ps1
