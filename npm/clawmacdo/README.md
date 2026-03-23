@@ -5,11 +5,14 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.33.0
+## ✨ What's New in v0.34.0
 
 - **`update-model` subcommand** — change the AI model on a running OpenClaw instance without redeploying (updates API keys, provider config, model settings, and restarts the gateway)
 - **`update-ip` subcommand** — refresh the IP address of a deployed instance from the cloud provider API (Lightsail, DigitalOcean, BytePlus) and update both JSON deploy record and SQLite
 - **Refresh IP button** — new "Refresh IP" button in Deployments tab queries the cloud provider and updates the IP in-place
+- **Deployments action dropdown** — deployment row actions now open in a stacked menu so controls stay readable instead of overlapping in narrow tables
+- **Deployments table fit** — deployments table now uses a tighter fixed layout with wrapped cell content to avoid left-right scrolling in the tab
+- **Funnel actions in dropdown** — the Deployments tab now handles the two-step funnel flow from the Actions menu: first toggle funnel on/off, then open the funnel URL once it becomes available
 - **Snapshot/restore progress tracking** — snapshot and restore operations are now async with step-by-step progress via SSE; the frontend can display real-time progress bars using `GET /api/deploy/{operation_id}/events`
 - **Deploy progress in Deployments tab** — running deployments show an animated progress bar with current step label, polling every 3 seconds
 - **Funnel verification** — toggling funnel ON now polls the funnel status with a progress bar before showing the Open button
@@ -762,5 +765,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.33.0
+**Current version:** 0.34.0
 **Architecture version:** 2.0 (modular workspace)
