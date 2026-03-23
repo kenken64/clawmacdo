@@ -8,14 +8,25 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 ## ✨ What's New in v0.32.0
 
 - **`update-model` subcommand** — change the AI model on a running OpenClaw instance without redeploying (updates API keys, provider config, model settings, and restarts the gateway)
+- **`update-ip` subcommand** — refresh the IP address of a deployed instance from the cloud provider API (Lightsail, DigitalOcean, BytePlus) and update both JSON deploy record and SQLite
+- **Refresh IP button** — new "Refresh IP" button in Deployments tab queries the cloud provider and updates the IP in-place
 - **Snapshot/restore progress tracking** — snapshot and restore operations are now async with step-by-step progress via SSE; the frontend can display real-time progress bars using `GET /api/deploy/{operation_id}/events`
+- **Deploy progress in Deployments tab** — running deployments show an animated progress bar with current step label, polling every 3 seconds
+- **Funnel verification** — toggling funnel ON now polls the funnel status with a progress bar before showing the Open button
+- **Docker fix: systemd user manager restart** — "Fix Agent Docker Access" now restarts the systemd user service manager so the gateway picks up the docker group
+- **`KillMode=control-group`** — gateway service now kills the entire cgroup on restart, preventing orphaned child processes from holding the port
+- **AWS credential passthrough** — web UI credentials are written to `~/.aws/credentials` so the AWS CLI uses them instead of stale local config
+- **Lightsail destroy with credentials** — destroy modal now prompts for AWS Access Key ID and Secret Access Key
+- **Lightsail snapshot listing** — credentials from the web UI are now passed through to the AWS CLI for snapshot listing
+- **Agent Docker Access warning** — deploy form shows the common Docker socket permission error with a clear fix instruction
+- **Dual license** — switched from MIT to GPLv3 (open source) + Commercial (proprietary) dual license model
+
+### Previous highlights (v0.25.x – v0.26.x)
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID, with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
-- **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps, and EIP is now created inline with the instance (`ReleaseWithInstance: true`) so it auto-releases on destroy
+- **BytePlus EIP cost reduction** — switched from pay-by-bandwidth to pay-by-traffic billing, reduced default bandwidth from 10 Mbps to 5 Mbps
 - **BytePlus spot instances** — new `--spot` flag on deploy enables `SpotAsPriceGo` strategy for up to ~80% compute cost savings
-- **`bp-snapshot` subcommand** — create a named snapshot of a BytePlus ECS instance's system disk
-- **`bp-restore` subcommand** — restore a new BytePlus ECS instance from a snapshot (creates custom image, then launches instance)
-- **`ls-snapshot` subcommand** — create a snapshot of an AWS Lightsail instance
-- **`ls-restore` subcommand** — restore a new Lightsail instance from a snapshot (direct, no intermediate image step)
+- **`bp-snapshot` / `bp-restore`** — snapshot and restore for BytePlus ECS instances
+- **`ls-snapshot` / `ls-restore`** — snapshot and restore for AWS Lightsail instances
 - **BytePlus EIP orphan cleanup** — destroy command now finds and releases unbound EIPs left behind after instance termination
 
 ### Previous highlights (v0.21.x – v0.23.x)
