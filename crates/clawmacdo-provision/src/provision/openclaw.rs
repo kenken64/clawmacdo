@@ -43,20 +43,20 @@ chown -R {user}:{user} {cd}"#,
          WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}\n\
          TELEGRAM_BOT_TOKEN={telegram_bot_token}\n",
     );
-        let gateway_env_content = format!(
-           "ANTHROPIC_API_KEY={anthropic_api_key}\n\
+    let gateway_env_content = format!(
+        "ANTHROPIC_API_KEY={anthropic_api_key}\n\
             OPENAI_API_KEY={openai_key}\n\
             GEMINI_API_KEY={gemini_key}\n\
             BYTEPLUS_API_KEY={byteplus_ark_api_key}\n\
             WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}\n\
             TELEGRAM_BOT_TOKEN={telegram_bot_token}\n",
-        );
+    );
     let scp_user = if ssh_user == "root" { "root" } else { ssh_user };
     let key_owned = key.to_path_buf();
     let ip_owned = ip.to_string();
     let scp_user_owned = scp_user.to_string();
     let env_bytes = env_content.into_bytes();
-        let gateway_env_bytes = gateway_env_content.into_bytes();
+    let gateway_env_bytes = gateway_env_content.into_bytes();
     tokio::task::spawn_blocking(move || {
         ssh::scp_upload_bytes(
             &ip_owned,

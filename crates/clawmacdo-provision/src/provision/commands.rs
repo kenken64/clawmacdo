@@ -120,4 +120,3 @@ pub async fn ssh_as_openclaw_with_user_async(
         .await
         .map_err(|e| AppError::Ssh(format!("spawn_blocking join: {e}")))?
 }
-

@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-ssh"
-version = "0.32.0"
+version = "0.33.0"
 edition = "2021"
 description = "SSH/SCP operations and key management for ClawMacdo"
 

@@ -11,8 +11,8 @@ use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_db as db;
 use clawmacdo_provision::{self as provision, ProvisionOpts};
 use clawmacdo_ssh as ssh;
-use std::path::Component;
 use clawmacdo_ui::{progress, ui};
+use std::path::Component;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -236,17 +236,25 @@ fn validate_backup_archive(path: &std::path::Path) -> Result<()> {
     let mut archive = tar::Archive::new(decoder);
     let mut saw_entries = false;
 
-    for entry in archive.entries().context("Failed to read backup archive entries")? {
+    for entry in archive
+        .entries()
+        .context("Failed to read backup archive entries")?
+    {
         let entry = entry.context("Failed to parse backup archive entry")?;
         let entry_path = entry.path().context("Failed to read backup archive path")?;
 
         if entry_path.is_absolute() {
-            bail!("Backup archive contains an absolute path: {}", entry_path.display());
+            bail!(
+                "Backup archive contains an absolute path: {}",
+                entry_path.display()
+            );
         }
 
         for component in entry_path.components() {
-            if matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_))
-            {
+            if matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            ) {
                 bail!(
                     "Backup archive contains an unsafe path: {}",
                     entry_path.display()
