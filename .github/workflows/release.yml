@@ -26,8 +26,8 @@ jobs:
             artifact: clawmacdo-darwin-arm64-full
             features: ""
             binary_name: clawmacdo
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
             artifact: clawmacdo-windows-amd64-full
             features: ""
             binary_name: clawmacdo.exe
@@ -43,8 +43,8 @@ jobs:
             artifact: clawmacdo-darwin-arm64-minimal
             features: "--no-default-features --features minimal"
             binary_name: clawmacdo
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+          - target: x86_64-pc-windows-gnu
+            os: ubuntu-latest
             artifact: clawmacdo-windows-amd64-minimal
             features: "--no-default-features --features minimal"
             binary_name: clawmacdo.exe
@@ -72,20 +72,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
-
-      - name: Install Windows dependencies (vcpkg OpenSSL)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          vcpkg install openssl:x64-windows-static-md
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
-
-      - name: Disable Windows Defender real-time monitoring
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
+          if echo "${{ matrix.target }}" | grep -q windows; then
+            sudo apt-get install -y gcc-mingw-w64-x86-64
+          fi
 
       - name: Build
         shell: bash
@@ -93,19 +82,10 @@ jobs:
           RUST_BACKTRACE: "1"
           RUSTC_WRAPPER: sccache
         run: |
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: build without --target to avoid cross-compilation dep resolution issues
-            if [ -n "${{ matrix.features }}" ]; then
-              cargo build --release ${{ matrix.features }}
-            else
-              cargo build --release
-            fi
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
           else
-            if [ -n "${{ matrix.features }}" ]; then
-              cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
-            else
-              cargo build --release --target ${{ matrix.target }}
-            fi
+            cargo build --release --target ${{ matrix.target }}
           fi
 
       - name: Strip binary (Linux/macOS)
@@ -124,9 +104,10 @@ jobs:
 
       - name: Package (Windows)
         if: ${{ contains(matrix.target, 'windows') }}
-        shell: pwsh
         run: |
-          Compress-Archive -Path "target/release/${{ matrix.binary_name }}" -DestinationPath "${{ matrix.artifact }}.zip"
+          cd target/${{ matrix.target }}/release
+          zip ../../../${{ matrix.artifact }}.zip ${{ matrix.binary_name }}
+          cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
