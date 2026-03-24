@@ -59,16 +59,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo registry + build
-        uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-${{ matrix.features }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.target }}-cargo-
+          key: ${{ matrix.target }}-${{ matrix.features }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -76,10 +73,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libssl-dev pkg-config
 
+      - name: Install Windows dependencies (vcpkg OpenSSL)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows-static-md
+          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          echo "OPENSSL_DIR=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+
+      - name: Disable Windows Defender real-time monitoring
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - name: Build
         shell: bash
         env:
           RUST_BACKTRACE: "1"
+          RUSTC_WRAPPER: sccache
         run: |
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
             # Windows: build without --target to avoid cross-compilation dep resolution issues
@@ -128,9 +140,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install dependencies
         run: |
@@ -185,7 +200,7 @@ jobs:
           ```
           crates/
           ├── clawmacdo-cli/      # 🖥️  Main CLI binary & commands
-          ├── clawmacdo-core/     # 🔧  Config, errors, types  
+          ├── clawmacdo-core/     # 🔧  Config, errors, types
           ├── clawmacdo-cloud/    # ☁️   Cloud providers (DO, Tencent)
           ├── clawmacdo-provision/# 🔨  Server provisioning logic
           ├── clawmacdo-db/       # 💾  Database operations
@@ -199,7 +214,7 @@ jobs:
           wget https://github.com/kenken64/clawmacdo/releases/download/${{ github.ref_name }}/clawmacdo-linux-amd64-minimal.tar.gz
           tar -xzf clawmacdo-linux-amd64-minimal.tar.gz
           chmod +x clawmacdo
-          
+
           # Deploy OpenClaw
           export DO_TOKEN="your_token"
           ./clawmacdo deploy --customer-name "my-openclaw"
