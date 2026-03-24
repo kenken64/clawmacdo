@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.39.0
+## v0.40.0
 
 ### Added
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID (`--do-token` + `--droplet-id` + `--snapshot-name`), with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle

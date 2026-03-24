@@ -5,7 +5,7 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.39.0
+## ✨ What's New in v0.40.0
 
 - **`update-model` subcommand** — change the AI model on a running OpenClaw instance without redeploying (updates API keys, provider config, model settings, and restarts the gateway)
 - **`update-ip` subcommand** — refresh the IP address of a deployed instance from the cloud provider API (Lightsail, DigitalOcean, BytePlus) and update both JSON deploy record and SQLite
@@ -919,7 +919,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.39.0
+**Current version:** 0.40.0
 **Architecture version:** 2.0 (modular workspace)
 
 
