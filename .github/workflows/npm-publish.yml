@@ -37,16 +37,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.target }}-cargo-
+          key: ${{ matrix.target }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -57,7 +54,21 @@ jobs:
             sudo apt-get install -y gcc-mingw-w64-x86-64
           fi
 
+      - name: Install prebuilt OpenSSL for Windows cross-compilation
+        if: contains(matrix.target, 'windows')
+        run: |
+          sudo apt-get install -y libssl-dev:amd64
+          # Set up OpenSSL for mingw cross-compilation
+          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include" >> $GITHUB_ENV
+          # Tell openssl-sys to use vendored OpenSSL for cross-compilation
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
+
       - name: Build
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)
