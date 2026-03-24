@@ -209,6 +209,59 @@ cargo build --release --no-default-features --features aws-only
 | `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
 
+## Quick Start
+
+```bash
+# Install
+npm install -g clawmacdo
+
+# Deploy to DigitalOcean
+clawmacdo deploy --provider digitalocean \
+  --customer-name "my-openclaw" --customer-email "you@example.com" \
+  --do-token "$DO_TOKEN" --anthropic-key "$ANTHROPIC_API_KEY"
+
+# Deploy to AWS Lightsail
+clawmacdo deploy --provider lightsail \
+  --customer-name "my-openclaw" --customer-email "you@example.com" \
+  --aws-access-key-id "$AWS_ACCESS_KEY_ID" \
+  --aws-secret-access-key "$AWS_SECRET_ACCESS_KEY"
+
+# Track deploy progress
+clawmacdo track <deploy-id> --follow
+
+# Set up Telegram bot
+clawmacdo telegram-setup --instance <deploy-id> --bot-token "$TELEGRAM_TOKEN"
+clawmacdo telegram-pair --instance <deploy-id> --code <PAIRING_CODE>
+
+# Set up WhatsApp (displays QR code to scan)
+clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
+clawmacdo whatsapp-qr --instance <deploy-id>   # re-fetch QR if expired
+
+# Change AI model on a running instance
+clawmacdo update-model --instance <deploy-id> \
+  --primary-model openai --openai-key "$OPENAI_API_KEY"
+
+# Install a plugin
+clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltguard"
+
+# Refresh IP after instance restart
+clawmacdo update-ip --instance <deploy-id>
+
+# Enable Tailscale Funnel (public HTTPS access)
+clawmacdo tailscale-funnel --instance <deploy-id> --auth-key "$TAILSCALE_AUTH_KEY"
+clawmacdo funnel-on --instance <deploy-id>
+
+# Create and restore snapshots
+clawmacdo do-snapshot --do-token "$DO_TOKEN" --droplet-id 12345 --snapshot-name "backup"
+clawmacdo do-restore --do-token "$DO_TOKEN" --snapshot-name "backup"
+
+# Destroy an instance
+clawmacdo destroy --provider digitalocean --do-token "$DO_TOKEN" --name "openclaw-abc123"
+
+# Start the web UI
+clawmacdo serve --port 3456
+```
+
 ## Usage
 
 > **Full CLI reference with all examples, curl commands, and sample responses:** [docs/clawmacdo_usage.md](docs/clawmacdo_usage.md)
