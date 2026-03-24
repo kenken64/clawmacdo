@@ -209,7 +209,98 @@ cargo build --release --no-default-features --features aws-only
 | `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
 
-## Quick Start
+## Programmatic Usage (Node.js)
+
+The npm package exports `getBinaryPath()` so you can call clawmacdo from Node.js scripts or automation tools.
+
+```bash
+npm install clawmacdo
+```
+
+```javascript
+const { execSync, spawn } = require("child_process");
+const { getBinaryPath } = require("clawmacdo");
+
+const bin = getBinaryPath(); // absolute path to the clawmacdo binary
+
+// --- Deploy a new instance ---
+const deploy = execSync(`${bin} deploy \
+  --provider lightsail \
+  --customer-name "my-openclaw" \
+  --customer-email "you@example.com" \
+  --aws-access-key-id "${process.env.AWS_ACCESS_KEY_ID}" \
+  --aws-secret-access-key "${process.env.AWS_SECRET_ACCESS_KEY}" \
+  --anthropic-key "${process.env.ANTHROPIC_API_KEY}" \
+  --primary-model anthropic \
+  --json`, { encoding: "utf8" });
+console.log(JSON.parse(deploy));
+
+// --- Track deploy progress (streaming) ---
+const track = spawn(bin, ["track", "<deploy-id>", "--follow", "--json"]);
+track.stdout.on("data", (chunk) => {
+  console.log("progress:", chunk.toString());
+});
+
+// --- Set up Telegram bot ---
+execSync(`${bin} telegram-setup \
+  --instance <deploy-id> \
+  --bot-token "${process.env.TELEGRAM_TOKEN}"`, { stdio: "inherit" });
+
+// --- Set up WhatsApp (displays QR code) ---
+execSync(`${bin} whatsapp-setup \
+  --instance <deploy-id> \
+  --phone-number "+6512345678"`, { stdio: "inherit" });
+
+// --- Fetch WhatsApp QR code ---
+const qr = execSync(`${bin} whatsapp-qr --instance <deploy-id>`, { encoding: "utf8" });
+console.log(qr); // ASCII QR code
+
+// --- Change AI model ---
+execSync(`${bin} update-model \
+  --instance <deploy-id> \
+  --primary-model openai \
+  --openai-key "${process.env.OPENAI_API_KEY}"`, { stdio: "inherit" });
+
+// --- Install a plugin ---
+execSync(`${bin} plugin-install \
+  --instance <deploy-id> \
+  --plugin "@openguardrails/moltguard"`, { stdio: "inherit" });
+
+// --- Refresh IP after restart ---
+execSync(`${bin} update-ip --instance <deploy-id>`, { stdio: "inherit" });
+
+// --- Create snapshot ---
+execSync(`${bin} do-snapshot \
+  --do-token "${process.env.DO_TOKEN}" \
+  --droplet-id 12345 \
+  --snapshot-name "my-backup"`, { stdio: "inherit" });
+
+// --- Restore from snapshot ---
+execSync(`${bin} do-restore \
+  --do-token "${process.env.DO_TOKEN}" \
+  --snapshot-name "my-backup"`, { stdio: "inherit" });
+
+// --- Destroy an instance ---
+execSync(`${bin} destroy \
+  --provider digitalocean \
+  --do-token "${process.env.DO_TOKEN}" \
+  --name "openclaw-abc123" --yes`, { stdio: "inherit" });
+
+// --- Start the web UI programmatically ---
+const server = spawn(bin, ["serve", "--port", "3456"], { stdio: "inherit" });
+```
+
+### TypeScript
+
+```typescript
+import { getBinaryPath } from "clawmacdo";
+import { execSync } from "child_process";
+
+const bin: string = getBinaryPath();
+execSync(`${bin} deploy --provider lightsail ...`, { stdio: "inherit" });
+```
+
+## Quick Start (CLI)
 
 ```bash
 # Install
