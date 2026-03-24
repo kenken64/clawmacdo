@@ -836,9 +836,7 @@ async fn main() -> anyhow::Result<()> {
             instance,
             phone_number,
         } => commands::whatsapp_setup::setup(&instance, &phone_number).await,
-        Commands::WhatsappQr { instance } => {
-            commands::whatsapp_setup::fetch_qr(&instance).await
-        }
+        Commands::WhatsappQr { instance } => commands::whatsapp_setup::fetch_qr(&instance).await,
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await
         }
