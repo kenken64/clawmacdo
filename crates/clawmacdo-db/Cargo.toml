@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-db"
-version = "0.40.1"
+version = "0.41.0"
 edition = "2021"
 description = "Database operations and storage for ClawMacdo"
 
@@ -13,5 +13,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 
 clawmacdo-core = { workspace = true }
+
 
 

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
 use std::path::PathBuf;
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -35,11 +35,19 @@ fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> 
     bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
 }
 
+fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
+    match provider.as_deref() {
+        Some("lightsail") => "ubuntu",
+        _ => "root",
+    }
+}
+
 /// Configure the Telegram bot token on a deployed instance.
 /// SSHs in, updates .env, enables the telegram plugin, restarts the gateway,
 /// and runs `openclaw channels login --channel telegram` to trigger the pairing message.
 pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
-    let (ip, key, _provider) = find_deploy_record(query)?;
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Configuring Telegram bot on {ip}...");
@@ -53,7 +61,7 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
            echo 'TELEGRAM_BOT_TOKEN={bot_token}' >> {home}/.openclaw/.env; \
          fi && chmod 600 {home}/.openclaw/.env",
     );
-    ssh_as_openclaw_async(&ip, &key, &set_token_cmd).await?;
+    ssh_as_openclaw_with_user_async(&ip, &key, &set_token_cmd, ssh_user).await?;
 
     // Step 2: Enable telegram plugin
     println!("[2/4] Enabling Telegram plugin...");
@@ -62,7 +70,7 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
          export HOME=\"{home}\" && \
          (openclaw plugins enable telegram 2>&1 || true)",
     );
-    let enable_out = ssh_as_openclaw_async(&ip, &key, &enable_cmd).await?;
+    let enable_out = ssh_as_openclaw_with_user_async(&ip, &key, &enable_cmd, ssh_user).await?;
     if !enable_out.trim().is_empty() {
         println!("  {}", enable_out.trim());
     }
@@ -76,7 +84,7 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
          echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let restart_out = ssh_as_openclaw_async(&ip, &key, restart_cmd).await?;
+    let restart_out = ssh_as_openclaw_with_user_async(&ip, &key, restart_cmd, ssh_user).await?;
     println!("  {}", restart_out.trim());
 
     // Step 4: Trigger telegram login to get pairing code
@@ -91,7 +99,7 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
            openclaw channels login --channel telegram 2>&1 || true; \
          fi",
     );
-    let login_out = ssh_as_openclaw_async(&ip, &key, &login_cmd).await?;
+    let login_out = ssh_as_openclaw_with_user_async(&ip, &key, &login_cmd, ssh_user).await?;
     println!("\n{}", login_out.trim());
 
     println!("\nTelegram bot configured. Send /start to your bot to receive a pairing code.");
@@ -107,7 +115,8 @@ pub async fn approve_pairing(query: &str, code: &str) -> Result<()> {
         bail!("Invalid pairing code. Must be 8 alphanumeric characters.");
     }
 
-    let (ip, key, _provider) = find_deploy_record(query)?;
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Approving Telegram pairing code {code} on {ip}...");
@@ -119,7 +128,7 @@ pub async fn approve_pairing(query: &str, code: &str) -> Result<()> {
          openclaw pairing approve telegram {code} --notify 2>&1",
     );
 
-    let output = ssh_as_openclaw_async(&ip, &key, &cmd).await?;
+    let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     println!("{}", output.trim());
     println!("\nTelegram pairing approved. Send a message to your bot to start chatting.");
 

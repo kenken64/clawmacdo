@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
 use std::path::PathBuf;
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -34,10 +34,18 @@ fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> 
     bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
 }
 
+fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
+    match provider.as_deref() {
+        Some("lightsail") => "ubuntu",
+        _ => "root",
+    }
+}
+
 /// Enable WhatsApp channel on a deployed instance, set the phone number in .env,
 /// enable the whatsapp plugin, restart the gateway, and fetch the pairing QR code.
 pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
-    let (ip, key, _provider) = find_deploy_record(query)?;
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Setting up WhatsApp on {ip}...");
@@ -51,7 +59,7 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
            echo 'WHATSAPP_PHONE_NUMBER={phone_number}' >> {home}/.openclaw/.env; \
          fi && chmod 600 {home}/.openclaw/.env",
     );
-    ssh_as_openclaw_async(&ip, &key, &set_phone_cmd).await?;
+    ssh_as_openclaw_with_user_async(&ip, &key, &set_phone_cmd, ssh_user).await?;
 
     // Step 2: Enable whatsapp plugin
     println!("[2/4] Enabling WhatsApp plugin...");
@@ -60,7 +68,7 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
          export HOME=\"{home}\" && \
          (openclaw plugins enable whatsapp 2>&1 || true)",
     );
-    let enable_out = ssh_as_openclaw_async(&ip, &key, &enable_cmd).await?;
+    let enable_out = ssh_as_openclaw_with_user_async(&ip, &key, &enable_cmd, ssh_user).await?;
     if !enable_out.trim().is_empty() {
         println!("  {}", enable_out.trim());
     }
@@ -74,7 +82,7 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
          echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let restart_out = ssh_as_openclaw_async(&ip, &key, restart_cmd).await?;
+    let restart_out = ssh_as_openclaw_with_user_async(&ip, &key, restart_cmd, ssh_user).await?;
     println!("  {}", restart_out.trim());
 
     // Step 4: Fetch WhatsApp QR code for pairing
@@ -89,7 +97,7 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
            openclaw channels login --channel whatsapp 2>&1 || true; \
          fi",
     );
-    let qr_out = ssh_as_openclaw_async(&ip, &key, &qr_cmd).await?;
+    let qr_out = ssh_as_openclaw_with_user_async(&ip, &key, &qr_cmd, ssh_user).await?;
     println!("\n{}", qr_out.trim());
 
     println!("\nWhatsApp setup complete. Scan the QR code above with your WhatsApp app.");
@@ -100,7 +108,8 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
 
 /// Fetch the WhatsApp pairing QR code from a deployed instance.
 pub async fn fetch_qr(query: &str) -> Result<()> {
-    let (ip, key, _provider) = find_deploy_record(query)?;
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Fetching WhatsApp QR code from {ip}...");
@@ -115,7 +124,7 @@ pub async fn fetch_qr(query: &str) -> Result<()> {
            openclaw channels login --channel whatsapp 2>&1 || true; \
          fi",
     );
-    let qr_out = ssh_as_openclaw_async(&ip, &key, &qr_cmd).await?;
+    let qr_out = ssh_as_openclaw_with_user_async(&ip, &key, &qr_cmd, ssh_user).await?;
 
     let lowered = qr_out.to_ascii_lowercase();
     if lowered.contains("unsupported channel: whatsapp")
