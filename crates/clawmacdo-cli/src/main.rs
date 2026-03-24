@@ -446,6 +446,21 @@ enum Commands {
         #[arg(long, default_value = "", env = "BYTEPLUS_ARK_API_KEY")]
         byteplus_ark_api_key: String,
     },
+    /// Set up WhatsApp on a deployed instance (set phone number, enable plugin, fetch QR)
+    WhatsappSetup {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// WhatsApp phone number (with country code, e.g. +6512345678)
+        #[arg(long)]
+        phone_number: String,
+    },
+    /// Fetch the WhatsApp pairing QR code from a deployed instance
+    WhatsappQr {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
     /// Install an OpenClaw plugin on a deployed instance and restart the gateway
     PluginInstall {
         /// Deploy ID, hostname, or IP address of the instance
@@ -816,6 +831,13 @@ async fn main() -> anyhow::Result<()> {
                 byteplus_ark_api_key,
             })
             .await
+        }
+        Commands::WhatsappSetup {
+            instance,
+            phone_number,
+        } => commands::whatsapp_setup::setup(&instance, &phone_number).await,
+        Commands::WhatsappQr { instance } => {
+            commands::whatsapp_setup::fetch_qr(&instance).await
         }
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await

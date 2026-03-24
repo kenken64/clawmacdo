@@ -17,6 +17,8 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [funnel-on](#funnel-on) — Enable Tailscale Funnel on an instance
 - [funnel-off](#funnel-off) — Disable Tailscale Funnel on an instance
 - [device-approve](#device-approve) — Approve pending webchat device pairing requests
+- [whatsapp-setup](#whatsapp-setup) — Set up WhatsApp on a deployed instance
+- [whatsapp-qr](#whatsapp-qr) — Fetch WhatsApp pairing QR code
 - [skill-upload](#skill-upload) — Upload a SKILL.md to the skills API and instance
 - [skill-download](#skill-download) — Download a SKILL.md from the skills API
 - [skill-push](#skill-push) — Push a SKILL.md from the skills API to the instance
@@ -655,6 +657,86 @@ Approving Telegram pairing code VGUB4Z6K on 128.199.123.45...
 Pairing approved for user 123456789
 Telegram pairing approved. Send a message to your bot to start chatting.
 ```
+
+---
+
+## whatsapp-setup
+
+Set up WhatsApp on a deployed instance. Sets the phone number, enables the WhatsApp plugin, restarts the gateway, and fetches the pairing QR code.
+
+### Syntax
+
+```
+clawmacdo whatsapp-setup --instance <QUERY> --phone-number <PHONE>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--phone-number` | Yes | WhatsApp phone number with country code (e.g. `+6512345678`) |
+
+### What It Does
+
+1. Sets `WHATSAPP_PHONE_NUMBER` in `/home/openclaw/.openclaw/.env`
+2. Enables the WhatsApp plugin via `openclaw plugins enable whatsapp`
+3. Restarts the gateway service
+4. Runs `openclaw channels login --channel whatsapp` to display the pairing QR code (45s timeout)
+
+### Examples
+
+```bash
+clawmacdo whatsapp-setup --instance my-deploy --phone-number "+6512345678"
+
+clawmacdo whatsapp-setup --instance 52.221.247.33 --phone-number "+1234567890"
+```
+
+### Sample Output
+
+```
+Setting up WhatsApp on 52.221.247.33...
+[1/4] Setting WHATSAPP_PHONE_NUMBER in .env...
+[2/4] Enabling WhatsApp plugin...
+  Enabled plugin "whatsapp". Restart the gateway to apply.
+[3/4] Restarting gateway service...
+  gateway: active
+[4/4] Fetching WhatsApp pairing QR code...
+
+█▀▀▀▀▀▀▀█ ▀▀▀█▀ █▀▀▀▀▀▀▀█
+...
+
+WhatsApp setup complete. Scan the QR code above with your WhatsApp app.
+If the QR code expired, run: clawmacdo whatsapp-qr --instance my-deploy
+```
+
+---
+
+## whatsapp-qr
+
+Fetch the WhatsApp pairing QR code from a deployed instance. Use this to re-fetch the QR code if the previous one expired.
+
+### Syntax
+
+```
+clawmacdo whatsapp-qr --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### Examples
+
+```bash
+clawmacdo whatsapp-qr --instance my-deploy
+
+clawmacdo whatsapp-qr --instance 52.221.247.33
+```
+
+The command runs `openclaw channels login --channel whatsapp` on the remote instance with a 45-second timeout to capture the QR code output.
 
 ---
 
