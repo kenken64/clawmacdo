@@ -665,6 +665,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         &ip,
         &keypair.private_key_path,
         std::time::Duration::from_secs(300),
+        None,
     )
     .await
     .context("SSH did not become available within 5 minutes")?;
@@ -1041,6 +1042,7 @@ async fn run_byteplus(params: DeployParams) -> Result<DeployRecord> {
         &ip,
         &keypair.private_key_path,
         std::time::Duration::from_secs(300),
+        None,
     )
     .await
     .context("SSH did not become available within 5 minutes")?;
@@ -1374,9 +1376,14 @@ async fn deploy_steps_5_through_16(
     record_step_start(step_db, deploy_id, 6, "Waiting for SSH");
     progress::emit(tx, "\n[Step 6/16] Waiting for SSH...");
     let sp = ui::spinner("[Step 6/16] Waiting for SSH...");
-    ssh::wait_for_ssh(&ip, private_key_path, std::time::Duration::from_secs(300))
-        .await
-        .context("SSH did not become available within 5 minutes")?;
+    ssh::wait_for_ssh(
+        &ip,
+        private_key_path,
+        std::time::Duration::from_secs(300),
+        None,
+    )
+    .await
+    .context("SSH did not become available within 5 minutes")?;
     sp.finish_with_message("[Step 6/16] SSH ready");
     progress::emit(tx, "[Step 6/16] SSH ready");
     record_step_complete(step_db, deploy_id, 6);
@@ -1718,6 +1725,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
             ip,
             &keypair.private_key_path,
             std::time::Duration::from_secs(10),
+            Some("ubuntu"),
         )
         .await
         {
@@ -2136,6 +2144,7 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
             &ip,
             &keypair.private_key_path,
             std::time::Duration::from_secs(10),
+            Some("azureuser"),
         )
         .await
         {

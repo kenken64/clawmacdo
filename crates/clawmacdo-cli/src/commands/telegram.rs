@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_with_user_async, ssh_as_openclaw_with_user_multi_async,
+};
 use std::path::PathBuf;
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -52,8 +54,6 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
 
     println!("Configuring Telegram bot on {ip}...");
 
-    // Step 1: Update TELEGRAM_BOT_TOKEN in .env
-    println!("[1/4] Setting TELEGRAM_BOT_TOKEN in .env...");
     let set_token_cmd = format!(
         "if grep -q '^TELEGRAM_BOT_TOKEN=' {home}/.openclaw/.env 2>/dev/null; then \
            sed -i 's|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN={bot_token}|' {home}/.openclaw/.env; \
@@ -61,22 +61,11 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
            echo 'TELEGRAM_BOT_TOKEN={bot_token}' >> {home}/.openclaw/.env; \
          fi && chmod 600 {home}/.openclaw/.env",
     );
-    ssh_as_openclaw_with_user_async(&ip, &key, &set_token_cmd, ssh_user).await?;
-
-    // Step 2: Enable telegram plugin
-    println!("[2/4] Enabling Telegram plugin...");
     let enable_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          (openclaw plugins enable telegram 2>&1 || true)",
     );
-    let enable_out = ssh_as_openclaw_with_user_async(&ip, &key, &enable_cmd, ssh_user).await?;
-    if !enable_out.trim().is_empty() {
-        println!("  {}", enable_out.trim());
-    }
-
-    // Step 3: Restart gateway
-    println!("[3/4] Restarting gateway service...");
     let restart_cmd =
         "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
@@ -84,11 +73,6 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
          echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let restart_out = ssh_as_openclaw_with_user_async(&ip, &key, restart_cmd, ssh_user).await?;
-    println!("  {}", restart_out.trim());
-
-    // Step 4: Trigger telegram login to get pairing code
-    println!("[4/4] Starting Telegram channel login...");
     let login_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -99,8 +83,34 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
            openclaw channels login --channel telegram 2>&1 || true; \
          fi",
     );
-    let login_out = ssh_as_openclaw_with_user_async(&ip, &key, &login_cmd, ssh_user).await?;
-    println!("\n{}", login_out.trim());
+
+    // All 4 steps share one SSH session — one TCP connect + handshake instead of four.
+    println!("[1/4] Setting TELEGRAM_BOT_TOKEN in .env...");
+    println!("[2/4] Enabling Telegram plugin...");
+    println!("[3/4] Restarting gateway service...");
+    println!("[4/4] Starting Telegram channel login...");
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![
+            set_token_cmd,
+            enable_cmd,
+            restart_cmd.to_string(),
+            login_cmd,
+        ],
+        ssh_user,
+    )
+    .await?;
+
+    // outputs[0] = set_token (discard)
+    // outputs[1] = enable plugin
+    if !outputs[1].trim().is_empty() {
+        println!("  {}", outputs[1].trim());
+    }
+    // outputs[2] = restart gateway
+    println!("  {}", outputs[2].trim());
+    // outputs[3] = login
+    println!("\n{}", outputs[3].trim());
 
     println!("\nTelegram bot configured. Send /start to your bot to receive a pairing code.");
     println!("Then run: clawmacdo telegram pair --instance {query} --code <PAIRING_CODE>");
