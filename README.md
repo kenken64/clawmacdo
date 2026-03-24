@@ -21,6 +21,8 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 - **AWS credential passthrough** — web UI credentials are written to `~/.aws/credentials` so the AWS CLI uses them instead of stale local config
 - **Lightsail destroy with credentials** — destroy modal now prompts for AWS Access Key ID and Secret Access Key
 - **Lightsail snapshot listing** — credentials from the web UI are now passed through to the AWS CLI for snapshot listing
+- **`whatsapp-setup` subcommand** — set up WhatsApp on a deployed instance (set phone number, enable plugin, restart gateway, fetch pairing QR code)
+- **`whatsapp-qr` subcommand** — fetch the WhatsApp pairing QR code from a deployed instance (re-fetch if expired)
 - **`plugin-install` subcommand** — install OpenClaw plugins on deployed instances via `clawmacdo plugin-install --instance <id> --plugin @openguardrails/moltguard` (installs via pnpm, enables plugin, restarts gateway)
 - **Windows PowerShell scripts** — all shell scripts now have `.ps1` equivalents for Windows support (`release.ps1`, `npm-package.ps1`, `npm-publish.ps1`, scan scripts, etc.)
 - **Agent Docker Access warning** — deploy form shows the common Docker socket permission error with a clear fix instruction

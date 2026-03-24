@@ -27,3 +27,4 @@ pub mod track;
 pub mod update_ip;
 pub mod update_model;
 pub mod whatsapp;
+pub mod whatsapp_setup;
