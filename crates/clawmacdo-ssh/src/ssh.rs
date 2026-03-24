@@ -28,9 +28,10 @@ pub fn generate_keypair(deploy_id: &str) -> Result<KeyPair, AppError> {
     let private_path = keys_dir.join(format!("clawmacdo_{deploy_id}"));
     let pub_path = keys_dir.join(format!("clawmacdo_{deploy_id}.pub"));
 
-    // Generate RSA key in PEM format (universally supported by libssh2)
+    // Generate RSA key in PEM format (universally supported by libssh2).
+    // 2048-bit is sufficient for ephemeral deploy keys and generates ~4x faster than 4096.
     let status = std::process::Command::new("ssh-keygen")
-        .args(["-t", "rsa", "-b", "4096", "-m", "PEM", "-f"])
+        .args(["-t", "rsa", "-b", "2048", "-m", "PEM", "-f"])
         .arg(&private_path)
         .args(["-N", "", "-q"])
         .status()
@@ -167,6 +168,13 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
     let mut sess = Session::new().map_err(|e| AppError::Ssh(format!("Session::new: {e}")))?;
     sess.set_timeout(300_000); // 5 min timeout for SSH-level operations
     sess.set_tcp_stream(tcp);
+
+    // Prefer faster authenticated-encryption ciphers; libssh2 falls back if unsupported.
+    let fast_ciphers =
+        "chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-gcm@openssh.com,aes128-ctr,aes256-ctr,aes256-cbc";
+    let _ = sess.method_pref(ssh2::MethodType::CryptCs, fast_ciphers);
+    let _ = sess.method_pref(ssh2::MethodType::CryptSc, fast_ciphers);
+
     sess.handshake()
         .map_err(|e| AppError::Ssh(format!("SSH handshake with {ip}: {e}")))?;
 
@@ -273,6 +281,57 @@ pub fn exec(ip: &str, private_key_path: &Path, command: &str) -> Result<String, 
         .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
 
     read_command_output(channel)
+}
+
+/// Open one session and run multiple plain commands over it, each on its own channel.
+/// Saves TCP + handshake overhead compared to calling `exec_as` N times.
+pub fn exec_multi_as(
+    ip: &str,
+    key: &Path,
+    commands: &[&str],
+    username: &str,
+) -> Result<Vec<String>, AppError> {
+    let sess = connect_as(ip, key, username)?;
+    let mut results = Vec::with_capacity(commands.len());
+    for cmd in commands {
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+        channel
+            .exec(&format!("{{ {cmd}\n}} 2>&1"))
+            .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+        results.push(read_command_output(channel)?);
+    }
+    Ok(results)
+}
+
+/// Open one session and run multiple stdin-fed commands over it, each on its own channel.
+/// Each item is `(remote_command, stdin_bytes)`.
+/// Saves TCP + handshake overhead compared to calling `exec_with_input_as` N times.
+pub fn exec_multi_with_input_as(
+    ip: &str,
+    key: &Path,
+    items: &[(&str, &[u8])],
+    username: &str,
+) -> Result<Vec<String>, AppError> {
+    let sess = connect_as(ip, key, username)?;
+    let mut results = Vec::with_capacity(items.len());
+    for (remote_cmd, stdin_bytes) in items {
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+        channel
+            .exec(remote_cmd)
+            .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+        channel
+            .write_all(stdin_bytes)
+            .map_err(|e| AppError::Ssh(format!("Write stdin: {e}")))?;
+        channel
+            .send_eof()
+            .map_err(|e| AppError::Ssh(format!("Send EOF: {e}")))?;
+        results.push(read_command_output(channel)?);
+    }
+    Ok(results)
 }
 
 /// Upload a local file to the remote host via SCP as a specific user.
@@ -413,25 +472,31 @@ pub fn scp_download(
 }
 
 /// Wait for SSH to accept connections (retries every 5s).
-/// WWait for ssh.
+///
+/// `preferred_user` — when `Some`, only that user is tried (e.g. `"ubuntu"` for
+/// Lightsail, `"azureuser"` for Azure).  When `None`, falls back to trying
+/// `root` then `ubuntu` so providers without a known user still work.
 pub async fn wait_for_ssh(
     ip: &str,
     private_key_path: &Path,
     timeout: std::time::Duration,
+    preferred_user: Option<&str>,
 ) -> Result<(), AppError> {
     let start = std::time::Instant::now();
     let key = private_key_path.to_path_buf();
     let ip = ip.to_string();
+    let preferred_user = preferred_user.map(|s| s.to_string());
     loop {
         if start.elapsed() > timeout {
             return Err(AppError::Timeout("SSH to accept connections".into()));
         }
         let ip_clone = ip.clone();
         let key_clone = key.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            // Try root first, then ubuntu (Tencent Cloud default user)
-            exec(&ip_clone, &key_clone, "echo ok")
-                .or_else(|_| exec_as(&ip_clone, &key_clone, "echo ok", "ubuntu"))
+        let user_clone = preferred_user.clone();
+        let result = tokio::task::spawn_blocking(move || match user_clone.as_deref() {
+            Some(u) => exec_as(&ip_clone, &key_clone, "echo ok", u),
+            None => exec(&ip_clone, &key_clone, "echo ok")
+                .or_else(|_| exec_as(&ip_clone, &key_clone, "echo ok", "ubuntu")),
         })
         .await;
 

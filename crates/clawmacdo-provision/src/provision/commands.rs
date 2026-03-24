@@ -105,6 +105,44 @@ pub async fn ssh_as_openclaw_async(ip: &str, key: &Path, cmd: &str) -> Result<St
         .map_err(|e| AppError::Ssh(format!("spawn_blocking join: {e}")))?
 }
 
+/// Run multiple commands as the openclaw user over a single SSH session.
+/// Avoids repeated TCP + handshake overhead when executing several steps in sequence.
+pub fn ssh_as_openclaw_with_user_multi(
+    ip: &str,
+    key: &Path,
+    commands: &[&str],
+    ssh_user: &str,
+) -> Result<Vec<String>, AppError> {
+    let remote_cmd = if ssh_user == "root" {
+        "su - openclaw -s /bin/bash -c '/bin/bash -se'"
+    } else {
+        "sudo su - openclaw -s /bin/bash -c '/bin/bash -se'"
+    };
+    let items: Vec<(&str, &[u8])> = commands
+        .iter()
+        .map(|cmd| (remote_cmd, cmd.as_bytes()))
+        .collect();
+    ssh::exec_multi_with_input_as(ip, key, &items, ssh_user)
+}
+
+/// Async version of ssh_as_openclaw_with_user_multi.
+pub async fn ssh_as_openclaw_with_user_multi_async(
+    ip: &str,
+    key: &Path,
+    commands: Vec<String>,
+    ssh_user: &str,
+) -> Result<Vec<String>, AppError> {
+    let ip = ip.to_string();
+    let key = key.to_path_buf();
+    let ssh_user = ssh_user.to_string();
+    tokio::task::spawn_blocking(move || {
+        let cmd_refs: Vec<&str> = commands.iter().map(|s| s.as_str()).collect();
+        ssh_as_openclaw_with_user_multi(&ip, &key, &cmd_refs, &ssh_user)
+    })
+    .await
+    .map_err(|e| AppError::Ssh(format!("spawn_blocking join: {e}")))?
+}
+
 /// Async version of ssh_as_openclaw_with_user.
 pub async fn ssh_as_openclaw_with_user_async(
     ip: &str,

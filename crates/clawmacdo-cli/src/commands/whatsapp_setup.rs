@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_with_user_async, ssh_as_openclaw_with_user_multi_async,
+};
 use std::path::PathBuf;
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -50,8 +52,6 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
 
     println!("Setting up WhatsApp on {ip}...");
 
-    // Step 1: Set WHATSAPP_PHONE_NUMBER in .env
-    println!("[1/4] Setting WHATSAPP_PHONE_NUMBER in .env...");
     let set_phone_cmd = format!(
         "if grep -q '^WHATSAPP_PHONE_NUMBER=' {home}/.openclaw/.env 2>/dev/null; then \
            sed -i 's|^WHATSAPP_PHONE_NUMBER=.*|WHATSAPP_PHONE_NUMBER={phone_number}|' {home}/.openclaw/.env; \
@@ -59,22 +59,11 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
            echo 'WHATSAPP_PHONE_NUMBER={phone_number}' >> {home}/.openclaw/.env; \
          fi && chmod 600 {home}/.openclaw/.env",
     );
-    ssh_as_openclaw_with_user_async(&ip, &key, &set_phone_cmd, ssh_user).await?;
-
-    // Step 2: Enable whatsapp plugin
-    println!("[2/4] Enabling WhatsApp plugin...");
     let enable_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          (openclaw plugins enable whatsapp 2>&1 || true)",
     );
-    let enable_out = ssh_as_openclaw_with_user_async(&ip, &key, &enable_cmd, ssh_user).await?;
-    if !enable_out.trim().is_empty() {
-        println!("  {}", enable_out.trim());
-    }
-
-    // Step 3: Restart gateway
-    println!("[3/4] Restarting gateway service...");
     let restart_cmd =
         "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
@@ -82,11 +71,6 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
          echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let restart_out = ssh_as_openclaw_with_user_async(&ip, &key, restart_cmd, ssh_user).await?;
-    println!("  {}", restart_out.trim());
-
-    // Step 4: Fetch WhatsApp QR code for pairing
-    println!("[4/4] Fetching WhatsApp pairing QR code...");
     let qr_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -97,8 +81,29 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
            openclaw channels login --channel whatsapp 2>&1 || true; \
          fi",
     );
-    let qr_out = ssh_as_openclaw_with_user_async(&ip, &key, &qr_cmd, ssh_user).await?;
-    println!("\n{}", qr_out.trim());
+
+    // All 4 steps share one SSH session — one TCP connect + handshake instead of four.
+    println!("[1/4] Setting WHATSAPP_PHONE_NUMBER in .env...");
+    println!("[2/4] Enabling WhatsApp plugin...");
+    println!("[3/4] Restarting gateway service...");
+    println!("[4/4] Fetching WhatsApp pairing QR code...");
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![set_phone_cmd, enable_cmd, restart_cmd.to_string(), qr_cmd],
+        ssh_user,
+    )
+    .await?;
+
+    // outputs[0] = set_phone (discard)
+    // outputs[1] = enable plugin
+    if !outputs[1].trim().is_empty() {
+        println!("  {}", outputs[1].trim());
+    }
+    // outputs[2] = restart gateway
+    println!("  {}", outputs[2].trim());
+    // outputs[3] = QR code
+    println!("\n{}", outputs[3].trim());
 
     println!("\nWhatsApp setup complete. Scan the QR code above with your WhatsApp app.");
     println!("If the QR code expired, run: clawmacdo whatsapp-qr --instance {query}");
