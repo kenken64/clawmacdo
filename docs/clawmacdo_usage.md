@@ -24,6 +24,8 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
 - [update-model](#update-model) — Update the AI model on a deployed instance
+- [update-ip](#update-ip) — Refresh IP address from cloud provider
+- [plugin-install](#plugin-install) — Install an OpenClaw plugin on a deployed instance
 - [snapshot-restore-progress](#snapshot-restore-progress) — Progress tracking for snapshot/restore operations
 - [serve](#serve) — Start the web UI server
 - [Environment Variables](#environment-variables)
@@ -1547,6 +1549,121 @@ AI model updated on 192.168.1.100:
 
 ---
 
+## update-ip
+
+Refresh the IP address of a deployed instance by querying the cloud provider API. Useful after instance restarts on Lightsail (which assigns a new IP unless a static IP is attached).
+
+### Syntax
+
+```
+clawmacdo update-ip --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### What It Does
+
+1. Looks up the deploy record by ID, hostname, or IP
+2. Queries the cloud provider API (Lightsail, DigitalOcean, or BytePlus) by hostname to get the current public IP
+3. Updates the JSON deploy record (`~/.clawmacdo/deploys/<id>.json`)
+4. Updates the SQLite deployment database
+
+### Examples
+
+```bash
+# Refresh IP by deploy ID
+clawmacdo update-ip --instance 6ce6169b-fe55-4219-a1be-c1727085c206
+
+# Refresh IP by hostname
+clawmacdo update-ip --instance openclaw-6ce6169b
+
+# Refresh IP by old IP address
+clawmacdo update-ip --instance 54.251.9.134
+```
+
+### Sample Output
+
+```
+Looking up current IP for 'openclaw-6ce6169b' on lightsail...
+IP changed: 54.251.9.134 -> 52.221.247.33
+  Updated: /Users/you/.clawmacdo/deploys/6ce6169b.json
+  Updated: deployments.db
+
+Deploy record updated. New IP: 52.221.247.33
+```
+
+### Web UI
+
+The Deployments tab has a **"Refresh IP"** button for each instance that calls `POST /api/deployments/{id}/refresh-ip` and updates the table automatically.
+
+### Environment Variables
+
+| Provider | Required Env Vars |
+|----------|------------------|
+| Lightsail | Uses `~/.aws/credentials` |
+| DigitalOcean | `DO_TOKEN` |
+| BytePlus | `BYTEPLUS_ACCESS_KEY`, `BYTEPLUS_SECRET_KEY` |
+
+---
+
+## plugin-install
+
+Install an OpenClaw plugin on a deployed instance and restart the gateway.
+
+### Syntax
+
+```
+clawmacdo plugin-install --instance <QUERY> --plugin <PACKAGE>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--plugin` | Yes | npm package name (e.g. `@openguardrails/moltguard`) |
+
+### What It Does
+
+1. SSHs into the instance as the `openclaw` user
+2. Installs the plugin package via `pnpm add <package>` in `~/.openclaw`
+3. Enables the plugin via `openclaw plugins enable <name>`
+4. Restarts the gateway service to apply
+
+### Examples
+
+```bash
+# Install moltguard guardrails plugin
+clawmacdo plugin-install --instance my-deploy \
+  --plugin "@openguardrails/moltguard"
+
+# Install by IP address
+clawmacdo plugin-install --instance 52.221.247.33 \
+  --plugin "@openguardrails/moltguard"
+```
+
+### Sample Output
+
+```
+Installing plugin '@openguardrails/moltguard' on 52.221.247.33...
+[1/3] Installing plugin package...
+  dependencies:
+  + @openguardrails/moltguard 6.8.21
+  Done in 14.3s using pnpm v10.32.1
+[2/3] Enabling plugin...
+  Enabled plugin "moltguard". Restart the gateway to apply.
+[3/3] Restarting gateway service...
+  gateway: active
+
+Plugin '@openguardrails/moltguard' installed and gateway restarted on 52.221.247.33.
+```
+
+---
+
 ## snapshot-restore-progress
 
 Snapshot and restore operations now run asynchronously and return an `operation_id` immediately. Progress is streamed via Server-Sent Events (SSE).
@@ -1882,6 +1999,120 @@ curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/devices/approve \
 ```json
 {
   "approved": 2
+}
+```
+
+### POST /api/whatsapp/qr
+
+Fetch the WhatsApp pairing QR code from a deployed instance. SSHs into the instance and runs `openclaw channels login --channel whatsapp` with a 45-second timeout to capture the QR code output.
+
+```bash
+curl -X POST http://localhost:3456/api/whatsapp/qr \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "52.221.247.33",
+    "ssh_key_path": "/Users/you/.clawmacdo/keys/clawmacdo_abc123"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "QR code fetched.",
+  "qr_output": "█▀▀▀▀▀▀▀█ ▀▀▀█▀ █▀▀▀▀▀▀▀█\n..."
+}
+```
+
+### POST /api/whatsapp/repair
+
+Repair WhatsApp support on a deployed instance. Reinstalls the WhatsApp plugin, updates extensions, and restarts the gateway.
+
+```bash
+curl -X POST http://localhost:3456/api/whatsapp/repair \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "52.221.247.33",
+    "ssh_key_path": "/Users/you/.clawmacdo/keys/clawmacdo_abc123"
+  }'
+```
+
+### POST /api/deployments/{id}/whatsapp/qr
+
+Fetch the WhatsApp pairing QR code using a deployment ID (resolves IP and SSH key automatically from the deploy record).
+
+```bash
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/whatsapp/qr \
+  -H "Content-Type: application/json"
+```
+
+### POST /api/deployments/{id}/whatsapp/repair
+
+Repair WhatsApp support using a deployment ID.
+
+```bash
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/whatsapp/repair \
+  -H "Content-Type: application/json"
+```
+
+### POST /api/deployments/{id}/refresh-ip
+
+Refresh the IP address of a deployment by querying the cloud provider API (Lightsail, DigitalOcean). Updates both the JSON deploy record and SQLite database.
+
+```bash
+curl -X POST http://localhost:3456/api/deployments/a1b2c3d4/refresh-ip \
+  -H "Content-Type: application/json"
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "IP updated: 54.251.9.134 -> 52.221.247.33",
+  "ip": "52.221.247.33",
+  "old_ip": "54.251.9.134"
+}
+```
+
+### POST /api/agent/docker-fix
+
+Fix Docker socket permission errors on a deployed instance. Restarts the systemd user service manager, reinstalls the gateway with Docker group wrapper, and verifies sandbox access.
+
+```bash
+curl -X POST http://localhost:3456/api/agent/docker-fix \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ip": "52.221.247.33",
+    "ssh_key_path": "/Users/you/.clawmacdo/keys/clawmacdo_abc123"
+  }'
+```
+
+### GET /api/deploy/steps/{id}
+
+Get recorded deploy/operation steps from SQLite for progress polling.
+
+```bash
+curl http://localhost:3456/api/deploy/steps/a1b2c3d4
+```
+
+**Response:**
+
+```json
+{
+  "steps": [
+    {
+      "deploy_id": "a1b2c3d4",
+      "step_number": 1,
+      "total_steps": 16,
+      "label": "Validating AWS credentials",
+      "status": "completed",
+      "started_at": "2026-03-22T10:30:00",
+      "completed_at": "2026-03-22T10:30:01",
+      "error_msg": null
+    }
+  ]
 }
 ```
 
