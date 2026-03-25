@@ -1,17 +1,17 @@
 # Changelog
 
-## v0.44.2
+## v0.44.3
 
 ### Fixed
 - **No spurious "Azure/AWS CLI not found" warning on non-deploy commands** — the startup preflight check ran `ensure_az_cli()` and `ensure_aws_cli()` on every invocation (including `telegram-setup`, `telegram-pair`, etc.). Both functions are already called inside the relevant deploy handlers, so the redundant startup check has been removed.
 
-## v0.44.2
+## v0.44.3
 
 ### Fixed
 - **`telegram-setup` now updates `gateway.env`** — the systemd service loads credentials from `gateway.env` via `EnvironmentFile`; previously only `.env` was updated, so the running gateway kept polling with the old bot token. Both files are now updated atomically so the restarted gateway picks up the new token immediately.
 - **`telegram-setup` resets pairing state on re-run** — clears `telegram-pairing.json` and `update-offset-*.json` before applying the new bot token, so stale pairing requests from a previous bot are removed and users get a fresh pairing flow with the new bot.
 
-## v0.44.2
+## v0.44.3
 
 ### Added
 - **`do-snapshot` subcommand** — create a named DigitalOcean snapshot from an existing droplet by ID (`--do-token` + `--droplet-id` + `--snapshot-name`), with optional `--power-off` flag for clean shutdown/snapshot/power-on cycle
@@ -285,6 +285,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 

@@ -45,8 +45,9 @@ fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
 }
 
 /// Configure the Telegram bot token on a deployed instance.
-/// SSHs in, updates .env, enables the telegram plugin, restarts the gateway,
-/// and runs `openclaw channels login --channel telegram` to trigger the pairing message.
+/// SSHs in, resets pairing state, updates .env + gateway.env, enables the plugin,
+/// and restarts the gateway. The gateway reads the token from gateway.env automatically —
+/// no interactive `channels login` step is needed.
 pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
@@ -54,8 +55,8 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
 
     println!("Configuring Telegram bot on {ip}...");
 
-    // Wipe any pairing credentials and Telegram update offsets from a previous bot so
-    // the new bot starts with a clean slate (old pairing requests are useless for the new token).
+    // Wipe pairing credentials and update offsets from any previous bot so the new
+    // bot starts with a clean slate.
     let reset_cmd = format!(
         "rm -f {home}/.openclaw/credentials/telegram-pairing.json && \
          rm -f {home}/.openclaw/telegram/update-offset-*.json && \
@@ -74,21 +75,13 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
            fi; \
          done",
     );
-    // Install the Telegram plugin from npm non-interactively.
-    // `openclaw plugins install` launches an interactive TUI that cannot complete over SSH;
-    // install the npm package directly via pnpm (openclaw's bundled package manager) instead,
-    // then enable it. Fall back to the interactive install (piping option 2 = npm registry)
-    // if pnpm is unavailable.
-    let install_cmd = format!(
+    // Telegram is a stock bundled plugin — just enable it directly, no install needed.
+    let enable_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
-         if ! openclaw plugins list 2>/dev/null | grep -qi 'telegram'; then \
-           pnpm add --dir {home}/.openclaw @openclaw/telegram 2>&1 || \
-           npm install --prefix {home}/.openclaw @openclaw/telegram 2>&1 || \
-           printf '2\\n' | timeout 30s openclaw plugins install @openclaw/telegram 2>&1 || true; \
-         fi && \
          (openclaw plugins enable telegram 2>&1 || true)",
     );
+    // Restart the gateway so it picks up the new token from gateway.env.
     let restart_cmd =
         "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
@@ -96,48 +89,34 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
          echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let login_cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if command -v timeout >/dev/null 2>&1; then \
-           timeout 20s openclaw channels login --channel telegram 2>&1 || true; \
-         else \
-           openclaw channels login --channel telegram 2>&1 || true; \
-         fi",
-    );
 
-    // All 5 steps share one SSH session — one TCP connect + handshake.
-    println!("[1/5] Resetting pairing state for new bot...");
-    println!("[2/5] Setting TELEGRAM_BOT_TOKEN in .env and gateway.env...");
-    println!("[3/5] Installing/enabling Telegram plugin...");
-    println!("[4/5] Restarting gateway service...");
-    println!("[5/5] Starting Telegram channel login...");
+    // All 4 steps share one SSH session — one TCP connect + handshake.
+    println!("[1/4] Resetting pairing state for new bot...");
+    println!("[2/4] Setting TELEGRAM_BOT_TOKEN in .env and gateway.env...");
+    println!("[3/4] Enabling Telegram plugin...");
+    println!("[4/4] Restarting gateway service...");
     let outputs = ssh_as_openclaw_with_user_multi_async(
         &ip,
         &key,
         vec![
             reset_cmd,
             set_token_cmd,
-            install_cmd,
+            enable_cmd,
             restart_cmd.to_string(),
-            login_cmd,
         ],
         ssh_user,
     )
     .await?;
 
-    // outputs[0] = reset (print confirmation)
+    // outputs[0] = reset
     println!("  {}", outputs[0].trim());
     // outputs[1] = set_token (discard)
-    // outputs[2] = install/enable plugin
+    // outputs[2] = enable plugin
     if !outputs[2].trim().is_empty() {
         println!("  {}", outputs[2].trim());
     }
     // outputs[3] = restart gateway
     println!("  {}", outputs[3].trim());
-    // outputs[4] = login
-    println!("\n{}", outputs[4].trim());
 
     println!("\nTelegram bot configured. Send /start to your bot to receive a pairing code.");
     println!("Then run: clawmacdo telegram pair --instance {query} --code <PAIRING_CODE>");
