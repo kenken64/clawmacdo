@@ -1,0 +1,137 @@
+use anyhow::{bail, Result};
+use clawmacdo_core::config;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_multi_async;
+use std::path::{Path, PathBuf};
+
+const OPENCLAW_WORKSPACE: &str = "/home/openclaw/.openclaw/workspace";
+
+/// Look up a deploy record by hostname, IP, or deploy ID.
+/// Returns (ip, ssh_key_path, provider).
+fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> {
+    let deploys_dir = config::deploys_dir()?;
+    if !deploys_dir.exists() {
+        bail!("No deploy records found. Deploy an instance first.");
+    }
+
+    for entry in std::fs::read_dir(&deploys_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        let record: config::DeployRecord = match serde_json::from_str(&contents) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if record.id == query || record.hostname == query || record.ip_address == query {
+            let provider = record.provider.map(|p| p.to_string());
+            return Ok((
+                record.ip_address,
+                PathBuf::from(record.ssh_key_path),
+                provider,
+            ));
+        }
+    }
+
+    bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
+}
+
+fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
+    match provider.as_deref() {
+        Some("lightsail") => "ubuntu",
+        _ => "root",
+    }
+}
+
+/// Deploy a ZIP of OpenClaw skills to an instance.
+///
+/// Steps:
+/// 1. Validate and read the local ZIP file
+/// 2. SCP the ZIP to /tmp on the instance
+/// 3. Extract into ~/.openclaw/workspace/ (preserving directory structure)
+/// 4. Fix ownership/permissions
+/// 5. Restart the OpenClaw gateway
+pub async fn deploy(query: &str, zip_path: &Path) -> Result<()> {
+    // Validate file exists and is a zip
+    if !zip_path.exists() {
+        bail!("File not found: {}", zip_path.display());
+    }
+    let ext = zip_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "zip" {
+        bail!("File must be a .zip archive: {}", zip_path.display());
+    }
+
+    let zip_bytes = std::fs::read(zip_path)?;
+    if zip_bytes.len() < 4 || &zip_bytes[..4] != b"PK\x03\x04" {
+        bail!("Not a valid ZIP file: {}", zip_path.display());
+    }
+
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+
+    println!(
+        "Deploying skills from {} ({} bytes) to {ip}...",
+        zip_path.display(),
+        zip_bytes.len()
+    );
+
+    // Upload zip via SCP to a temp path accessible by root/ubuntu
+    let tmp_zip = "/tmp/openclaw-skills-upload.zip";
+    println!("[1/4] Uploading ZIP to instance...");
+    let scp_ip = ip.clone();
+    let scp_key = key.clone();
+    let scp_bytes = zip_bytes;
+    let scp_user = ssh_user.to_string();
+    tokio::task::spawn_blocking(move || {
+        clawmacdo_ssh::scp_upload_bytes(&scp_ip, &scp_key, &scp_bytes, tmp_zip, 0o644, &scp_user)
+    })
+    .await??;
+
+    // SSH steps: extract, fix perms, restart — single session
+    let extract_cmd = format!(
+        "unzip -o {tmp_zip} -d {OPENCLAW_WORKSPACE} 2>&1 && \
+         chown -R openclaw:openclaw {OPENCLAW_WORKSPACE} && \
+         find {OPENCLAW_WORKSPACE} -type f -name '*.md' -exec chmod 644 {{}} \\; && \
+         find {OPENCLAW_WORKSPACE} -type d -exec chmod 755 {{}} \\; && \
+         rm -f {tmp_zip} && \
+         echo 'extracted OK'"
+    );
+    let restart_cmd =
+        "export XDG_RUNTIME_DIR=/run/user/$(id -u openclaw) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u openclaw)/bus && \
+         (systemctl --user -M openclaw@ daemon-reload 2>/dev/null || \
+          runuser -l openclaw -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u) && systemctl --user daemon-reload' 2>/dev/null || true) && \
+         (systemctl --user -M openclaw@ restart openclaw-gateway.service 2>/dev/null || \
+          runuser -l openclaw -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u) && systemctl --user restart openclaw-gateway.service' 2>/dev/null || true) && \
+         sleep 2 && \
+         (runuser -l openclaw -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u) && systemctl --user is-active openclaw-gateway.service' 2>/dev/null || \
+          echo 'unknown') ";
+
+    println!("[2/4] Extracting skills to workspace...");
+    println!("[3/4] Fixing permissions...");
+    println!("[4/4] Restarting gateway...");
+
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![extract_cmd, restart_cmd.to_string()],
+        ssh_user,
+    )
+    .await?;
+
+    // outputs[0] = extract + perms
+    let extract_out = outputs[0].trim();
+    if extract_out.contains("extracted OK") {
+        println!("  Skills extracted to workspace.");
+    } else {
+        println!("  {extract_out}");
+    }
+
+    // outputs[1] = restart
+    println!("  gateway: {}", outputs[1].trim());
+
+    println!("\nSkills deployed to {ip}.");
+    println!("The gateway has been restarted and will pick up the new skills.");
+
+    Ok(())
+}
