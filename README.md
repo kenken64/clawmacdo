@@ -5,65 +5,17 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-For a full list of changes and new features, see [CHANGELOG.md](CHANGELOG.md).
-
-## Security Hardening
-
-- Privileged remote provisioning commands now run through stdin-fed shells instead of nested quoted `sudo` / `su -c` wrappers.
-- User-supplied hostnames are normalized and validated before any deploy flow uses them.
-- The web UI now only accepts backup archives from `~/.clawmacdo/backups` and SSH keys from `~/.clawmacdo/keys`.
-- Backup restore validates the local `.tar.gz` before upload and extracts remotely with `--no-same-owner` and `--no-same-permissions` into a dedicated restore directory.
-- The gateway service now reads `~/.openclaw/gateway.env` instead of the broader `.env`, so setup-only secrets such as `ANTHROPIC_SETUP_TOKEN` are not inherited by the long-running service.
-- Direct Docker-group access for `openclaw` has been removed. If sandbox mode is requested during deploy, the deploy now forces sandbox mode off until a safer non-root mediation path exists.
-- Lightsail credentials are passed only to the child AWS CLI processes instead of mutating process-global environment variables or writing `~/.aws/credentials`.
-- Tencent's optional security-group helper now takes SSH ingress from `CLAWMACDO_TENCENT_SSH_CIDR` and defaults to `127.0.0.1/32` instead of opening SSH to the world.
-
-See [docs/HIGH_SECURITY_FIXES.md](docs/HIGH_SECURITY_FIXES.md) for the finding-by-finding code map, rationale, and functionality impact.
-
-## 🏗️ Project Structure
-
-```
-clawmacdo/
-├── Cargo.toml              # Workspace configuration
-├── crates/                 # All crates in workspace
-│   ├── clawmacdo-cli/      # 🖥️  Main CLI binary & command orchestration
-│   ├── clawmacdo-core/     # 🔧  Config, errors, shared types
-│   ├── clawmacdo-cloud/    # ☁️   Cloud provider implementations
-│   ├── clawmacdo-provision/# 🔨  Server provisioning & setup logic
-│   ├── clawmacdo-db/       # 💾  Database operations & storage
-│   ├── clawmacdo-ssh/      # 🔑  SSH/SCP operations & key management
-│   └── clawmacdo-ui/       # 🎨  Web UI, progress bars, user prompts
-├── skills-data-api/        # 🧠  Node.js skills marketplace API (MongoDB)
-├── e2e/                    # 🧪  Playwright end-to-end test suite
-├── assets/                 # Static assets (mascot, etc.)
-└── docs/                   # Design docs and usage reference
-```
-
-### 📦 Crate Overview
-
-| Crate | Purpose | Dependencies |
-|-------|---------|--------------|
-| **clawmacdo-cli** | Main binary, command parsing, orchestration | All other crates |
-| **clawmacdo-core** | Configuration, errors, shared types | Minimal (serde, anyhow) |
-| **clawmacdo-cloud** | DigitalOcean, AWS Lightsail, Tencent Cloud & BytePlus APIs | reqwest, async-trait |
-| **clawmacdo-provision** | Server setup, package installation | SSH, Core, UI |
-| **clawmacdo-db** | SQLite operations, job tracking | rusqlite |
-| **clawmacdo-ssh** | SSH connections, file transfers | ssh2 |
-| **clawmacdo-ui** | Progress bars, web interface | indicatif, axum |
-
 ## Features
 
 - **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
-- **Backup** local `~/.openclaw/` config into a timestamped `.tar.gz`
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
-- **Snapshot restore**: create a DigitalOcean droplet from a snapshot by name, with deploy record saved to SQLite for web UI visibility
-- **Snapshot create**: create a named snapshot from an existing DigitalOcean droplet, with optional power-off for data consistency
+- **Snapshot & restore**: create and restore named snapshots for DigitalOcean, BytePlus, and AWS Lightsail
 - **Destroy**: delete an instance by name with confirmation, clean up SSH keys (cloud + local)
 - **Status**: list all openclaw-tagged instances with IPs
-- **List backups**: show local backup archives with sizes and dates
-- **Web UI**: Browser-based deploy interface with real-time SSE progress streaming (optional)
-- **Security groups**: Auto-create firewall rules on Tencent Cloud and BytePlus (SSH + HTTP/HTTPS + Gateway)
+- **Backup**: back up local `~/.openclaw/` config into a timestamped `.tar.gz`
+- **Web UI**: browser-based deploy interface with real-time SSE progress streaming (optional)
+- **Security groups**: auto-create firewall rules on Tencent Cloud and BytePlus (SSH + HTTP/HTTPS + Gateway)
 
 ## Supported Cloud Providers
 
@@ -135,97 +87,6 @@ cargo build --release --no-default-features --features aws-only
 | `digitalocean` | DigitalOcean provider support | ✅ |
 | `aws-only` | Lightsail-only build (no DO or Tencent) | ❌ |
 | `minimal` | CLI-only, no web UI or optional features | ❌ |
-
-## Programmatic Usage (Node.js)
-
-The npm package exports `getBinaryPath()` so you can call clawmacdo from Node.js scripts or automation tools.
-
-```bash
-npm install clawmacdo
-```
-
-```javascript
-const { execSync, spawn } = require("child_process");
-const { getBinaryPath } = require("clawmacdo");
-
-const bin = getBinaryPath(); // absolute path to the clawmacdo binary
-
-// --- Deploy a new instance ---
-const deploy = execSync(`${bin} deploy \
-  --provider lightsail \
-  --customer-name "my-openclaw" \
-  --customer-email "you@example.com" \
-  --aws-access-key-id "${process.env.AWS_ACCESS_KEY_ID}" \
-  --aws-secret-access-key "${process.env.AWS_SECRET_ACCESS_KEY}" \
-  --anthropic-key "${process.env.ANTHROPIC_API_KEY}" \
-  --primary-model anthropic \
-  --json`, { encoding: "utf8" });
-console.log(JSON.parse(deploy));
-
-// --- Track deploy progress (streaming) ---
-const track = spawn(bin, ["track", "<deploy-id>", "--follow", "--json"]);
-track.stdout.on("data", (chunk) => {
-  console.log("progress:", chunk.toString());
-});
-
-// --- Set up Telegram bot ---
-execSync(`${bin} telegram-setup \
-  --instance <deploy-id> \
-  --bot-token "${process.env.TELEGRAM_TOKEN}"`, { stdio: "inherit" });
-
-// --- Set up WhatsApp (displays QR code) ---
-execSync(`${bin} whatsapp-setup \
-  --instance <deploy-id> \
-  --phone-number "+6512345678"`, { stdio: "inherit" });
-
-// --- Fetch WhatsApp QR code ---
-const qr = execSync(`${bin} whatsapp-qr --instance <deploy-id>`, { encoding: "utf8" });
-console.log(qr); // ASCII QR code
-
-// --- Change AI model ---
-execSync(`${bin} update-model \
-  --instance <deploy-id> \
-  --primary-model openai \
-  --openai-key "${process.env.OPENAI_API_KEY}"`, { stdio: "inherit" });
-
-// --- Install a plugin ---
-execSync(`${bin} plugin-install \
-  --instance <deploy-id> \
-  --plugin "@openguardrails/moltguard"`, { stdio: "inherit" });
-
-// --- Refresh IP after restart ---
-execSync(`${bin} update-ip --instance <deploy-id>`, { stdio: "inherit" });
-
-// --- Create snapshot ---
-execSync(`${bin} do-snapshot \
-  --do-token "${process.env.DO_TOKEN}" \
-  --droplet-id 12345 \
-  --snapshot-name "my-backup"`, { stdio: "inherit" });
-
-// --- Restore from snapshot ---
-execSync(`${bin} do-restore \
-  --do-token "${process.env.DO_TOKEN}" \
-  --snapshot-name "my-backup"`, { stdio: "inherit" });
-
-// --- Destroy an instance ---
-execSync(`${bin} destroy \
-  --provider digitalocean \
-  --do-token "${process.env.DO_TOKEN}" \
-  --name "openclaw-abc123" --yes`, { stdio: "inherit" });
-
-// --- Start the web UI programmatically ---
-const server = spawn(bin, ["serve", "--port", "3456"], { stdio: "inherit" });
-```
-
-### TypeScript
-
-```typescript
-import { getBinaryPath } from "clawmacdo";
-import { execSync } from "child_process";
-
-const bin: string = getBinaryPath();
-execSync(`${bin} deploy --provider lightsail ...`, { stdio: "inherit" });
-```
 
 ## Quick Start (CLI)
 
@@ -451,27 +312,7 @@ export ARK_ENDPOINT_ID="ep-20260315233753-58rpv"
 clawmacdo ark-chat "Explain quantum computing in 3 sentences."
 ```
 
-### Restore DigitalOcean Droplet from Snapshot
-
-Create a new droplet from an existing DigitalOcean snapshot. The droplet name follows the standard `openclaw-{id}` naming convention.
-
-```bash
-# Restore from a snapshot by name
-clawmacdo do-restore \
-  --do-token "$DO_TOKEN" \
-  --snapshot-name "my-openclaw-snapshot"
-
-# With region and size overrides
-clawmacdo do-restore \
-  --do-token "$DO_TOKEN" \
-  --snapshot-name "my-openclaw-snapshot" \
-  --region nyc1 \
-  --size s-4vcpu-8gb
-```
-
-The command generates a new SSH key pair, looks up the snapshot by name, creates the droplet, waits for it to become active, and saves a deploy record for use with other `clawmacdo` commands.
-
-### Create a DigitalOcean Snapshot from a Droplet
+### Create a DigitalOcean Snapshot
 
 Create a named snapshot from an existing DigitalOcean droplet. Optionally shuts down the droplet first for a clean snapshot.
 
@@ -490,9 +331,25 @@ clawmacdo do-snapshot \
   --power-off
 ```
 
-The command verifies the droplet exists, optionally shuts it down, creates the snapshot, polls until complete, confirms the snapshot, and optionally powers the droplet back on.
+### Restore a DigitalOcean Droplet from Snapshot
 
-### Create a BytePlus Snapshot from an ECS Instance
+Create a new droplet from an existing DigitalOcean snapshot. The droplet name follows the standard `openclaw-{id}` naming convention.
+
+```bash
+# Restore from a snapshot by name
+clawmacdo do-restore \
+  --do-token "$DO_TOKEN" \
+  --snapshot-name "my-openclaw-snapshot"
+
+# With region and size overrides
+clawmacdo do-restore \
+  --do-token "$DO_TOKEN" \
+  --snapshot-name "my-openclaw-snapshot" \
+  --region nyc1 \
+  --size s-4vcpu-8gb
+```
+
+### Create a BytePlus Snapshot
 
 Create a named snapshot of a BytePlus ECS instance's system disk.
 
@@ -502,7 +359,7 @@ clawmacdo bp-snapshot \
   --snapshot-name "my-openclaw-backup"
 ```
 
-### Restore a BytePlus ECS Instance from a Snapshot
+### Restore a BytePlus ECS Instance from Snapshot
 
 Create a new instance from an existing BytePlus snapshot. This creates a custom image from the snapshot, then launches a new instance from that image.
 
@@ -529,7 +386,7 @@ clawmacdo ls-snapshot \
   --region ap-southeast-1
 ```
 
-### Restore a Lightsail Instance from a Snapshot
+### Restore a Lightsail Instance from Snapshot
 
 Create a new instance directly from an existing Lightsail snapshot.
 
@@ -677,6 +534,126 @@ clawmacdo status
 clawmacdo status --provider tencent
 ```
 
+## Programmatic Usage (Node.js)
+
+The npm package exports `getBinaryPath()` so you can call clawmacdo from Node.js scripts or automation tools.
+
+```bash
+npm install clawmacdo
+```
+
+```javascript
+const { execSync, spawn } = require("child_process");
+const { getBinaryPath } = require("clawmacdo");
+
+const bin = getBinaryPath(); // absolute path to the clawmacdo binary
+
+// --- Deploy a new instance ---
+const deploy = execSync(`${bin} deploy \
+  --provider lightsail \
+  --customer-name "my-openclaw" \
+  --customer-email "you@example.com" \
+  --aws-access-key-id "${process.env.AWS_ACCESS_KEY_ID}" \
+  --aws-secret-access-key "${process.env.AWS_SECRET_ACCESS_KEY}" \
+  --anthropic-key "${process.env.ANTHROPIC_API_KEY}" \
+  --primary-model anthropic \
+  --json`, { encoding: "utf8" });
+console.log(JSON.parse(deploy));
+
+// --- Track deploy progress (streaming) ---
+const track = spawn(bin, ["track", "<deploy-id>", "--follow", "--json"]);
+track.stdout.on("data", (chunk) => {
+  console.log("progress:", chunk.toString());
+});
+
+// --- Set up Telegram bot ---
+execSync(`${bin} telegram-setup \
+  --instance <deploy-id> \
+  --bot-token "${process.env.TELEGRAM_TOKEN}"`, { stdio: "inherit" });
+
+// --- Set up WhatsApp (displays QR code) ---
+execSync(`${bin} whatsapp-setup \
+  --instance <deploy-id> \
+  --phone-number "+6512345678"`, { stdio: "inherit" });
+
+// --- Fetch WhatsApp QR code ---
+const qr = execSync(`${bin} whatsapp-qr --instance <deploy-id>`, { encoding: "utf8" });
+console.log(qr); // ASCII QR code
+
+// --- Change AI model ---
+execSync(`${bin} update-model \
+  --instance <deploy-id> \
+  --primary-model openai \
+  --openai-key "${process.env.OPENAI_API_KEY}"`, { stdio: "inherit" });
+
+// --- Install a plugin ---
+execSync(`${bin} plugin-install \
+  --instance <deploy-id> \
+  --plugin "@openguardrails/moltguard"`, { stdio: "inherit" });
+
+// --- Refresh IP after restart ---
+execSync(`${bin} update-ip --instance <deploy-id>`, { stdio: "inherit" });
+
+// --- Create snapshot ---
+execSync(`${bin} do-snapshot \
+  --do-token "${process.env.DO_TOKEN}" \
+  --droplet-id 12345 \
+  --snapshot-name "my-backup"`, { stdio: "inherit" });
+
+// --- Restore from snapshot ---
+execSync(`${bin} do-restore \
+  --do-token "${process.env.DO_TOKEN}" \
+  --snapshot-name "my-backup"`, { stdio: "inherit" });
+
+// --- Destroy an instance ---
+execSync(`${bin} destroy \
+  --provider digitalocean \
+  --do-token "${process.env.DO_TOKEN}" \
+  --name "openclaw-abc123" --yes`, { stdio: "inherit" });
+
+// --- Start the web UI programmatically ---
+const server = spawn(bin, ["serve", "--port", "3456"], { stdio: "inherit" });
+```
+
+### TypeScript
+
+```typescript
+import { getBinaryPath } from "clawmacdo";
+import { execSync } from "child_process";
+
+const bin: string = getBinaryPath();
+execSync(`${bin} deploy --provider lightsail ...`, { stdio: "inherit" });
+```
+
+## Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DO_TOKEN` | DigitalOcean API token | For DO deploys |
+| `AWS_ACCESS_KEY_ID` | AWS IAM access key ID | For Lightsail deploys |
+| `AWS_SECRET_ACCESS_KEY` | AWS IAM secret access key | For Lightsail deploys |
+| `AWS_REGION` | AWS region (default: `us-east-1`) | For Lightsail deploys |
+| `TENCENT_SECRET_ID` | Tencent Cloud Secret ID | For Tencent deploys |
+| `TENCENT_SECRET_KEY` | Tencent Cloud Secret Key | For Tencent deploys |
+| `AZURE_TENANT_ID` | Azure AD tenant ID | For Azure deploys |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID | For Azure deploys |
+| `AZURE_CLIENT_ID` | Azure service principal client ID | For Azure deploys |
+| `AZURE_CLIENT_SECRET` | Azure service principal client secret | For Azure deploys |
+| `BYTEPLUS_ACCESS_KEY` | BytePlus Access Key | For BytePlus deploys |
+| `BYTEPLUS_SECRET_KEY` | BytePlus Secret Key | For BytePlus deploys |
+| `BYTEPLUS_ARK_API_KEY` | BytePlus ARK API key (for AI model inference) | For BytePlus ARK model |
+| `ARK_API_KEY` | ARK bearer token for `ark-chat` | For `ark-chat` |
+| `ARK_ENDPOINT_ID` | ARK endpoint ID for `ark-chat` | For `ark-chat` |
+| `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
+| `OPENAI_API_KEY` | OpenAI API key | Optional |
+| `TELEGRAM_TOKEN` | Telegram bot token | Optional |
+| `TAILSCALE_AUTH_KEY` | Tailscale auth key | Optional |
+| `CLAWMACDO_API_KEY` | API key protecting `/api/*` endpoints | Optional (Web UI) |
+| `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
+| `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
+| `SKILLS_API_URL` | Railway skills API base URL | For skill commands |
+| `USER_SKILLS_API_KEY` | API key for user-skills endpoints | For skill commands |
+
 ## Skills Data API
 
 The `skills-data-api/` directory contains a standalone Node.js/Express service for browsing and serving Claude Code skill marketplace data, backed by MongoDB.
@@ -715,6 +692,37 @@ docker run -p 3000:3000 \
 
 See [`skills-data-api/README.md`](skills-data-api/README.md) for full API documentation.
 
+## Project Structure
+
+```
+clawmacdo/
+├── Cargo.toml              # Workspace configuration
+├── crates/                 # All crates in workspace
+│   ├── clawmacdo-cli/      # 🖥️  Main CLI binary & command orchestration
+│   ├── clawmacdo-core/     # 🔧  Config, errors, shared types
+│   ├── clawmacdo-cloud/    # ☁️   Cloud provider implementations
+│   ├── clawmacdo-provision/# 🔨  Server provisioning & setup logic
+│   ├── clawmacdo-db/       # 💾  Database operations & storage
+│   ├── clawmacdo-ssh/      # 🔑  SSH/SCP operations & key management
+│   └── clawmacdo-ui/       # 🎨  Web UI, progress bars, user prompts
+├── skills-data-api/        # 🧠  Node.js skills marketplace API (MongoDB)
+├── e2e/                    # 🧪  Playwright end-to-end test suite
+├── assets/                 # Static assets (mascot, etc.)
+└── docs/                   # Design docs and usage reference
+```
+
+### Crate Overview
+
+| Crate | Purpose | Dependencies |
+|-------|---------|--------------|
+| **clawmacdo-cli** | Main binary, command parsing, orchestration | All other crates |
+| **clawmacdo-core** | Configuration, errors, shared types | Minimal (serde, anyhow) |
+| **clawmacdo-cloud** | DigitalOcean, AWS Lightsail, Tencent Cloud & BytePlus APIs | reqwest, async-trait |
+| **clawmacdo-provision** | Server setup, package installation | SSH, Core, UI |
+| **clawmacdo-db** | SQLite operations, job tracking | rusqlite |
+| **clawmacdo-ssh** | SSH connections, file transfers | ssh2 |
+| **clawmacdo-ui** | Progress bars, web interface | indicatif, axum |
+
 ## Development
 
 ### Workspace Commands
@@ -750,42 +758,13 @@ Then reference in individual crate:
 new-crate = { workspace = true }
 ```
 
-## Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DO_TOKEN` | DigitalOcean API token | For DO deploys |
-| `AWS_ACCESS_KEY_ID` | AWS IAM access key ID | For Lightsail deploys |
-| `AWS_SECRET_ACCESS_KEY` | AWS IAM secret access key | For Lightsail deploys |
-| `AWS_REGION` | AWS region (default: `us-east-1`) | For Lightsail deploys |
-| `TENCENT_SECRET_ID` | Tencent Cloud Secret ID | For Tencent deploys |
-| `TENCENT_SECRET_KEY` | Tencent Cloud Secret Key | For Tencent deploys |
-| `AZURE_TENANT_ID` | Azure AD tenant ID | For Azure deploys |
-| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID | For Azure deploys |
-| `AZURE_CLIENT_ID` | Azure service principal client ID | For Azure deploys |
-| `AZURE_CLIENT_SECRET` | Azure service principal client secret | For Azure deploys |
-| `BYTEPLUS_ACCESS_KEY` | BytePlus Access Key | For BytePlus deploys |
-| `BYTEPLUS_SECRET_KEY` | BytePlus Secret Key | For BytePlus deploys |
-| `BYTEPLUS_ARK_API_KEY` | BytePlus ARK API key (for AI model inference) | For BytePlus ARK model |
-| `ARK_API_KEY` | ARK bearer token for `ark-chat` | For `ark-chat` |
-| `ARK_ENDPOINT_ID` | ARK endpoint ID for `ark-chat` | For `ark-chat` |
-| `CLAUDE_API_KEY` | Anthropic Claude API key | Optional |
-| `OPENAI_API_KEY` | OpenAI API key | Optional |
-| `TELEGRAM_TOKEN` | Telegram bot token | Optional |
-| `TAILSCALE_AUTH_KEY` | Tailscale auth key | Optional |
-| `CLAWMACDO_API_KEY` | API key protecting `/api/*` endpoints | Optional (Web UI) |
-| `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
-| `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
-| `SKILLS_API_URL` | Railway skills API base URL | For skill commands |
-| `USER_SKILLS_API_KEY` | API key for user-skills endpoints | For skill commands |
-
 ## Architecture Notes
 
 The refactored workspace follows a **dependency hierarchy**:
 
 1. **clawmacdo-core** - Foundation (no internal deps)
 2. **clawmacdo-ssh** - Depends on core
-3. **clawmacdo-db** - Depends on core  
+3. **clawmacdo-db** - Depends on core
 4. **clawmacdo-ui** - Depends on core
 5. **clawmacdo-cloud** - Depends on core
 6. **clawmacdo-provision** - Depends on core, ssh, ui, cloud
@@ -801,11 +780,24 @@ This prevents circular dependencies and enables clean testing.
 - **Feature gates** for optional components
 - **Minimal Tokio features** (not "full")
 
+## Security Hardening
+
+- Privileged remote provisioning commands now run through stdin-fed shells instead of nested quoted `sudo` / `su -c` wrappers.
+- User-supplied hostnames are normalized and validated before any deploy flow uses them.
+- The web UI now only accepts backup archives from `~/.clawmacdo/backups` and SSH keys from `~/.clawmacdo/keys`.
+- Backup restore validates the local `.tar.gz` before upload and extracts remotely with `--no-same-owner` and `--no-same-permissions` into a dedicated restore directory.
+- The gateway service now reads `~/.openclaw/gateway.env` instead of the broader `.env`, so setup-only secrets such as `ANTHROPIC_SETUP_TOKEN` are not inherited by the long-running service.
+- Direct Docker-group access for `openclaw` has been removed. If sandbox mode is requested during deploy, the deploy now forces sandbox mode off until a safer non-root mediation path exists.
+- Lightsail credentials are passed only to the child AWS CLI processes instead of mutating process-global environment variables or writing `~/.aws/credentials`.
+- Tencent's optional security-group helper now takes SSH ingress from `CLAWMACDO_TENCENT_SSH_CIDR` and defaults to `127.0.0.1/32` instead of opening SSH to the world.
+
+See [docs/HIGH_SECURITY_FIXES.md](docs/HIGH_SECURITY_FIXES.md) for the finding-by-finding code map, rationale, and functionality impact.
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Add tests for new functionality  
+3. Add tests for new functionality
 4. Run `cargo clippy` and `cargo test`
 5. Submit a pull request
 
@@ -834,37 +826,14 @@ For licensing inquiries, contact: bunnyppl@gmail.com
 | [TanStack Progress Tracking](docs/tanstack-progress-tracking.md) | Frontend integration guide for TanStack (React Query) progress bars |
 | [Security Scan](docs/SECURITY_SCAN.md) | Security scanning CLI and vulnerability assessment |
 | [Security Flaw Evaluation](docs/EVAL_SECURITY_FLAW.md) | Security flaw evaluation report and findings |
-
-Security scan scripts always write their main outputs to the system temp directory and only mirror them into `/root/.openclaw/workspace` when that directory is accessible.
 | [High Security Fixes](docs/HIGH_SECURITY_FIXES.md) | Code-level remediation map for all HIGH findings |
 | [Tencent Cloud Plan](docs/TENCENT_PLAN.md) | Tencent Cloud provider support plan |
 | [Repository Guidelines](docs/AGENTS.md) | Contribution guidelines and repository conventions |
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Last updated:** March 19, 2026
-**Current version:** 0.50.0
-**Architecture version:** 2.0 (modular workspace)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+**Current version:** 0.50.0 | **Architecture version:** 2.0 (modular workspace)
