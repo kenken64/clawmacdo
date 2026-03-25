@@ -3394,7 +3394,9 @@ function syncModelSelectors(n) {
   const pDef = MODEL_DEFS[primary];
   html += '<div data-field="' + pDef.keyField + '">';
   html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + pDef.label + ' <span class="field-required-indicator text-red-400">*</span></label>';
-  html += '<div class="relative flex gap-2"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn();
+  // Wrap input+eye in its own relative div so the eye button sits inside the input
+  // regardless of whether the Generate button is present alongside it.
+  html += '<div class="flex gap-2"><div class="relative flex-1"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn() + '</div>';
   if (primary === 'byteplus') {
     html += '<button type="button" onclick="generateArkKey(' + n + ')" class="shrink-0 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors" title="Generate ARK API Key from BytePlus credentials">Generate</button>';
   }
