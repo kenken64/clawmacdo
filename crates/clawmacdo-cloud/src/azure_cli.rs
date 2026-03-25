@@ -9,6 +9,9 @@ use crate::cloud_provider::{CloudProvider, CreateInstanceParams, InstanceInfo, K
 /// On Windows, Azure CLI is installed to a fixed directory that may not be in the
 /// current process PATH (PATH changes only propagate to new processes).
 /// Probe the two known install locations and prepend the wbin dir to PATH if found.
+#[cfg(not(target_os = "windows"))]
+fn patch_az_path() {}
+
 #[cfg(target_os = "windows")]
 fn patch_az_path() {
     let candidates = [
