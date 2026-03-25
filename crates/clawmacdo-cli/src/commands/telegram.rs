@@ -124,6 +124,51 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
     Ok(())
 }
 
+/// Retrieve the Telegram chat ID from a deployed instance.
+/// Searches the openclaw credentials directory for the paired Telegram chat ID.
+pub async fn get_chat_id(query: &str) -> Result<()> {
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let home = config::OPENCLAW_HOME;
+
+    println!("Looking up Telegram chat ID on {ip}...");
+
+    // Search for Telegram chat ID in openclaw credentials and data directories
+    let cmd = format!(
+        "export HOME=\"{home}\" && \
+         found=0; \
+         for f in {home}/.openclaw/credentials/telegram*.json \
+                  {home}/.openclaw/data/telegram*.json \
+                  {home}/.openclaw/channels/telegram*.json; do \
+           if [ -f \"$f\" ]; then \
+             echo \"--- $f ---\"; \
+             cat \"$f\"; \
+             echo; \
+             found=1; \
+           fi; \
+         done; \
+         if [ \"$found\" = 0 ]; then \
+           echo 'No Telegram credential files found. Searching .openclaw for chat_id references...'; \
+           grep -r -l 'chat.id\\|chatId\\|chat_id\\|telegram' {home}/.openclaw/ 2>/dev/null | head -10 | while read -r match; do \
+             echo \"--- $match ---\"; \
+             cat \"$match\" 2>/dev/null; \
+             echo; \
+           done; \
+         fi",
+    );
+
+    let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
+    if output.trim().is_empty() {
+        println!(
+            "No Telegram chat ID found. Make sure Telegram is set up and paired on this instance."
+        );
+    } else {
+        println!("{}", output.trim());
+    }
+
+    Ok(())
+}
+
 /// Approve a Telegram pairing code on a deployed instance.
 pub async fn approve_pairing(query: &str, code: &str) -> Result<()> {
     let code = code.trim().to_ascii_uppercase();

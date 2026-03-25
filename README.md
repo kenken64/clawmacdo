@@ -5,13 +5,13 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.48.1
+## ✨ What's New in v0.49.0
 
 - **`skill-remove` subcommand** — delete a deployed skill by name from an instance's workspace and restart the gateway (`--instance` + `--skill`)
 - **`skill-list` subcommand** — list all skill directories on an instance with their gateway-registered name and readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill; add `--fix` to auto-correct to `openclaw:openclaw` / `644`/`755`
 
-## What's New in v0.48.1
+## What's New in v0.49.0
 
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an instance; reports files that are in-sync (✓), modified (≠), new locally (+), or only on instance (−); also shows gateway skill status
 
@@ -90,7 +90,7 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 ### Previous highlights (v0.13.x)
 - **`ark-api-key`** — Generate temporary BytePlus ARK API keys from access/secret credentials, or list endpoints with `--list`
 - **`ark-chat`** — Send prompts to BytePlus ARK models directly from the CLI
-- **`telegram-setup` / `telegram-pair`** — Configure and pair Telegram bots on deployed instances via SSH
+- **`telegram-setup` / `telegram-pair` / `telegram-chat-id`** — Configure, pair, and inspect Telegram bots on deployed instances via SSH
 - **Web UI destroy** — Destroy cloud instances directly from the Deployments tab with provider-specific credential prompts
 - **Detach mode improvements** — Proper `setsid()` session detachment, stdout/stderr logging to file
 - **Workspace path fix** — Automatic `/root/` → `/home/openclaw/` path correction during provisioning
@@ -349,6 +349,7 @@ clawmacdo track <deploy-id> --follow
 # Set up Telegram bot
 clawmacdo telegram-setup --instance <deploy-id> --bot-token "$TELEGRAM_TOKEN"
 clawmacdo telegram-pair --instance <deploy-id> --code <PAIRING_CODE>
+clawmacdo telegram-chat-id --instance <deploy-id>
 
 # Set up WhatsApp (displays QR code to scan)
 clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
@@ -945,7 +946,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.48.1
+**Current version:** 0.49.0
 **Architecture version:** 2.0 (modular workspace)
 
 

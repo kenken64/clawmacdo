@@ -13,6 +13,7 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [destroy](#destroy) — Destroy a deployed instance
 - [telegram-setup](#telegram-setup) — Configure Telegram bot on an instance
 - [telegram-pair](#telegram-pair) — Approve Telegram pairing code
+- [telegram-chat-id](#telegram-chat-id) — Retrieve Telegram chat ID from an instance
 - [tailscale-funnel](#tailscale-funnel) — Set up Tailscale Funnel for public HTTPS access
 - [funnel-on](#funnel-on) — Enable Tailscale Funnel on an instance
 - [funnel-off](#funnel-off) — Disable Tailscale Funnel on an instance
@@ -665,6 +666,50 @@ clawmacdo telegram-pair \
 Approving Telegram pairing code VGUB4Z6K on 128.199.123.45...
 Pairing approved for user 123456789
 Telegram pairing approved. Send a message to your bot to start chatting.
+```
+
+---
+
+## telegram-chat-id
+
+Retrieve the Telegram chat ID from a deployed instance. SSHs into the instance and searches the openclaw credentials and data directories for Telegram-related files containing the chat ID.
+
+### Syntax
+
+```
+clawmacdo telegram-chat-id --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### Examples
+
+```bash
+# Look up by deploy ID
+clawmacdo telegram-chat-id --instance abc123
+
+# Look up by hostname
+clawmacdo telegram-chat-id --instance my-instance.openclaw.dev
+
+# Look up by IP
+clawmacdo telegram-chat-id --instance 128.199.123.45
+```
+
+### Sample Output
+
+```
+Looking up Telegram chat ID on 52.77.236.5...
+--- /home/openclaw/.openclaw/credentials/telegram-default-allowFrom.json ---
+{
+  "version": 1,
+  "allowFrom": [
+    "7547736315"
+  ]
+}
 ```
 
 ---
