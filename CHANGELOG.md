@@ -1,13 +1,13 @@
 # Changelog
 
-## v0.48.0
+## v0.48.1
 
 ### Added
 - **`skill-remove` subcommand** — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
 - **`skill-list` subcommand** — list all skill directories deployed on an instance, resolved against the gateway-registered skill name from each `SKILL.md`, with readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill (`--instance` + `--skill`); reports any files not owned by `openclaw:openclaw` or with incorrect permissions (dirs `755`, files `644`); `--fix` flag auto-corrects in place
 
-## v0.48.0
+## v0.48.1
 
 ### Added
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
@@ -302,6 +302,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 
