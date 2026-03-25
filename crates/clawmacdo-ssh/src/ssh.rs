@@ -448,6 +448,66 @@ pub fn scp_upload_bytes(
     Ok(())
 }
 
+/// Upload in-memory bytes via SCP then run stdin-fed commands — all on one SSH session.
+/// Eliminates the extra TCP + handshake that separate scp_upload_bytes + exec_multi would require.
+pub fn scp_upload_bytes_and_exec_as(
+    ip: &str,
+    private_key_path: &Path,
+    data: &[u8],
+    remote_path: &str,
+    mode: i32,
+    commands: &[&str],
+    username: &str,
+) -> Result<Vec<String>, AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+
+    // --- SCP upload phase ---
+    {
+        let mut remote_file = sess
+            .scp_send(Path::new(remote_path), mode, data.len() as u64, None)
+            .map_err(|e| AppError::Ssh(format!("SCP send init: {e}")))?;
+        remote_file
+            .write_all(data)
+            .map_err(|e| AppError::Ssh(format!("SCP write: {e}")))?;
+        remote_file
+            .send_eof()
+            .map_err(|e| AppError::Ssh(format!("SCP send_eof: {e}")))?;
+        remote_file
+            .wait_eof()
+            .map_err(|e| AppError::Ssh(format!("SCP wait_eof: {e}")))?;
+        remote_file
+            .close()
+            .map_err(|e| AppError::Ssh(format!("SCP close: {e}")))?;
+        remote_file
+            .wait_close()
+            .map_err(|e| AppError::Ssh(format!("SCP wait_close: {e}")))?;
+    }
+
+    // --- Command execution phase (reusing same session) ---
+    let remote_cmd = if username == "root" {
+        "su - openclaw -s /bin/bash -c '/bin/bash -se'"
+    } else {
+        "sudo su - openclaw -s /bin/bash -c '/bin/bash -se'"
+    };
+    let mut results = Vec::with_capacity(commands.len());
+    for cmd in commands {
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+        channel
+            .exec(remote_cmd)
+            .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
+        channel
+            .write_all(cmd.as_bytes())
+            .map_err(|e| AppError::Ssh(format!("Write stdin: {e}")))?;
+        channel
+            .send_eof()
+            .map_err(|e| AppError::Ssh(format!("Send EOF: {e}")))?;
+        results.push(read_command_output(channel)?);
+    }
+    Ok(results)
+}
+
 /// Download a file from the remote host via SCP.
 /// SScp download.
 pub fn scp_download(

@@ -1,14 +1,17 @@
 # Changelog
 
-## v0.49.0
+## v0.50.0
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
-- **`skill-remove` subcommand** — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
+- **`skill-remove` subcommand**
+
+### Performance
+- **`skill-deploy` single-session optimization** — SCP upload, extraction, and gateway restart now share one SSH session (was two separate connections); extraction uses `unzip` instead of Python; permissions fixed in one `chmod -R` pass instead of two `find` walks; gateway restart polls for readiness instead of a fixed 2s sleep — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
 - **`skill-list` subcommand** — list all skill directories deployed on an instance, resolved against the gateway-registered skill name from each `SKILL.md`, with readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill (`--instance` + `--skill`); reports any files not owned by `openclaw:openclaw` or with incorrect permissions (dirs `755`, files `644`); `--fix` flag auto-corrects in place
 
-## v0.49.0
+## v0.50.0
 
 ### Added
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
