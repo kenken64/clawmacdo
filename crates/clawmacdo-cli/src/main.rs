@@ -499,8 +499,9 @@ enum Commands {
         /// Message to send to the agent (e.g. "What's happening today?")
         #[arg(long)]
         message: String,
-        /// Delivery channel for the response (telegram, whatsapp, discord …)
-        #[arg(long, default_value = "telegram")]
+        /// Delivery channel for the response (last, telegram, whatsapp, discord …)
+        /// Use "last" to deliver to whoever last messaged the bot (recommended).
+        #[arg(long, default_value = "last")]
         channel: String,
         /// Specific recipient (E.164 phone number or Telegram chat ID)
         #[arg(long)]
@@ -529,8 +530,9 @@ enum Commands {
         /// Arguments / context to pass to the tool
         #[arg(long, default_value = "")]
         args: String,
-        /// Delivery channel for the result (telegram, whatsapp, discord …)
-        #[arg(long, default_value = "telegram")]
+        /// Delivery channel for the result (last, telegram, whatsapp, discord …)
+        /// Use "last" to deliver to whoever last messaged the bot (recommended).
+        #[arg(long, default_value = "last")]
         channel: String,
         /// Specific recipient (E.164 phone number or Telegram chat ID)
         #[arg(long)]

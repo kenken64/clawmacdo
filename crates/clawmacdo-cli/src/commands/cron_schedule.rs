@@ -3,6 +3,8 @@ use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
 use std::path::PathBuf;
 
+const SESSIONS_FILE: &str = "/home/openclaw/.openclaw/agents/main/sessions/sessions.json";
+
 /// Look up a deploy record by hostname, IP, or deploy ID.
 /// Returns (ip, ssh_key_path, provider).
 fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> {
@@ -84,6 +86,98 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Read the sessions.json on the instance and return the most-recently-updated
+/// recipient for the given channel (e.g. "telegram" → "7547736315",
+/// "whatsapp" → "+6512345678").
+async fn lookup_channel_recipient(
+    ip: &str,
+    key: &std::path::Path,
+    ssh_user: &str,
+    channel: &str,
+) -> Result<String> {
+    let cmd = format!("cat {SESSIONS_FILE} 2>/dev/null || echo '{{}}'");
+    let raw = ssh_as_openclaw_with_user_async(ip, key, &cmd, ssh_user).await?;
+    let root: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| anyhow::anyhow!("Failed to parse sessions.json: {e}"))?;
+
+    let map = root
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("sessions.json is not a JSON object"))?;
+
+    // Find the most recently updated session for this channel
+    let mut best: Option<(u64, String)> = None;
+    for (_key, session) in map {
+        let last_channel = session
+            .get("lastChannel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if last_channel != channel {
+            continue;
+        }
+        let updated_at = session
+            .get("updatedAt")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let last_to = session.get("lastTo").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Strip channel prefix: "telegram:7547736315" → "7547736315"
+        let recipient = last_to
+            .strip_prefix(&format!("{channel}:"))
+            .unwrap_or(last_to)
+            .to_string();
+
+        if recipient.is_empty() {
+            continue;
+        }
+        if best
+            .as_ref()
+            .map(|(ts, _)| updated_at > *ts)
+            .unwrap_or(true)
+        {
+            best = Some((updated_at, recipient));
+        }
+    }
+
+    best.map(|(_, r)| r).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No '{channel}' session found on this instance. \
+             Make sure someone has messaged the bot first, or pass --to <chatId> manually."
+        )
+    })
+}
+
+/// Resolve the delivery `--to` argument: use the explicit value if provided,
+/// otherwise auto-lookup from sessions for telegram/whatsapp channels.
+async fn resolve_recipient(
+    ip: &str,
+    key: &std::path::Path,
+    ssh_user: &str,
+    channel: &str,
+    to: &Option<String>,
+) -> Result<Option<String>> {
+    if let Some(explicit) = to {
+        return Ok(Some(explicit.clone()));
+    }
+    // For "last" channel OpenClaw handles routing internally — no --to needed.
+    if channel == "last" {
+        return Ok(None);
+    }
+    // For telegram / whatsapp, auto-lookup the most recent session recipient.
+    if channel == "telegram" || channel == "whatsapp" {
+        match lookup_channel_recipient(ip, key, ssh_user, channel).await {
+            Ok(recipient) => {
+                println!("  Auto-detected {channel} recipient: {recipient}");
+                return Ok(Some(recipient));
+            }
+            Err(e) => {
+                eprintln!("  Warning: {e}");
+                eprintln!("  Falling back to channel routing without --to.");
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Add a scheduled message cron job on an OpenClaw instance.
 ///
 /// The gateway agent will receive the message on schedule and announce the
@@ -111,14 +205,13 @@ pub async fn add_message(
     println!("  Message: {message}");
     println!("  Channel: {channel}");
 
-    let cmd = build_cron_add_cmd(name, schedule, every, message, channel, to, true)?;
+    let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
+    let cmd = build_cron_add_cmd(name, schedule, every, message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let output = output.trim();
 
-    if output.contains("error") || output.contains("Error") {
-        println!("  {output}");
-    } else {
-        println!("  {output}");
+    println!("  {output}");
+    if !output.contains("error") && !output.contains("Error") {
         println!("\nCron job '{name}' created. The gateway will send the message on schedule");
         println!("and deliver the response to the '{channel}' channel.");
         println!("\nTip: run `clawmacdo cron-list --instance {query}` to see all jobs.");
@@ -176,7 +269,8 @@ pub async fn add_tool(p: AddToolParams<'_>) -> Result<()> {
     }
     println!("  Channel: {channel}");
 
-    let cmd = build_cron_add_cmd(name, schedule, every, &message, channel, to, true)?;
+    let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
+    let cmd = build_cron_add_cmd(name, schedule, every, &message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let output = output.trim();
 
