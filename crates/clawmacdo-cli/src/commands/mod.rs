@@ -21,6 +21,7 @@ pub mod scan_security;
 #[cfg(feature = "web-ui")]
 pub mod serve;
 pub mod skill;
+pub mod skill_deploy;
 pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;

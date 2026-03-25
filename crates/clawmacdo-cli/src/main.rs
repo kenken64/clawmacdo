@@ -461,6 +461,15 @@ enum Commands {
         #[arg(long)]
         instance: String,
     },
+    /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
+    SkillDeploy {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Path to the .zip file containing skills
+        #[arg(long)]
+        file: std::path::PathBuf,
+    },
     /// Install an OpenClaw plugin on a deployed instance and restart the gateway
     PluginInstall {
         /// Deploy ID, hostname, or IP address of the instance
@@ -641,6 +650,9 @@ async fn async_main() -> anyhow::Result<()> {
         } => commands::telegram::configure_bot(&instance, &bot_token).await,
         Commands::TelegramPair { instance, code } => {
             commands::telegram::approve_pairing(&instance, &code).await
+        }
+        Commands::SkillDeploy { instance, file } => {
+            commands::skill_deploy::deploy(&instance, &file).await
         }
         Commands::SkillUpload {
             instance,
