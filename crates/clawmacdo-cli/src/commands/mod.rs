@@ -24,6 +24,7 @@ pub mod serve;
 pub mod skill;
 pub mod skill_deploy;
 pub mod skill_diff;
+pub mod skill_remove;
 pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;

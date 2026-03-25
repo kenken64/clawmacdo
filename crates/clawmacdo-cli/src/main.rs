@@ -479,6 +479,33 @@ enum Commands {
         #[arg(long)]
         dir: std::path::PathBuf,
     },
+    /// Remove a deployed skill from the instance workspace and restart the gateway
+    SkillRemove {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Name of the skill directory to remove (e.g. newsclaw-skills)
+        #[arg(long)]
+        skill: String,
+    },
+    /// List all skill directories deployed on an instance
+    SkillList {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Check (and optionally fix) file ownership and permissions for a deployed skill
+    SkillCheckPerms {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Name of the skill to check (e.g. newsclaw-skills)
+        #[arg(long)]
+        skill: String,
+        /// Automatically fix any ownership/permission issues found
+        #[arg(long)]
+        fix: bool,
+    },
     /// Install an OpenClaw plugin on a deployed instance and restart the gateway
     PluginInstall {
         /// Deploy ID, hostname, or IP address of the instance
@@ -738,6 +765,15 @@ async fn async_main() -> anyhow::Result<()> {
             commands::skill_deploy::deploy(&instance, &file).await
         }
         Commands::SkillDiff { instance, dir } => commands::skill_diff::diff(&instance, &dir).await,
+        Commands::SkillRemove { instance, skill } => {
+            commands::skill_remove::remove(&instance, &skill).await
+        }
+        Commands::SkillList { instance } => commands::skill_remove::list(&instance).await,
+        Commands::SkillCheckPerms {
+            instance,
+            skill,
+            fix,
+        } => commands::skill_remove::check_permissions(&instance, &skill, fix).await,
         Commands::SkillUpload {
             instance,
             file,

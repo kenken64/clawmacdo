@@ -5,7 +5,13 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.47.0
+## ✨ What's New in v0.48.0
+
+- **`skill-remove` subcommand** — delete a deployed skill by name from an instance's workspace and restart the gateway (`--instance` + `--skill`)
+- **`skill-list` subcommand** — list all skill directories on an instance with their gateway-registered name and readiness status
+- **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill; add `--fix` to auto-correct to `openclaw:openclaw` / `644`/`755`
+
+## What's New in v0.48.0
 
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an instance; reports files that are in-sync (✓), modified (≠), new locally (+), or only on instance (−); also shows gateway skill status
 
@@ -939,8 +945,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.47.0
+**Current version:** 0.48.0
 **Architecture version:** 2.0 (modular workspace)
+
 
 
 
