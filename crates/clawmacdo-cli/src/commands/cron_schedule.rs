@@ -210,22 +210,53 @@ pub async fn list(query: &str) -> Result<()> {
 }
 
 /// Remove a cron job by name from an OpenClaw instance.
+///
+/// Lists jobs first to resolve the name to an ID, then removes by ID.
 pub async fn remove(query: &str, name: &str) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
-    println!("Removing cron job '{name}' from {ip}...");
+    println!("Looking up cron job '{name}' on {ip}...");
 
-    let cmd = format!(
+    // Resolve name → ID
+    let list_cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
+         export HOME=\"{home}\" && \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         openclaw cron list --json 2>&1"
+    );
+    let list_out = ssh_as_openclaw_with_user_async(&ip, &key, &list_cmd, ssh_user).await?;
+    let job_id = parse_job_id_by_name(&list_out, name)?;
+
+    println!("Removing cron job '{name}' (id: {job_id})...");
+
+    let rm_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          openclaw cron rm {} 2>&1",
-        shell_escape(name)
+        shell_escape(&job_id)
     );
-
-    let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
+    let output = ssh_as_openclaw_with_user_async(&ip, &key, &rm_cmd, ssh_user).await?;
     println!("{}", output.trim());
     Ok(())
+}
+
+fn parse_job_id_by_name(json_out: &str, name: &str) -> Result<String> {
+    // `openclaw cron list --json` outputs {"jobs": [...]}
+    let root: serde_json::Value = serde_json::from_str(json_out.trim())
+        .map_err(|e| anyhow::anyhow!("Failed to parse cron list output: {e}\n{json_out}"))?;
+    let arr = root
+        .get("jobs")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("Expected {{\"jobs\":[...]}} from cron list"))?;
+    for job in arr {
+        if job.get("name").and_then(|v| v.as_str()) == Some(name) {
+            if let Some(id) = job.get("id").and_then(|v| v.as_str()) {
+                return Ok(id.to_string());
+            }
+        }
+    }
+    bail!("No cron job named '{name}' found on this instance");
 }
