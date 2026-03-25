@@ -5,17 +5,24 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.44.4
+## ✨ What's New in v0.46.0
+
+- **`cron-message` subcommand** — schedule a recurring message to the OpenClaw gateway agent; the agent processes it and delivers the response to Telegram, WhatsApp, or any other connected channel (uses `openclaw cron add` under the hood)
+- **`cron-tool` subcommand** — schedule recurring tool execution on a deployed instance; the agent runs the named tool and announces the result to the chosen channel
+- **`cron-list` subcommand** — list all cron jobs on a deployed instance
+- **`cron-remove` subcommand** — remove a cron job by name from a deployed instance
+
+## What's New in v0.46.0
 
 - **`skill-deploy` subcommand** — upload a `.zip` of OpenClaw skills to a deployed instance; extracts into `~/.openclaw/workspace/` and restarts the gateway automatically
 
-## What's New in v0.45.0
+## What's New in v0.46.0
 
 - **No spurious CLI warnings on non-deploy commands** — `telegram-setup`, `telegram-pair`, and other SSH-only commands no longer print "Azure/AWS CLI not found" at startup; provider CLI checks now run only when deploying to that provider
 - **`telegram-setup` `gateway.env` fix** — bot token is now written to both `.env` and `gateway.env`; the systemd gateway service loads `gateway.env` via `EnvironmentFile`, so previously a re-run with a new token left the running service polling with the old bot
 - **`telegram-setup` resets pairing state** — clears previous bot's pairing credentials and update offsets before reconfiguring, giving users a clean pairing flow with the new bot
 
-## What's New in v0.45.0
+## What's New in v0.46.0
 
 - **SSH performance** — `telegram-setup` and `whatsapp-setup` reuse a single SSH session for all 4 steps (one TCP connect + handshake instead of four); cipher negotiation now prefers faster AEAD ciphers (`chacha20-poly1305`, `aes128-gcm`); ephemeral deploy keys use RSA-2048 instead of RSA-4096 (~4× faster key generation); `wait_for_ssh` no longer probes wrong users on Lightsail (`ubuntu`) and Azure (`azureuser`)
 - **Telegram/WhatsApp Lightsail fix** — `telegram-setup`, `telegram-pair`, `whatsapp-setup`, and `whatsapp-qr` now SSH as `ubuntu` (not `root`) on Lightsail instances
@@ -931,8 +938,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.45.0
+**Current version:** 0.46.0
 **Architecture version:** 2.0 (modular workspace)
+
 
 
 

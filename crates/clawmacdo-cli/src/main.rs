@@ -479,6 +479,78 @@ enum Commands {
         #[arg(long)]
         plugin: String,
     },
+    /// Add a scheduled message cron job on an OpenClaw instance
+    ///
+    /// The gateway agent receives the message on schedule and delivers the
+    /// response to the chosen channel (telegram, whatsapp, etc.).
+    CronMessage {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Unique job name
+        #[arg(long)]
+        name: String,
+        /// Cron expression (5-field, e.g. "0 9 * * *" for 9 AM daily)
+        #[arg(long)]
+        schedule: Option<String>,
+        /// Run every duration instead of a cron expression (e.g. 30m, 1h, 6h)
+        #[arg(long)]
+        every: Option<String>,
+        /// Message to send to the agent (e.g. "What's happening today?")
+        #[arg(long)]
+        message: String,
+        /// Delivery channel for the response (telegram, whatsapp, discord …)
+        #[arg(long, default_value = "telegram")]
+        channel: String,
+        /// Specific recipient (E.164 phone number or Telegram chat ID)
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Add a scheduled tool-execution cron job on an OpenClaw instance
+    ///
+    /// Asks the gateway agent to run a specific installed tool on schedule and
+    /// deliver the result to the chosen channel.
+    CronTool {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Unique job name
+        #[arg(long)]
+        name: String,
+        /// Cron expression (5-field, e.g. "0 * * * *" for every hour)
+        #[arg(long)]
+        schedule: Option<String>,
+        /// Run every duration instead of a cron expression (e.g. 30m, 1h, 6h)
+        #[arg(long)]
+        every: Option<String>,
+        /// Tool name to execute (as installed on the instance)
+        #[arg(long)]
+        tool: String,
+        /// Arguments / context to pass to the tool
+        #[arg(long, default_value = "")]
+        args: String,
+        /// Delivery channel for the result (telegram, whatsapp, discord …)
+        #[arg(long, default_value = "telegram")]
+        channel: String,
+        /// Specific recipient (E.164 phone number or Telegram chat ID)
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// List all cron jobs on an OpenClaw instance
+    CronList {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Remove a cron job by name from an OpenClaw instance
+    CronRemove {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Job name to remove
+        #[arg(long)]
+        name: String,
+    },
     /// Refresh the IP address of a deployed instance from the cloud provider
     UpdateIp {
         /// Deploy ID, hostname, or IP address of the instance
@@ -847,6 +919,46 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::WhatsappQr { instance } => commands::whatsapp_setup::fetch_qr(&instance).await,
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await
+        }
+        Commands::CronMessage {
+            instance,
+            name,
+            schedule,
+            every,
+            message,
+            channel,
+            to,
+        } => {
+            commands::cron_schedule::add_message(
+                &instance, &name, &schedule, &every, &message, &channel, &to,
+            )
+            .await
+        }
+        Commands::CronTool {
+            instance,
+            name,
+            schedule,
+            every,
+            tool,
+            args,
+            channel,
+            to,
+        } => {
+            commands::cron_schedule::add_tool(commands::cron_schedule::AddToolParams {
+                query: &instance,
+                name: &name,
+                schedule: &schedule,
+                every: &every,
+                tool: &tool,
+                args: &args,
+                channel: &channel,
+                to: &to,
+            })
+            .await
+        }
+        Commands::CronList { instance } => commands::cron_schedule::list(&instance).await,
+        Commands::CronRemove { instance, name } => {
+            commands::cron_schedule::remove(&instance, &name).await
         }
         Commands::UpdateIp { instance } => commands::update_ip::run(&instance).await,
         #[cfg(feature = "web-ui")]
