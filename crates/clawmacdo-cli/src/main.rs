@@ -470,6 +470,15 @@ enum Commands {
         #[arg(long)]
         file: std::path::PathBuf,
     },
+    /// Check drift between a local skill directory and the deployed skill on an instance
+    SkillDiff {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Path to the local skill directory (e.g. ./newsclaw-skills)
+        #[arg(long)]
+        dir: std::path::PathBuf,
+    },
     /// Install an OpenClaw plugin on a deployed instance and restart the gateway
     PluginInstall {
         /// Deploy ID, hostname, or IP address of the instance
@@ -728,6 +737,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::SkillDeploy { instance, file } => {
             commands::skill_deploy::deploy(&instance, &file).await
         }
+        Commands::SkillDiff { instance, dir } => commands::skill_diff::diff(&instance, &dir).await,
         Commands::SkillUpload {
             instance,
             file,
