@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cli"
-version = "0.48.0"
+version = "0.48.1"
 edition = "2021"
 description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
 
@@ -58,6 +58,7 @@ clawmacdo-ui = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
 
 
 

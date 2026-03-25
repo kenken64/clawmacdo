@@ -22,6 +22,15 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [skill-upload](#skill-upload) — Upload a SKILL.md to the skills API and instance
 - [skill-download](#skill-download) — Download a SKILL.md from the skills API
 - [skill-push](#skill-push) — Push a SKILL.md from the skills API to the instance
+- [skill-deploy](#skill-deploy) — Upload a skill ZIP to an instance and restart the gateway
+- [skill-diff](#skill-diff) — Check drift between local skill dir and deployed instance
+- [skill-remove](#skill-remove) — Remove a deployed skill from an instance
+- [skill-list](#skill-list) — List all deployed skills on an instance
+- [skill-check-perms](#skill-check-perms) — Audit and fix skill file permissions
+- [cron-message](#cron-message) — Schedule a recurring message via the OpenClaw gateway
+- [cron-tool](#cron-tool) — Schedule recurring tool execution on an instance
+- [cron-list](#cron-list) — List cron jobs on an instance
+- [cron-remove](#cron-remove) — Remove a cron job by name
 - [ark-api-key](#ark-api-key) — Generate BytePlus ARK API key or list endpoints
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
@@ -1028,6 +1037,400 @@ Pushing SKILL.md from Railway to instance 128.199.123.45...
   SKILL.md deployed to instance.
 
 Done! SKILL.md pushed to instance 128.199.123.45.
+```
+
+---
+
+## skill-deploy
+
+Upload a ZIP archive of OpenClaw skills to a deployed instance. Extracts the archive into `~/.openclaw/workspace/skills/`, fixes file ownership and permissions, and restarts the gateway automatically.
+
+### Syntax
+
+```
+clawmacdo skill-deploy --instance <QUERY> --file <ZIP_PATH>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--file` | Yes | Path to the `.zip` file containing the skill directory |
+
+### What It Does
+
+1. SCPs the ZIP to `/tmp/` on the instance
+2. Extracts using Python (normalises Windows backslash paths in ZIP entries)
+3. Sets `openclaw:openclaw` ownership and `644`/`755` permissions
+4. Restarts the gateway service
+
+### Examples
+
+```bash
+# Zip and deploy a skill directory
+cd ~/projects
+pwsh -Command "Compress-Archive -Force -Path newsclaw-skills -DestinationPath newsclaw-skills.zip"
+
+clawmacdo skill-deploy \
+  --instance 54.255.201.139 \
+  --file ./newsclaw-skills.zip
+```
+
+### Sample Output
+
+```
+Deploying skills from newsclaw-skills.zip to 54.255.201.139...
+[1/3] Uploading archive...
+  Uploaded to /tmp/openclaw-skills-upload.zip
+[2/3] Extracting on instance...
+  extracted OK
+  permissions OK
+[3/3] Restarting gateway...
+  active
+
+Skills deployed to 54.255.201.139.
+```
+
+---
+
+## skill-diff
+
+Compare a local skill directory against the deployed skill on an instance using SHA-256 checksums. Reports files that are in-sync, modified, new locally, or only on the instance.
+
+### Syntax
+
+```
+clawmacdo skill-diff --instance <QUERY> --dir <LOCAL_DIR>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--dir` | Yes | Path to the local skill directory |
+
+### Output Legend
+
+| Symbol | Meaning |
+|--------|---------|
+| `✓` | File is identical on both sides |
+| `≠` | File exists on both but content differs |
+| `+` | File exists locally but not on instance |
+| `−` | File exists on instance but not locally |
+
+### Examples
+
+```bash
+clawmacdo skill-diff \
+  --instance 54.255.201.139 \
+  --dir ./newsclaw-skills
+```
+
+### Sample Output
+
+```
+Checking drift for 'newsclaw-skills' on 54.255.201.139...
+
+  ✓  SKILL.md
+  ✓  README.md
+
+2/2 files in sync — No drift.
+
+Gateway status:
+  ✓ ready │ openclaw-workspace  newsclaw
+```
+
+---
+
+## skill-remove
+
+Delete a deployed skill directory from an instance's workspace and restart the gateway.
+
+### Syntax
+
+```
+clawmacdo skill-remove --instance <QUERY> --skill <SKILL_NAME>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--skill` | Yes | Name of the skill directory to remove (e.g. `newsclaw-skills`) |
+
+### Examples
+
+```bash
+# Remove a skill, then redeploy a fresh copy
+clawmacdo skill-remove --instance 54.255.201.139 --skill newsclaw-skills
+clawmacdo skill-deploy  --instance 54.255.201.139 --file ./newsclaw-skills.zip
+```
+
+### Sample Output
+
+```
+Removing skill 'newsclaw-skills' from 54.255.201.139...
+  Path: /home/openclaw/.openclaw/workspace/skills/newsclaw-skills
+  Skill directory deleted.
+  gateway: active
+
+Skill 'newsclaw-skills' removed from 54.255.201.139.
+The gateway has been restarted.
+```
+
+---
+
+## skill-list
+
+List all skill directories currently deployed on an instance, resolving each directory's gateway-registered name from its `SKILL.md` and showing readiness status.
+
+### Syntax
+
+```
+clawmacdo skill-list --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### Examples
+
+```bash
+clawmacdo skill-list --instance 54.255.201.139
+```
+
+### Sample Output
+
+```
+Skills deployed on 54.255.201.139:
+  Directory: /home/openclaw/.openclaw/workspace/skills
+
+  • newsclaw-skills  (name: newsclaw)  [ready]
+```
+
+---
+
+## skill-check-perms
+
+Audit file ownership and permissions for a deployed skill. Reports any files not owned by `openclaw:openclaw` or with incorrect permissions (directories `755`, files `644`). Use `--fix` to auto-correct in place.
+
+### Syntax
+
+```
+clawmacdo skill-check-perms --instance <QUERY> --skill <SKILL_NAME> [--fix]
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--skill` | Yes | Name of the skill directory to audit |
+| `--fix` | No | Automatically correct ownership and permissions |
+
+### Examples
+
+```bash
+# Audit only
+clawmacdo skill-check-perms \
+  --instance 54.255.201.139 \
+  --skill newsclaw-skills
+
+# Audit and fix
+clawmacdo skill-check-perms \
+  --instance 54.255.201.139 \
+  --skill newsclaw-skills \
+  --fix
+```
+
+### Sample Output
+
+```
+Checking permissions for 'newsclaw-skills' on 54.255.201.139...
+  Path: /home/openclaw/.openclaw/workspace/skills/newsclaw-skills
+
+  ✓  newsclaw-skills  drwxr-xr-x  openclaw:openclaw
+  ✓  SKILL.md         -rw-r--r--  openclaw:openclaw
+  ✓  README.md        -rw-r--r--  openclaw:openclaw
+
+  All permissions OK.
+```
+
+---
+
+## cron-message
+
+Schedule a recurring message to be sent to the OpenClaw gateway agent on a deployed instance. The agent processes the message and delivers its response to Telegram, WhatsApp, or the last active channel. Uses `openclaw cron add` under the hood.
+
+The Telegram chat ID is automatically looked up from the instance's `sessions.json` — no need to supply it manually.
+
+### Syntax
+
+```
+clawmacdo cron-message --instance <QUERY> --name <JOB_NAME> --message <TEXT> [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--instance` | Yes | — | Deploy ID, hostname, or IP address |
+| `--name` | Yes | — | Unique name for the cron job |
+| `--message` | Yes | — | Message text to send on each trigger |
+| `--cron` | No | — | Cron expression (e.g. `0 0 * * *` for 8 AM SGT) |
+| `--every` | No | — | Interval shorthand (e.g. `5m`, `1h`) |
+| `--channel` | No | `last` | Delivery channel: `telegram`, `whatsapp`, or `last` |
+| `--to` | No | — | Explicit recipient ID (auto-resolved if omitted) |
+| `--announce` | No | — | Announce channel override |
+
+Either `--cron` or `--every` must be provided.
+
+### Examples
+
+```bash
+# Schedule Singapore daily news at 8 AM SGT (UTC+8 = 00:00 UTC)
+clawmacdo cron-message \
+  --instance 54.255.201.139 \
+  --name sg-daily-news \
+  --message "what is new today on singapore, provide me the url source link" \
+  --cron "0 0 * * *" \
+  --channel telegram
+
+# Schedule every 5 minutes (for testing)
+clawmacdo cron-message \
+  --instance 54.255.201.139 \
+  --name test-ping \
+  --message "hello" \
+  --every 5m \
+  --channel telegram
+```
+
+### Sample Output
+
+```
+Scheduling cron message 'sg-daily-news' on 54.255.201.139...
+  Message : what is new today on singapore, provide me the url source link
+  Schedule: 0 0 * * *
+  Channel : telegram → 7547736315
+Added cron job 'sg-daily-news'.
+```
+
+---
+
+## cron-tool
+
+Schedule recurring tool execution on a deployed OpenClaw instance. The agent runs the named tool with the provided arguments and announces the result to the chosen channel.
+
+### Syntax
+
+```
+clawmacdo cron-tool --instance <QUERY> --name <JOB_NAME> --tool <TOOL_NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--instance` | Yes | — | Deploy ID, hostname, or IP address |
+| `--name` | Yes | — | Unique name for the cron job |
+| `--tool` | Yes | — | Tool name to invoke |
+| `--args` | No | — | Arguments to pass to the tool |
+| `--cron` | No | — | Cron expression |
+| `--every` | No | — | Interval shorthand (e.g. `1h`) |
+| `--channel` | No | `last` | Delivery channel: `telegram`, `whatsapp`, or `last` |
+| `--to` | No | — | Explicit recipient ID (auto-resolved if omitted) |
+| `--announce` | No | — | Announce channel override |
+
+### Examples
+
+```bash
+# Run a weather tool every hour and post to Telegram
+clawmacdo cron-tool \
+  --instance 54.255.201.139 \
+  --name hourly-weather \
+  --tool weather \
+  --args "Singapore" \
+  --every 1h \
+  --channel telegram
+```
+
+---
+
+## cron-list
+
+List all cron jobs currently scheduled on a deployed instance.
+
+### Syntax
+
+```
+clawmacdo cron-list --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### Examples
+
+```bash
+clawmacdo cron-list --instance 54.255.201.139
+```
+
+### Sample Output
+
+```json
+{
+  "jobs": [
+    {
+      "id": "abc123",
+      "name": "sg-daily-news",
+      "cron": "0 0 * * *",
+      "message": "what is new today on singapore, provide me the url source link",
+      "channel": "telegram",
+      "to": "7547736315"
+    }
+  ]
+}
+```
+
+---
+
+## cron-remove
+
+Remove a cron job by name from a deployed instance. Looks up the job ID automatically from the cron list before removing.
+
+### Syntax
+
+```
+clawmacdo cron-remove --instance <QUERY> --name <JOB_NAME>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--name` | Yes | Name of the cron job to remove |
+
+### Examples
+
+```bash
+clawmacdo cron-remove --instance 54.255.201.139 --name sg-daily-news
+```
+
+### Sample Output
+
+```
+Removing cron job 'sg-daily-news' from 54.255.201.139...
+Removed cron job 'sg-daily-news' (id: abc123).
 ```
 
 ---
