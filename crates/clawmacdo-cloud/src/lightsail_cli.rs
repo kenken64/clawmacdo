@@ -8,6 +8,9 @@ use crate::cloud_provider::{CloudProvider, CreateInstanceParams, InstanceInfo, K
 
 /// On Windows, AWS CLI v2 installs to a fixed directory that may not be in the
 /// current process PATH.  Probe the known install location and prepend it if found.
+#[cfg(not(target_os = "windows"))]
+fn patch_aws_path() {}
+
 #[cfg(target_os = "windows")]
 fn patch_aws_path() {
     let candidates = [
