@@ -1,6 +1,6 @@
 {
   "name": "@clawmacdo/win32-x64",
-  "version": "0.46.3",
+  "version": "0.46.4",
   "description": "clawmacdo binary for Windows x86_64",
   "license": "MIT",
   "repository": {
