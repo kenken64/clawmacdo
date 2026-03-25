@@ -7,6 +7,7 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 
 ## ✨ What's New in v0.49.0
 
+- **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
 - **`skill-remove` subcommand** — delete a deployed skill by name from an instance's workspace and restart the gateway (`--instance` + `--skill`)
 - **`skill-list` subcommand** — list all skill directories on an instance with their gateway-registered name and readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill; add `--fix` to auto-correct to `openclaw:openclaw` / `644`/`755`
