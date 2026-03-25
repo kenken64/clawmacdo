@@ -485,25 +485,7 @@ enum Commands {
     },
 }
 
-/// Check that required external CLIs are installed for compiled-in providers.
-/// Auto-installs missing CLIs when possible (brew on macOS, official scripts on Linux).
-fn preflight_cli_checks() {
-    #[cfg(feature = "lightsail")]
-    {
-        if let Err(e) = clawmacdo_cloud::lightsail_cli::ensure_aws_cli() {
-            eprintln!("Warning: AWS CLI prerequisite check failed: {e}");
-        }
-    }
-    #[cfg(feature = "azure")]
-    {
-        if let Err(e) = clawmacdo_cloud::azure_cli::ensure_az_cli() {
-            eprintln!("Warning: Azure CLI prerequisite check failed: {e}");
-        }
-    }
-}
-
 fn main() -> anyhow::Result<()> {
-    preflight_cli_checks();
     // Windows default stack (1 MB) is too small for complex async futures and Axum's
     // large router type.  Spawn on a thread with 8 MB to match Linux behaviour.
     std::thread::Builder::new()
