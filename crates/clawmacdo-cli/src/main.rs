@@ -502,10 +502,24 @@ fn preflight_cli_checks() {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     preflight_cli_checks();
+    // Windows default stack (1 MB) is too small for complex async futures and Axum's
+    // large router type.  Spawn on a thread with 8 MB to match Linux behaviour.
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime")
+                .block_on(async_main())
+        })?
+        .join()
+        .map_err(|_| anyhow::anyhow!("Main thread panicked"))?
+}
 
+async fn async_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
