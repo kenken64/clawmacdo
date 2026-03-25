@@ -16,6 +16,38 @@
 ### Added
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
 
+## v0.46.4
+
+### Added
+- **SSH performance** — `telegram-setup` and `whatsapp-setup` reuse a single SSH session for all 4 steps (one TCP connect + handshake instead of four); cipher negotiation now prefers faster AEAD ciphers (`chacha20-poly1305`, `aes128-gcm`); ephemeral deploy keys use RSA-2048 instead of RSA-4096 (~4× faster key generation); `wait_for_ssh` no longer probes wrong users on Lightsail (`ubuntu`) and Azure (`azureuser`)
+- **Telegram/WhatsApp Lightsail fix** — `telegram-setup`, `telegram-pair`, `whatsapp-setup`, and `whatsapp-qr` now SSH as `ubuntu` (not `root`) on Lightsail instances
+- **`update-model` subcommand** — change the AI model on a running OpenClaw instance without redeploying (updates API keys, provider config, model settings, and restarts the gateway)
+- **`update-ip` subcommand** — refresh the IP address of a deployed instance from the cloud provider API (Lightsail, DigitalOcean, BytePlus) and update both JSON deploy record and SQLite
+- **Refresh IP button** — new "Refresh IP" button in Deployments tab queries the cloud provider and updates the IP in-place
+- **Deployments action dropdown** — deployment row actions now open in a stacked menu so controls stay readable instead of overlapping in narrow tables
+- **Deployments table fit** — deployments table now uses a tighter fixed layout with wrapped cell content to avoid left-right scrolling in the tab
+- **Funnel actions in dropdown** — the Deployments tab now handles the two-step funnel flow from the Actions menu: first toggle funnel on/off, then open the funnel URL once it becomes available
+- **Snapshot/restore progress tracking** — snapshot and restore operations are now async with step-by-step progress via SSE; the frontend can display real-time progress bars using `GET /api/deploy/{operation_id}/events`
+- **Deploy progress in Deployments tab** — running deployments show an animated progress bar with current step label, polling every 3 seconds
+- **Funnel verification** — toggling funnel ON now polls the funnel status with a progress bar before showing the Open button
+- **`cron-message` subcommand** — schedule a recurring message to the OpenClaw gateway agent; the agent processes it and delivers the response to Telegram, WhatsApp, or any other connected channel (uses `openclaw cron add` under the hood)
+- **`cron-tool` subcommand** — schedule recurring tool execution on a deployed instance; the agent runs the named tool and announces the result to the chosen channel
+- **`cron-list` subcommand** — list all cron jobs on a deployed instance
+- **`cron-remove` subcommand** — remove a cron job by name from a deployed instance
+- **`whatsapp-setup` subcommand** — set up WhatsApp on a deployed instance (set phone number, enable plugin, restart gateway, fetch pairing QR code)
+- **`whatsapp-qr` subcommand** — fetch the WhatsApp pairing QR code from a deployed instance (re-fetch if expired)
+- **`plugin-install` subcommand** — install OpenClaw plugins on deployed instances via `clawmacdo plugin-install --instance <id> --plugin @openguardrails/moltguard` (installs via pnpm, enables plugin, restarts gateway)
+- **Windows PowerShell scripts** — all shell scripts now have `.ps1` equivalents for Windows support (`release.ps1`, `npm-package.ps1`, `npm-publish.ps1`, scan scripts, etc.)
+- **Agent Docker Access warning** — deploy form shows the common Docker socket permission error with a clear fix instruction
+- **Dual license** — switched from MIT to GPLv3 (open source) + Commercial (proprietary) dual license model
+
+### Fixed
+- **Docker fix: systemd user manager restart** — "Fix Agent Docker Access" now restarts the systemd user service manager so the gateway picks up the docker group
+- **`KillMode=control-group`** — gateway service now kills the entire cgroup on restart, preventing orphaned child processes from holding the port
+- **AWS credential passthrough** — web UI credentials are written to `~/.aws/credentials` so the AWS CLI uses them instead of stale local config
+- **Lightsail destroy with credentials** — destroy modal now prompts for AWS Access Key ID and Secret Access Key
+- **Lightsail snapshot listing** — credentials from the web UI are now passed through to the AWS CLI for snapshot listing
+
 ## v0.44.4
 
 ### Added
