@@ -4,7 +4,8 @@ use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_multi_async;
 use std::path::{Path, PathBuf};
 
-const OPENCLAW_WORKSPACE: &str = "/home/openclaw/.openclaw/workspace";
+// Gateway auto-discovers workspace skills from the skills/ subdirectory of the workspace.
+const OPENCLAW_WORKSPACE: &str = "/home/openclaw/.openclaw/workspace/skills";
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
 /// Returns (ip, ssh_key_path, provider).
