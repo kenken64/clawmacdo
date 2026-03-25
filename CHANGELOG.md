@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.47.0
+
+### Added
+- **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
+
 ## v0.44.4
 
 ### Added
@@ -290,6 +295,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 

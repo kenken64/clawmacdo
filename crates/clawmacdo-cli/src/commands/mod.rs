@@ -23,6 +23,7 @@ pub mod scan_security;
 pub mod serve;
 pub mod skill;
 pub mod skill_deploy;
+pub mod skill_diff;
 pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;
