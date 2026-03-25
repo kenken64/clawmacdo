@@ -6,10 +6,38 @@ use tokio::time::{sleep, Duration, Instant};
 
 use crate::cloud_provider::{CloudProvider, CreateInstanceParams, InstanceInfo, KeyInfo};
 
+/// On Windows, Azure CLI is installed to a fixed directory that may not be in the
+/// current process PATH (PATH changes only propagate to new processes).
+/// Probe the two known install locations and prepend the wbin dir to PATH if found.
+#[cfg(target_os = "windows")]
+fn patch_az_path() {
+    let candidates = [
+        r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin",
+        r"C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin",
+    ];
+    for dir in &candidates {
+        if std::path::Path::new(dir).exists() {
+            let current = std::env::var("PATH").unwrap_or_default();
+            if !current
+                .to_ascii_lowercase()
+                .contains(&dir.to_ascii_lowercase())
+            {
+                std::env::set_var("PATH", format!("{dir};{current}"));
+            }
+            break;
+        }
+    }
+}
+
 /// Check that the Azure CLI is installed, and attempt to install it automatically
 /// if it is missing.  Returns `Ok(())` when the CLI is available, or an error
 /// describing what went wrong.
 pub fn ensure_az_cli() -> Result<(), AppError> {
+    // On Windows, az may already be installed but not in the current process PATH.
+    // Patch PATH with the known install directory before the first probe.
+    #[cfg(target_os = "windows")]
+    patch_az_path();
+
     if Command::new("az")
         .arg("--version")
         .output()
@@ -22,11 +50,19 @@ pub fn ensure_az_cli() -> Result<(), AppError> {
     eprintln!("Azure CLI not found — attempting auto-install...");
 
     let installed = if cfg!(target_os = "macos") {
+        // `brew upgrade` installs if missing and upgrades if present; always gets latest.
         Command::new("brew")
-            .args(["install", "azure-cli"])
+            .args(["upgrade", "azure-cli"])
             .status()
             .map(|s| s.success())
-            .unwrap_or(false)
+            .unwrap_or_else(|_| {
+                // brew not found — try install as fallback
+                Command::new("brew")
+                    .args(["install", "azure-cli"])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            })
     } else if cfg!(target_os = "linux") {
         Command::new("sh")
             .args([
@@ -37,10 +73,15 @@ pub fn ensure_az_cli() -> Result<(), AppError> {
             .map(|s| s.success())
             .unwrap_or(false)
     } else if cfg!(target_os = "windows") {
-        // Try winget first (built into Windows 10/11)
-        let via_winget = Command::new("winget")
+        // Try winget first (built into Windows 10/11).
+        // winget returns a non-zero exit code when the package is already at the
+        // latest version ("No available upgrade found"), so check the output text
+        // as well as the exit code.
+        // Use `winget upgrade` so we always get the latest release.
+        // Falls back to `winget install` if upgrade reports nothing to do.
+        let winget_ok = Command::new("winget")
             .args([
-                "install",
+                "upgrade",
                 "-e",
                 "--id",
                 "Microsoft.AzureCLI",
@@ -48,14 +89,27 @@ pub fn ensure_az_cli() -> Result<(), AppError> {
                 "--accept-package-agreements",
                 "--accept-source-agreements",
             ])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|out| {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let combined = format!("{stdout}{stderr}");
+                out.status.success()
+                    || combined.contains("already installed")
+                    || combined.contains("No available upgrade")
+                    || combined.contains("No applicable upgrade")
+                    || combined.contains("Successfully installed")
+                    || combined.contains("Successfully upgraded")
+            })
             .unwrap_or(false);
-        if via_winget {
+
+        if winget_ok {
+            // winget confirmed az is on disk; patch PATH so this process can find it.
+            patch_az_path();
             true
         } else {
-            // Fallback: download and run the official MSI via PowerShell
-            Command::new("powershell")
+            // Fallback: download and run the official MSI via PowerShell.
+            let msi_ok = Command::new("powershell")
                 .args([
                     "-NoProfile",
                     "-NonInteractive",
@@ -69,7 +123,11 @@ pub fn ensure_az_cli() -> Result<(), AppError> {
                 ])
                 .status()
                 .map(|s| s.success())
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if msi_ok {
+                patch_az_path();
+            }
+            msi_ok
         }
     } else {
         false

@@ -5,7 +5,7 @@
 
 Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
 
-## ✨ What's New in v0.42.0
+## ✨ What's New in v0.43.0
 
 - **SSH performance** — `telegram-setup` and `whatsapp-setup` reuse a single SSH session for all 4 steps (one TCP connect + handshake instead of four); cipher negotiation now prefers faster AEAD ciphers (`chacha20-poly1305`, `aes128-gcm`); ephemeral deploy keys use RSA-2048 instead of RSA-4096 (~4× faster key generation); `wait_for_ssh` no longer probes wrong users on Lightsail (`ubuntu`) and Azure (`azureuser`)
 - **Telegram/WhatsApp Lightsail fix** — `telegram-setup`, `telegram-pair`, `whatsapp-setup`, and `whatsapp-qr` now SSH as `ubuntu` (not `root`) on Lightsail instances
@@ -921,8 +921,9 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
 ---
 
 **Last updated:** March 19, 2026
-**Current version:** 0.42.0
+**Current version:** 0.43.0
 **Architecture version:** 2.0 (modular workspace)
+
 
 
 
