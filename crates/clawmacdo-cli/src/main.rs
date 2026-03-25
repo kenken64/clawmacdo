@@ -211,6 +211,12 @@ enum Commands {
         #[arg(long)]
         code: String,
     },
+    /// Retrieve the Telegram chat ID from a deployed instance
+    TelegramChatId {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
     /// Upload a SKILL.md to the skills API and deploy it to the OpenClaw instance
     SkillUpload {
         /// Deploy ID, hostname, or IP address of the instance
@@ -761,6 +767,7 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::TelegramPair { instance, code } => {
             commands::telegram::approve_pairing(&instance, &code).await
         }
+        Commands::TelegramChatId { instance } => commands::telegram::get_chat_id(&instance).await,
         Commands::SkillDeploy { instance, file } => {
             commands::skill_deploy::deploy(&instance, &file).await
         }
