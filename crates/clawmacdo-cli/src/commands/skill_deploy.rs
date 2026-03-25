@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_multi_async;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,34 @@ fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
     }
 }
 
+/// Build the shell command that extracts a ZIP (handling Windows backslash paths)
+/// and fixes permissions. The Python script is base64-encoded and piped to
+/// `python3` so it works even when bash's stdin is already in use.
+fn build_extract_cmd(zip_path: &str, workspace: &str) -> String {
+    let py = format!(
+        r#"import zipfile, os
+z = zipfile.ZipFile('{zip_path}')
+for m in z.namelist():
+    safe = m.replace('\\', '/')
+    dest = os.path.join('{workspace}', safe)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with z.open(m) as src, open(dest, 'wb') as dst:
+        dst.write(src.read())
+z.close()
+print('extracted OK')
+"#
+    );
+    let b64 = B64.encode(py.as_bytes());
+    format!(
+        "(echo {b64} | base64 -d | python3 2>&1) && \
+         (chown -R openclaw:openclaw {workspace} 2>&1) && \
+         (find {workspace} -type f -name '*.md' -exec chmod 644 {{}} \\; 2>&1) && \
+         (find {workspace} -type d -exec chmod 755 {{}} \\; 2>&1) && \
+         (rm -f {zip_path} 2>/dev/null; true) && \
+         echo 'permissions OK'"
+    )
+}
+
 /// Deploy a ZIP of OpenClaw skills to an instance.
 ///
 /// Steps:
@@ -76,7 +105,9 @@ pub async fn deploy(query: &str, zip_path: &Path) -> Result<()> {
         zip_bytes.len()
     );
 
-    // Upload zip via SCP to a temp path accessible by root/ubuntu
+    // Upload zip to /tmp — accessible for reading by all users.
+    // Cleanup uses `|| true` because /tmp has sticky-bit: only the file owner (root/ubuntu)
+    // can delete it, but the extract runs as openclaw.
     let tmp_zip = "/tmp/openclaw-skills-upload.zip";
     println!("[1/4] Uploading ZIP to instance...");
     let scp_ip = ip.clone();
@@ -89,14 +120,7 @@ pub async fn deploy(query: &str, zip_path: &Path) -> Result<()> {
     .await??;
 
     // SSH steps: extract, fix perms, restart — single session
-    let extract_cmd = format!(
-        "unzip -o {tmp_zip} -d {OPENCLAW_WORKSPACE} 2>&1 && \
-         chown -R openclaw:openclaw {OPENCLAW_WORKSPACE} && \
-         find {OPENCLAW_WORKSPACE} -type f -name '*.md' -exec chmod 644 {{}} \\; && \
-         find {OPENCLAW_WORKSPACE} -type d -exec chmod 755 {{}} \\; && \
-         rm -f {tmp_zip} && \
-         echo 'extracted OK'"
-    );
+    let extract_cmd = build_extract_cmd(tmp_zip, OPENCLAW_WORKSPACE);
     let restart_cmd =
         "export XDG_RUNTIME_DIR=/run/user/$(id -u openclaw) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u openclaw)/bus && \
          (systemctl --user -M openclaw@ daemon-reload 2>/dev/null || \
