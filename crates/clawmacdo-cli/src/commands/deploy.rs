@@ -148,7 +148,11 @@ fn model_identifier(model: &str) -> Option<&'static str> {
     }
 }
 
-fn build_model_setup_cmd(primary: &str, failovers: &[&str]) -> String {
+fn build_model_setup_cmd(
+    primary: &str,
+    failovers: &[&str],
+    telegram_bot_token: &str,
+) -> String {
     let home = config::OPENCLAW_HOME;
     let uid = "$(id -u)";
     let mut cmd = format!(
@@ -166,6 +170,14 @@ fn build_model_setup_cmd(primary: &str, failovers: &[&str]) -> String {
                 " openclaw models fallbacks add {fo_id} >/dev/null 2>&1 || true;"
             ));
         }
+    }
+    // Register Telegram bot token so the gateway loads the channel from openclaw.json
+    // (not just gateway.env). Without this, the systemd service does not start Telegram
+    // polling even though TELEGRAM_BOT_TOKEN is set in the environment.
+    if !telegram_bot_token.trim().is_empty() {
+        cmd.push_str(&format!(
+            " (openclaw channels add --channel telegram --token '{telegram_bot_token}' >/dev/null 2>&1 || true);"
+        ));
     }
     // Hard-restart the gateway so it picks up the new model config from openclaw.json.
     // Without this, `openclaw models set` modifies the config file and the running gateway
@@ -867,7 +879,11 @@ SVCEOF\n\
         &params.gemini_key,
         &params.byteplus_ark_api_key,
     );
-    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    let model_cmd = build_model_setup_cmd(
+        &params.primary_model,
+        &failovers,
+        &params.telegram_bot_token,
+    );
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
@@ -1273,7 +1289,11 @@ SVCEOF\n\
         &params.gemini_key,
         &params.byteplus_ark_api_key,
     );
-    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    let model_cmd = build_model_setup_cmd(
+        &params.primary_model,
+        &failovers,
+        &params.telegram_bot_token,
+    );
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
@@ -1554,7 +1574,8 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         gemini_key,
         byteplus_ark_api_key,
     );
-    let model_cmd = build_model_setup_cmd(primary_model, &failovers);
+    let model_cmd =
+        build_model_setup_cmd(primary_model, &failovers, telegram_bot_token);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
@@ -1931,7 +1952,11 @@ SVCEOF\n\
         &params.gemini_key,
         &params.byteplus_ark_api_key,
     );
-    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    let model_cmd = build_model_setup_cmd(
+        &params.primary_model,
+        &failovers,
+        &params.telegram_bot_token,
+    );
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
@@ -2356,7 +2381,11 @@ SVCEOF\n\
         &params.gemini_key,
         &params.byteplus_ark_api_key,
     );
-    let model_cmd = build_model_setup_cmd(&params.primary_model, &failovers);
+    let model_cmd = build_model_setup_cmd(
+        &params.primary_model,
+        &failovers,
+        &params.telegram_bot_token,
+    );
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
