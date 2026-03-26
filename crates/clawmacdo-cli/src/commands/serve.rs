@@ -4090,6 +4090,65 @@ function panelSetStatus(panel, status) {
   }
 }
 
+// ── Step timing helpers ──────────────────────────────────────────────────
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return sec > 0 ? m + 'm ' + sec + 's' : m + 'm';
+}
+function elapsedFromSqlite(sqliteStr) {
+  // SQLite stores UTC as "YYYY-MM-DD HH:MM:SS"
+  const d = new Date(sqliteStr.replace(' ', 'T') + 'Z');
+  return formatDuration(Date.now() - d.getTime());
+}
+function durationFromSqlite(start, end) {
+  const s = new Date(start.replace(' ', 'T') + 'Z');
+  const e = new Date(end.replace(' ', 'T') + 'Z');
+  return formatDuration(e - s);
+}
+
+// Client-side step start timestamps for real-time SSE deploys
+// { deployId: { stepNum: Date.now() } }
+const _stepStartTimes = {};
+
+async function appendStepTimingTable(panel, deployId) {
+  try {
+    const res = await fetch('/api/deploy/steps/' + deployId);
+    const data = await res.json();
+    const steps = data.steps || [];
+    if (!steps.length) return;
+    const summary = panel.querySelector('.deploy-summary-content');
+    if (!summary) return;
+    const first = steps[0];
+    const last = steps[steps.length - 1];
+    const totalStr = (first.started_at && last.completed_at)
+      ? durationFromSqlite(first.started_at, last.completed_at) : '';
+    const rows = steps.map(s => {
+      let dur = '';
+      if (s.started_at && s.completed_at) dur = durationFromSqlite(s.started_at, s.completed_at);
+      else if (s.started_at && s.status === 'running') dur = elapsedFromSqlite(s.started_at) + ' (running)';
+      const sc = s.status === 'completed' ? 'text-green-400'
+               : s.status === 'failed'    ? 'text-red-400'
+               : s.status === 'skipped'   ? 'text-slate-500'
+               : 'text-blue-400';
+      return `<tr class="border-t border-slate-800">
+        <td class="py-1 pr-3 text-slate-500 whitespace-nowrap">${s.step_number}/${s.total_steps}</td>
+        <td class="py-1 pr-3 text-slate-300">${s.label}</td>
+        <td class="py-1 pr-3 ${sc}">${s.status}</td>
+        <td class="py-1 text-slate-400 font-mono text-right whitespace-nowrap">${dur}</td>
+      </tr>`;
+    }).join('');
+    const wrap = document.createElement('div');
+    wrap.className = 'mt-4 border border-slate-700 rounded-lg p-3';
+    wrap.innerHTML = `
+      <p class="text-slate-300 font-semibold mb-2">Step Timings${totalStr ? ' <span class=\\'text-slate-500 font-normal\\'>(total: ' + totalStr + ')</span>' : ''}</p>
+      <div class="overflow-x-auto"><table class="w-full text-xs"><tbody>${rows}</tbody></table></div>`;
+    summary.appendChild(wrap);
+  } catch (_) {}
+}
+
 function panelShowSummary(panel, ip, keyPath, hostname) {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
@@ -4423,9 +4482,17 @@ async function startDeploy(e, cardNum) {
         }
         panelSetStatus(card, 'completed');
         panelUpdateProgress(card, TOTAL_STEPS);
+        // Duration of final step
+        if (_stepStartTimes[deployId] && _stepStartTimes[deployId][TOTAL_STEPS]) {
+          panelAppendLog(card, '  \u21b3 ' + formatDuration(Date.now() - _stepStartTimes[deployId][TOTAL_STEPS]), 'text-slate-500 text-xs italic');
+        }
+        // Total deploy time
+        const _ds1 = _stepStartTimes[deployId] && _stepStartTimes[deployId][1];
+        if (_ds1) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds1), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
         panelShowSummary(card, ip, keyPath, hostname);
+        appendStepTimingTable(card, deployId);
         return;
       }
 
@@ -4436,9 +4503,12 @@ async function startDeploy(e, cardNum) {
         const keyPath = parts.slice(2, parts.length - 1).join(':');
         panelSetStatus(card, 'completed');
         panelUpdateProgress(card, TOTAL_STEPS);
+        const _ds2 = _stepStartTimes[deployId] && _stepStartTimes[deployId][1];
+        if (_ds2) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds2), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
         panelShowSummary(card, ip, keyPath, hostname);
+        appendStepTimingTable(card, deployId);
         return;
       }
 
@@ -4455,7 +4525,17 @@ async function startDeploy(e, cardNum) {
 
       const match = msg.match(/\[Step (\d+)\/16\]/);
       if (match) {
-        panelUpdateProgress(card, parseInt(match[1]));
+        const stepNum = parseInt(match[1]);
+        if (!_stepStartTimes[deployId]) _stepStartTimes[deployId] = {};
+        const now = Date.now();
+        // Append duration of the previous step
+        const prev = stepNum - 1;
+        if (prev > 0 && _stepStartTimes[deployId][prev]) {
+          const elapsed = now - _stepStartTimes[deployId][prev];
+          panelAppendLog(card, '  ↳ ' + formatDuration(elapsed), 'text-slate-500 text-xs italic');
+        }
+        _stepStartTimes[deployId][stepNum] = now;
+        panelUpdateProgress(card, stepNum);
       }
 
       const trimmed = msg.trim();
@@ -4726,17 +4806,21 @@ async function pollDeployProgress(deployId) {
         bar.style.width = pct + '%';
         if (failed) {
           bar.className = 'bg-red-500 h-1.5 rounded-full transition-all duration-500';
-          label.textContent = 'Step ' + failed.step_number + '/' + total + ': ' + failed.label + ' (failed)';
+          const failDur = (failed.started_at && failed.completed_at) ? ' (' + durationFromSqlite(failed.started_at, failed.completed_at) + ')' : '';
+          label.textContent = 'Step ' + failed.step_number + '/' + total + ': ' + failed.label + ' — failed' + failDur;
           label.className = 'text-[10px] text-red-400 mt-0.5';
           _activePollers.delete(deployId);
           setTimeout(() => loadDeployments(), 2000);
           return;
         } else if (running) {
-          label.textContent = 'Step ' + running.step_number + '/' + total + ': ' + running.label;
+          const elapsed = running.started_at ? ' (' + elapsedFromSqlite(running.started_at) + ')' : '';
+          label.textContent = 'Step ' + running.step_number + '/' + total + ': ' + running.label + elapsed;
         } else if (completed === total) {
           bar.style.width = '100%';
           bar.className = 'bg-green-500 h-1.5 rounded-full transition-all duration-500';
-          label.textContent = 'Complete';
+          const first = steps[0], last = steps[steps.length - 1];
+          const totalDur = (first.started_at && last.completed_at) ? ' in ' + durationFromSqlite(first.started_at, last.completed_at) : '';
+          label.textContent = 'Complete' + totalDur;
           label.className = 'text-[10px] text-green-400 mt-0.5';
           _activePollers.delete(deployId);
           setTimeout(() => loadDeployments(), 2000);
