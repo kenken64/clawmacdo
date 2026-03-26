@@ -167,7 +167,15 @@ fn build_model_setup_cmd(primary: &str, failovers: &[&str]) -> String {
             ));
         }
     }
-    cmd.push_str(" echo ok");
+    // Hard-restart the gateway so it picks up the new model config from openclaw.json.
+    // Without this, `openclaw models set` modifies the config file and the running gateway
+    // attempts an internal hot-reload that can get stuck (process stays alive at 100% CPU
+    // but never rebinds the port), silently breaking Telegram and all message handling.
+    cmd.push_str(
+        " (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || true);\
+         sleep 2;\
+         echo ok",
+    );
     cmd
 }
 
