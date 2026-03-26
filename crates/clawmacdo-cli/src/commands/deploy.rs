@@ -1542,7 +1542,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          fi; \
          ({sandbox_setup_cmd} || true) && \
          mkdir -p {home}/.config/systemd/user/openclaw-gateway.service.d && \
-                 printf '[Service]\nEnvironmentFile=-{home}/.openclaw/gateway.env\nEnvironment=OPENCLAW_BUNDLED_PLUGINS_DIR={home}/.openclaw/bundled-extensions\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
+                 printf '[Service]\nEnvironmentFile=-{home}/.openclaw/gateway.env\nEnvironment=OPENCLAW_NO_RESPAWN=1\n' > {home}/.config/systemd/user/openclaw-gateway.service.d/10-env.conf && \
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
