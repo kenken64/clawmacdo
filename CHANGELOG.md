@@ -4,17 +4,20 @@
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
-- **`skill-remove` subcommand**
+- **`skill-remove` subcommand** — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
+- **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
+
+### Fixed
+- **Telegram bot not polling after deploy** — three root causes identified and fixed for OpenClaw 2026.3.24:
+  1. `OPENCLAW_BUNDLED_PLUGINS_DIR` in the systemd drop-in prevented channel initialisation entirely; removed from all providers (`deploy`, `docker-fix`, `whatsapp` commands)
+  2. `TELEGRAM_BOT_TOKEN` in gateway.env/service env was not sufficient — token must be registered in `openclaw.json` via `openclaw channels add`; deploy now runs this automatically for all 5 cloud providers
+  3. Stale `plugins.entries` (byteplus/telegram) in `openclaw.json` caused the gateway to spin at 100% CPU during hot-reload, abandoning port 18789; gateway restart after `openclaw models set` (added in v0.50) prevents the stuck hot-reload
+- **Gateway port 18789 lost after model set** — `openclaw models set` triggered an internal hot-reload that got stuck; fixed by forcing `systemctl --user restart` after model configuration (all providers)
 
 ### Performance
-- **`skill-deploy` single-session optimization** — SCP upload, extraction, and gateway restart now share one SSH session (was two separate connections); extraction uses `unzip` instead of Python; permissions fixed in one `chmod -R` pass instead of two `find` walks; gateway restart polls for readiness instead of a fixed 2s sleep — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
+- **`skill-deploy` single-session optimization** — SCP upload, extraction, and gateway restart now share one SSH session (was two separate connections); extraction uses `unzip` instead of Python; permissions fixed in one `chmod -R` pass instead of two `find` walks; gateway restart polls for readiness instead of a fixed 2s sleep
 - **`skill-list` subcommand** — list all skill directories deployed on an instance, resolved against the gateway-registered skill name from each `SKILL.md`, with readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill (`--instance` + `--skill`); reports any files not owned by `openclaw:openclaw` or with incorrect permissions (dirs `755`, files `644`); `--fix` flag auto-corrects in place
-
-## v0.51.0
-
-### Added
-- **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
 
 ## v0.46.4
 
