@@ -832,8 +832,9 @@ For licensing inquiries, contact: bunnyppl@gmail.com
 
 ## Changelog
 
-See [CHANGELOG.md](https://github.com/kenken64/clawmacdo/blob/main/CHANGELOG.md) for version history and release notes.
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.50.0 | **Architecture version:** 2.0 (modular workspace)
+**Current version:** 0.51.0
+
