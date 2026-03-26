@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cloud"
-version = "0.51.0"
+version = "0.52.0"
 edition = "2021"
 description = "Cloud provider implementations for ClawMacdo"
 
@@ -30,6 +30,7 @@ hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 clawmacdo-core = { workspace = true }
+
 
 
 
