@@ -193,15 +193,26 @@ fn read_command_output(mut channel: ssh2::Channel) -> Result<String, AppError> {
         .read_to_string(&mut output)
         .map_err(|e| AppError::Ssh(format!("Read output: {e}")))?;
 
+    let mut stderr = String::new();
+    channel
+        .stderr()
+        .read_to_string(&mut stderr)
+        .map_err(|e| AppError::Ssh(format!("Read stderr: {e}")))?;
+
     channel
         .wait_close()
         .map_err(|e| AppError::Ssh(format!("Wait close: {e}")))?;
 
     let exit_status = channel.exit_status().unwrap_or(-1);
     if exit_status != 0 {
-        let trimmed = output.trim();
-        let details = if !trimmed.is_empty() {
-            trimmed.to_string()
+        let stdout = output.trim();
+        let stderr = stderr.trim();
+        let details = if !stdout.is_empty() && !stderr.is_empty() {
+            format!("stdout:\n{stdout}\n\nstderr:\n{stderr}")
+        } else if !stdout.is_empty() {
+            stdout.to_string()
+        } else if !stderr.is_empty() {
+            stderr.to_string()
         } else {
             "no output captured".to_string()
         };

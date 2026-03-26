@@ -116,6 +116,8 @@ clawmacdo telegram-chat-id --instance <deploy-id>
 # Set up WhatsApp (displays QR code to scan)
 clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
 clawmacdo whatsapp-qr --instance <deploy-id>   # re-fetch QR if expired
+# Lightsail/Azure instances automatically use their default SSH users for WhatsApp repair/QR.
+# The web UI QR fetch now ignores a missing prior login process instead of failing with an empty SSH error.
 
 # Change AI model on a running instance
 clawmacdo update-model --instance <deploy-id> \
@@ -836,5 +838,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.51.0
+**Current version:** 0.52.0
+
 

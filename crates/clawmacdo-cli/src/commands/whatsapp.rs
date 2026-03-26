@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_async, ssh_as_openclaw_with_user_async,
+};
 use std::path::Path;
 
 pub struct WhatsAppRepairResult {
@@ -10,6 +12,14 @@ pub struct WhatsAppRepairResult {
 
 /// RRepair support.
 pub async fn repair_support(ip: &str, key: &Path) -> Result<WhatsAppRepairResult> {
+    repair_support_with_user(ip, key, "root").await
+}
+
+pub async fn repair_support_with_user(
+    ip: &str,
+    key: &Path,
+    ssh_user: &str,
+) -> Result<WhatsAppRepairResult> {
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -54,7 +64,11 @@ pub async fn repair_support(ip: &str, key: &Path) -> Result<WhatsAppRepairResult
         home = config::OPENCLAW_HOME,
     );
 
-    let output = ssh_as_openclaw_async(ip, key, &cmd).await?;
+    let output = if ssh_user == "root" {
+        ssh_as_openclaw_async(ip, key, &cmd).await?
+    } else {
+        ssh_as_openclaw_with_user_async(ip, key, &cmd, ssh_user).await?
+    };
     let lowered = output.to_ascii_lowercase();
     let supported = !lowered.contains("unsupported channel: whatsapp")
         && !lowered.contains("unsupported channel whatsapp");

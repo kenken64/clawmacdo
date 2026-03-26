@@ -1295,6 +1295,32 @@ async fn approve_telegram_pairing_handler(
     }
 }
 
+/// Build the shell command that fetches a WhatsApp QR code.
+///
+/// Strategy:
+///   1. `script -q -c "..."` allocates a pseudo-TTY so Node.js flushes stdout
+///      immediately instead of buffering (Node.js writes to the PTY in line-by-line
+///      mode).  Without this, background-redirected output sits in Node's buffer.
+///   2. `nohup` makes the process ignore SIGHUP so it survives SSH session end.
+///   3. The script process runs openclaw for up to 90 s in the background, writing
+///      its output to a temp typescript file.
+///   4. We poll the file by byte-size (QR block ≈ 5 KB).  Once ≥ 1000 bytes have
+///      appeared the QR is present; we cat the file and strip PTY carriage returns.
+///   5. openclaw keeps running so WhatsApp can complete the linking handshake after
+///      the user scans.  Killing it at 12 s was the root cause of "can't link".
+fn qr_fetch_cmd(home: &str) -> String {
+    format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
+     pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
+         QF=/tmp/wa_qr_$$.txt; \
+         nohup script -q -f -c \"TERM=dumb NO_COLOR=1 FORCE_COLOR=0 timeout 90s openclaw channels login --channel whatsapp\" \"$QF\" >/dev/null 2>&1 & \
+         for I in $(seq 1 30); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); [ \"$SZ\" -ge 1000 ] && break; done; \
+         sleep 0.5; cat \"$QF\" 2>/dev/null | tr -d '\\r' || echo 'QR not ready'",
+        home = home,
+    )
+}
+
 /// Extract the last QR code block from output that may contain multiple QR codes.
 /// QR codes use Unicode block characters (█ ▀ ▄ ▐ ▌ etc).
 fn extract_last_qr_block(output: &str) -> String {
@@ -1367,18 +1393,7 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
             )
         }
     };
-    // Use 45s timeout — enough to capture the first QR code
-    let cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if command -v timeout >/dev/null 2>&1; then \
-           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
-         else \
-           openclaw channels login --channel whatsapp 2>&1; \
-         fi",
-        home = config::OPENCLAW_HOME,
-    );
-
+    let cmd = qr_fetch_cmd(config::OPENCLAW_HOME);
     match ssh_as_openclaw_async(&ip, &key, &cmd).await {
         Ok(out) => {
             let lowered = out.to_ascii_lowercase();
@@ -1394,9 +1409,7 @@ async fn fetch_whatsapp_qr_handler(Json(req): Json<WhatsAppQrRequest>) -> impl I
                     }),
                 );
             }
-
             let qr_output = extract_last_qr_block(&out);
-
             (
                 StatusCode::OK,
                 Json(WhatsAppQrResponse {
@@ -2080,7 +2093,7 @@ async fn toggle_funnel_handler(
 
 /// Check Tailscale Funnel status for a deployment.
 async fn funnel_status_handler(Path(id): Path<String>) -> impl IntoResponse {
-    let (ip, key) = match resolve_deploy_connection(&id) {
+    let (ip, key, _) = match resolve_deploy_connection(&id) {
         Ok(v) => v,
         Err(_) => {
             return Json(serde_json::json!({
@@ -2151,7 +2164,7 @@ async fn funnel_status_handler(Path(id): Path<String>) -> impl IntoResponse {
 
 /// Auto-approve all pending OpenClaw device pairing requests.
 async fn device_approve_handler(Path(id): Path<String>) -> impl IntoResponse {
-    let (ip, key) = match resolve_deploy_connection(&id) {
+    let (ip, key, _) = match resolve_deploy_connection(&id) {
         Ok(v) => v,
         Err(e) => return Json(serde_json::json!({"ok": false, "message": e, "approved": 0})),
     };
@@ -2187,8 +2200,8 @@ console.log('APPROVED='+keys.length);
     )
 }
 
-/// Resolve a deploy record by ID, returning (ip, ssh_key_path).
-fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
+/// Resolve a deploy record by ID, returning (ip, ssh_key_path, provider).
+fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf, Option<String>), String> {
     let deploys_dir = match config::deploys_dir() {
         Ok(d) => d,
         Err(e) => return Err(format!("Cannot find deploys dir: {e}")),
@@ -2218,7 +2231,11 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
                 Ok(path) => path,
                 Err(_) => continue,
             };
-            return Ok((record.ip_address, key_path));
+            return Ok((
+                record.ip_address,
+                key_path,
+                record.provider.map(|p| p.to_string()),
+            ));
         }
     }
     Err(format!("No deploy record found for '{id}'."))
@@ -2226,7 +2243,7 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf), String> {
 
 /// WhatsApp repair handler for deployments tab — resolves connection from deploy ID.
 async fn deployment_whatsapp_repair_handler(Path(id): Path<String>) -> impl IntoResponse {
-    let (ip, key) = match resolve_deploy_connection(&id) {
+    let (ip, key, provider) = match resolve_deploy_connection(&id) {
         Ok(v) => v,
         Err(msg) => {
             return (
@@ -2240,7 +2257,8 @@ async fn deployment_whatsapp_repair_handler(Path(id): Path<String>) -> impl Into
         }
     };
 
-    match whatsapp::repair_support(&ip, &key).await {
+    let ssh_user = ssh_user_for_provider(provider.as_deref());
+    match whatsapp::repair_support_with_user(&ip, &key, ssh_user).await {
         Ok(result) => {
             let message = if result.supported {
                 "Repair completed. WhatsApp channel appears available now.".to_string()
@@ -2275,7 +2293,7 @@ async fn deployment_whatsapp_repair_handler(Path(id): Path<String>) -> impl Into
 
 /// WhatsApp QR handler for deployments tab — resolves connection from deploy ID.
 async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResponse {
-    let (ip, key) = match resolve_deploy_connection(&id) {
+    let (ip, key, provider) = match resolve_deploy_connection(&id) {
         Ok(v) => v,
         Err(msg) => {
             return (
@@ -2289,19 +2307,14 @@ async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResp
         }
     };
 
-    // Use 45s timeout — enough to capture the first QR code (appears in ~10-15s)
-    let cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if command -v timeout >/dev/null 2>&1; then \
-           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
-         else \
-           openclaw channels login --channel whatsapp 2>&1; \
-         fi",
-        home = config::OPENCLAW_HOME,
-    );
-
-    match ssh_as_openclaw_async(&ip, &key, &cmd).await {
+    let cmd = qr_fetch_cmd(config::OPENCLAW_HOME);
+    let ssh_user = ssh_user_for_provider(provider.as_deref());
+    let result = if ssh_user == "root" {
+        ssh_as_openclaw_async(&ip, &key, &cmd).await
+    } else {
+        ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await
+    };
+    match result {
         Ok(out) => {
             let lowered = out.to_ascii_lowercase();
             if lowered.contains("unsupported channel: whatsapp")
@@ -3230,19 +3243,19 @@ tailwind.config = {
     </div>
   </div>
   <div class="section-shell overflow-visible">
-    <div class="overflow-visible">
-      <table class="w-full table-fixed text-xs sm:text-sm text-left">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm text-left">
         <thead class="bg-slate-800 text-slate-400 text-xs uppercase tracking-wider">
           <tr>
-            <th class="w-[8%] px-3 py-3">Customer</th>
-            <th class="w-[14%] px-3 py-3">Email</th>
-            <th class="w-[7%] px-3 py-3">Provider</th>
-            <th class="w-[14%] px-3 py-3">Hostname</th>
-            <th class="w-[9%] px-3 py-3">IP</th>
-            <th class="w-[9%] px-3 py-3">Region</th>
-            <th class="w-[10%] px-3 py-3">Status</th>
-            <th class="w-[13%] px-3 py-3">Created</th>
-            <th class="w-[16%] px-3 py-3">Actions</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[110px]">Customer</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[170px]">Email</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[90px]">Provider</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[160px]">Hostname</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[120px]">IP</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[110px]">Region</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[90px]">Status</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[150px]">Created</th>
+            <th class="px-4 py-3 whitespace-nowrap min-w-[150px]">Actions</th>
           </tr>
         </thead>
         <tbody id="deployments-tbody" class="divide-y divide-slate-800"></tbody>
@@ -4143,7 +4156,7 @@ async function appendStepTimingTable(panel, deployId) {
     const wrap = document.createElement('div');
     wrap.className = 'mt-4 border border-slate-700 rounded-lg p-3';
     wrap.innerHTML = `
-      <p class="text-slate-300 font-semibold mb-2">Step Timings${totalStr ? ' <span class=\\'text-slate-500 font-normal\\'>(total: ' + totalStr + ')</span>' : ''}</p>
+      <p class="text-slate-300 font-semibold mb-2">Step Timings${totalStr ? ' <span class=\'text-slate-500 font-normal\'>(total: ' + totalStr + ')</span>' : ''}</p>
       <div class="overflow-x-auto"><table class="w-full text-xs"><tbody>${rows}</tbody></table></div>`;
     summary.appendChild(wrap);
   } catch (_) {}
@@ -4734,15 +4747,15 @@ async function loadDeployments(page) {
         const tr = document.createElement('tr');
         tr.className = 'hover:bg-slate-800/50';
         tr.innerHTML =
-          '<td class="px-3 py-3 align-top text-slate-200 leading-4 break-words">' + esc(d.customer_name) + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-400 leading-4 break-all">' + esc(d.customer_email) + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-400 break-words">' + esc(d.provider || '-') + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-300 font-mono text-[11px] leading-4 break-all">' + esc(d.hostname || '-') + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-300 font-mono text-[11px] leading-4 break-all">' + esc(d.ip_address || '-') + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-400 leading-4 break-words">' + esc(d.region || '-') + '</td>' +
-          '<td class="px-3 py-3 align-top">' + statusBadge(d.status, d.id) + '</td>' +
-          '<td class="px-3 py-3 align-top text-slate-500 text-[11px] leading-4 break-words">' + formatSGT(d.created_at) + '</td>' +
-          '<td class="px-3 py-3 align-top">' +
+          '<td class="px-4 py-4 align-top text-slate-200">' + esc(d.customer_name) + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-400 break-all">' + esc(d.customer_email) + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-400 whitespace-nowrap">' + esc(d.provider || '-') + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-300 font-mono text-xs">' + esc(d.hostname || '-') + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-300 font-mono text-xs whitespace-nowrap">' + esc(d.ip_address || '-') + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-400 whitespace-nowrap">' + esc(d.region || '-') + '</td>' +
+          '<td class="px-4 py-4 align-top">' + statusBadge(d.status, d.id) + '</td>' +
+          '<td class="px-4 py-4 align-top text-slate-500 text-xs whitespace-nowrap">' + formatSGT(d.created_at) + '</td>' +
+          '<td class="px-4 py-4 align-top">' +
             '<div class="flex flex-col items-start gap-2">' +
               deploymentActionsMenu(d) +
               '<input type="hidden" id="funnel-url-val-' + esc(d.id) + '" />' +
@@ -4752,7 +4765,7 @@ async function loadDeployments(page) {
                 '</div>' +
                 '<div class="text-[9px] text-slate-500 mt-0.5">Verifying funnel...</div>' +
               '</div>' +
-              '<pre id="wa-output-' + esc(d.id) + '" class="hidden bg-slate-900 border border-slate-700 rounded p-2 font-mono text-[6px] leading-[7px] whitespace-pre text-slate-300 max-h-[80vh] overflow-auto"></pre>' +
+              '' +
             '</div>' +
           '</td>';
         tbody.appendChild(tr);
@@ -5122,14 +5135,179 @@ async function refreshIp(id, btn) {
   btn.disabled = false;
 }
 
+// ── WhatsApp modal helpers ───────────────────────────────────────────────────
+
+function openWaModal(title, content) {
+  document.getElementById('wa-modal-title').textContent = title;
+  const body = document.getElementById('wa-modal-body');
+  body.innerHTML = '';
+  if (typeof content === 'string') {
+    const pre = document.createElement('pre');
+    pre.className = 'w-full bg-slate-800 rounded-lg p-4 font-mono text-sm text-slate-300 whitespace-pre-wrap break-words overflow-auto max-h-96';
+    pre.textContent = content;
+    body.appendChild(pre);
+  } else {
+    body.appendChild(content);
+  }
+  document.getElementById('wa-modal').classList.remove('hidden');
+}
+
+function closeWaModal() {
+  document.getElementById('wa-modal').classList.add('hidden');
+  if (_qrCountdownTimer) { clearInterval(_qrCountdownTimer); _qrCountdownTimer = null; }
+}
+
+let _qrCountdownTimer = null;
+
+function qrUnicodeToImg(text, deployId) {
+  // Strip carriage returns introduced by PTY
+  const clean = text.replace(/\r/g, '');
+
+  // ── Strategy 1: ANSI color-based QR (unbuffer/PTY output) ────────────────
+  // openclaw renders QR as ANSI bg-color + two spaces per module.
+  // Find the contiguous block of lines that look like QR lines:
+  // a QR line contains ESC[…m sequences followed by two-space pairs.
+  const ESC = '\x1b';
+  const ansiQrLine = /(\x1b\[[0-9;]*m[ ]{2}){3,}/;  // ≥3 modules per line
+  const rawLines = clean.split('\n');
+
+  let qrStart = -1, qrEnd = -1;
+  for (let i = 0; i < rawLines.length; i++) {
+    if (ansiQrLine.test(rawLines[i])) {
+      if (qrStart === -1) qrStart = i;
+      qrEnd = i;
+    } else if (qrStart !== -1) {
+      break;
+    }
+  }
+
+  if (qrStart !== -1) {
+    const qrLines = rawLines.slice(qrStart, qrEnd + 1);
+    const rows = [];
+    for (const line of qrLines) {
+      const modules = [];
+      let bgBlack = false;
+      let i = 0;
+      while (i < line.length) {
+        if (line[i] === ESC && line[i+1] === '[') {
+          const mIdx = line.indexOf('m', i + 2);
+          if (mIdx === -1) break;
+          const codes = line.substring(i + 2, mIdx).split(';').map(Number);
+          for (const c of codes) {
+            if (c === 0 || c === 49) bgBlack = false;          // reset / default bg
+            else if (c === 7)        bgBlack = true;            // reverse video (fg on bg)
+            else if (c === 27)       bgBlack = false;           // reverse off
+            else if (c === 40 || c === 100) bgBlack = true;     // black / bright-black bg
+            else if (c === 41 || c === 42 || c === 43 || c === 44 ||
+                     c === 45 || c === 46)   bgBlack = true;     // other dark bg colours
+            else if (c === 47 || c === 107 || c === 97 || c === 37) bgBlack = false; // white bg
+          }
+          i = mIdx + 1;
+        } else if (line[i] === ' ' && line[i+1] === ' ') {
+          modules.push(bgBlack ? 1 : 0);
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (modules.length >= 3) rows.push(modules);
+    }
+    if (rows.length >= 10 && rows[0].length >= 10) {
+      return qrRowsToImg(rows);
+    }
+  }
+
+  // ── Strategy 2: Unicode block-char QR (non-PTY fallback) ─────────────────
+  const lines = clean.split('\n').filter(l => l.trim().length > 0);
+  if (!lines.length) return null;
+  const hasHalfBlocks = clean.includes('▀') || clean.includes('▄');
+  const maxLen = Math.max(...lines.map(l => [...l].length));
+  const rows = [];
+  for (const line of lines) {
+    const chars = [...line];
+    if (hasHalfBlocks) {
+      const top = new Array(maxLen).fill(0);
+      const bot = new Array(maxLen).fill(0);
+      for (let i = 0; i < maxLen; i++) {
+        const ch = chars[i] || ' ';
+        if (ch === '█') { top[i] = 1; bot[i] = 1; }
+        else if (ch === '▀') { top[i] = 1; }
+        else if (ch === '▄') { bot[i] = 1; }
+      }
+      rows.push(top, bot);
+    } else {
+      const row = new Array(maxLen).fill(0);
+      for (let i = 0; i < maxLen; i++) {
+        const ch = chars[i] || ' ';
+        if (ch !== ' ' && ch !== '\t') row[i] = 1;
+      }
+      rows.push(row);
+    }
+  }
+  // Sanity-check: must be roughly square to be a real QR
+  if (!rows.length || rows.length < 10 || rows[0].length / rows.length > 3) return null;
+
+  return qrRowsToImg(rows);
+}
+
+function qrRowsToImg(rows) {
+  const quiet = 4, scale = 8;
+  const maxLen = Math.max(...rows.map(r => r.length));
+  const W = (maxLen + quiet * 2) * scale;
+  const H = (rows.length + quiet * 2) * scale;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      if (rows[r][c]) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+    }
+  }
+  const dataUrl = canvas.toDataURL('image/png');
+
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  img.style.cssText = 'image-rendering:pixelated;max-width:100%';
+  img.className = 'rounded-lg border-4 border-white';
+
+  const dl = document.createElement('a');
+  dl.href = dataUrl;
+  dl.download = 'whatsapp-qr.png';
+  dl.className = 'px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors cursor-pointer';
+  dl.textContent = 'Download PNG';
+
+  const countdown = document.createElement('p');
+  countdown.className = 'text-slate-400 text-xs text-center tabular-nums';
+  let secs = 60;
+  countdown.textContent = 'Expires in ' + secs + 's — WhatsApp → Linked Devices → Link a Device';
+  if (_qrCountdownTimer) clearInterval(_qrCountdownTimer);
+  _qrCountdownTimer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(_qrCountdownTimer);
+      countdown.textContent = 'QR expired — fetch a new one.';
+      countdown.className = 'text-red-400 text-xs text-center font-semibold';
+    } else {
+      countdown.textContent = 'Expires in ' + secs + 's — WhatsApp → Linked Devices → Link a Device';
+      if (secs <= 15) countdown.className = 'text-yellow-400 text-xs text-center tabular-nums font-semibold';
+    }
+  }, 1000);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col items-center gap-3 w-full';
+  wrap.appendChild(img);
+  wrap.appendChild(dl);
+  wrap.appendChild(countdown);
+  return wrap;
+}
+
 async function depRepairWhatsApp(id, btn) {
-  const output = document.getElementById('wa-output-' + id);
-  if (!output) return;
-  output.classList.remove('hidden');
+  openWaModal('WhatsApp Repair', 'Updating OpenClaw and refreshing extensions...');
   const oldText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Repairing...';
-  output.textContent = 'Updating OpenClaw and refreshing extensions...';
   try {
     const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/whatsapp/repair', {
       method: 'POST',
@@ -5139,16 +5317,16 @@ async function depRepairWhatsApp(id, btn) {
     const data = await res.json();
     const msg = data.message || 'WhatsApp repair completed.';
     const details = (data.repair_output || '').trim();
-    output.textContent = details ? (msg + '\n\n' + details) : msg;
+    openWaModal('WhatsApp Repair', details ? (msg + '\n\n' + details) : msg);
     if (res.ok && data.ok) {
       btn.disabled = false;
       btn.textContent = oldText;
-      output.textContent += '\n\nAuto-fetching WhatsApp QR code (may take up to 4 minutes)...';
+      openWaModal('WhatsApp QR Code', 'Repair done — fetching QR code (may take up to 4 minutes)...');
       depFetchWhatsAppQr(id, null);
       return;
     }
   } catch (err) {
-    output.textContent = 'Request failed: ' + err.message;
+    openWaModal('WhatsApp Repair Error', 'Request failed: ' + err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = oldText;
@@ -5156,16 +5334,8 @@ async function depRepairWhatsApp(id, btn) {
 }
 
 async function depFetchWhatsAppQr(id, btn) {
-  const output = document.getElementById('wa-output-' + id);
-  if (!output) return;
-  output.classList.remove('hidden');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = 'Fetching...';
-  }
-  if (btn) {
-    output.textContent = 'Fetching WhatsApp QR code (may take up to 4 minutes)...';
-  }
+  openWaModal('WhatsApp QR Code', 'Fetching QR code (may take up to 4 minutes)...');
+  if (btn) { btn.disabled = true; btn.textContent = 'Fetching...'; }
   try {
     const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/whatsapp/qr', {
       method: 'POST',
@@ -5174,19 +5344,18 @@ async function depFetchWhatsAppQr(id, btn) {
     });
     const data = await res.json();
     if (res.ok && data.ok) {
-      output.textContent = (data.qr_output || '').trim() || 'No QR output returned.';
+      const qrText = (data.qr_output || '').trim();
+      const content = qrUnicodeToImg(qrText) || qrText || 'No QR output returned.';
+      openWaModal('Scan with WhatsApp', content);
     } else {
       const msg = data.message || 'Failed to fetch WhatsApp QR.';
       const details = (data.qr_output || '').trim();
-      output.textContent = details ? (msg + '\n\n' + details) : msg;
+      openWaModal('WhatsApp QR Error', details ? (msg + '\n\n' + details) : msg);
     }
   } catch (err) {
-    output.textContent = 'Request failed: ' + err.message;
+    openWaModal('WhatsApp QR Error', 'Request failed: ' + err.message);
   } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = btn.dataset.label || 'WhatsApp QR';
-    }
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || 'WhatsApp QR'; }
   }
 }
 
@@ -5499,6 +5668,15 @@ async function confirmSnapshot(id, provider) {
   }
 }
 </script>
+
+<!-- WhatsApp output / QR modal -->
+<div id="wa-modal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-black/75 backdrop-blur-sm" onclick="if(event.target===this)closeWaModal()">
+  <div class="relative bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+    <button onclick="closeWaModal()" class="absolute top-3 right-4 text-slate-400 hover:text-white text-2xl leading-none font-bold">&times;</button>
+    <h3 id="wa-modal-title" class="text-white font-semibold text-base mb-5">Output</h3>
+    <div id="wa-modal-body" class="flex flex-col items-center gap-3"></div>
+  </div>
+</div>
 </body>
 </html>
 "##;
