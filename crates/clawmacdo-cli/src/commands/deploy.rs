@@ -148,11 +148,7 @@ fn model_identifier(model: &str) -> Option<&'static str> {
     }
 }
 
-fn build_model_setup_cmd(
-    primary: &str,
-    failovers: &[&str],
-    telegram_bot_token: &str,
-) -> String {
+fn build_model_setup_cmd(primary: &str, failovers: &[&str], telegram_bot_token: &str) -> String {
     let home = config::OPENCLAW_HOME;
     let uid = "$(id -u)";
     let mut cmd = format!(
@@ -1574,8 +1570,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         gemini_key,
         byteplus_ark_api_key,
     );
-    let model_cmd =
-        build_model_setup_cmd(primary_model, &failovers, telegram_bot_token);
+    let model_cmd = build_model_setup_cmd(primary_model, &failovers, telegram_bot_token);
     progress::emit(tx, "[Step 15/16] Configuring model setup...");
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
