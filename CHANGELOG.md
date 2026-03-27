@@ -1,9 +1,15 @@
 # Changelog
 
-## v0.52.0
+## v0.53.0
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
+- **`telegram-reset` subcommand** — clear all Telegram pairing state (allowFrom, pairing credentials, update offsets) and restart the gateway so the bot prompts for a fresh pairing code
+- **`whatsapp-reset` subcommand** — clear WhatsApp session credentials and restart the gateway so a new QR code scan is required for re-pairing
+- **`openclaw-versions` subcommand** — list all available OpenClaw versions from the npm registry (`--json` for machine-readable output)
+- **`openclaw-install` subcommand** — install a specific OpenClaw version on a running instance (`--instance` + `--version`), then restart the gateway
+- **`--openclaw-version` deploy flag** — pin a specific OpenClaw version during deployment instead of always installing `@latest`; defaults to latest if omitted
+- **Web UI version selector** — deploy form now includes an OpenClaw version dropdown populated from the npm registry; new `GET /api/openclaw-versions` endpoint
 - **`skill-remove` subcommand** — delete a deployed skill directory from an instance workspace by name (`--instance` + `--skill`); restarts the gateway after removal
 - **`skill-diff` subcommand** — compare a local skill directory against the deployed skill on an OpenClaw instance (`--instance` + `--dir`): walks both sides using SHA-256 checksums and prints a drift report with ✓ in-sync, ≠ modified, + new locally, − only on instance; also shows gateway skill status
 

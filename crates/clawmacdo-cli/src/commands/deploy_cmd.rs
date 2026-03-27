@@ -40,6 +40,7 @@ pub struct DeployCmdArgs {
     pub failover_2: String,
     pub profile: String,
     pub spot: bool,
+    pub openclaw_version: String,
     pub detach: bool,
     pub json: bool,
     /// Pre-assigned deploy ID (from detach re-exec)
@@ -173,6 +174,7 @@ pub async fn run(args: DeployCmdArgs) -> Result<()> {
         failover_2: args.failover_2,
         profile: args.profile,
         spot: args.spot,
+        openclaw_version: args.openclaw_version,
         non_interactive: true,
         progress_tx: None,
         db: Some(db_handle.clone()),

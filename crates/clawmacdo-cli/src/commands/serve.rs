@@ -122,6 +122,8 @@ struct DeployRequest {
     profile: String,
     #[serde(default)]
     spot: bool,
+    #[serde(default)]
+    openclaw_version: String,
 }
 
 fn default_provider() -> String {
@@ -660,6 +662,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     let api_routes = Router::new()
         .route("/api/backups", get(list_backups_handler))
         .route("/api/deploy", post(start_deploy_handler))
+        .route("/api/openclaw-versions", get(openclaw_versions_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
         .route("/api/deploy/steps/{id}", get(deploy_steps_handler))
         .route(
@@ -783,6 +786,17 @@ async fn list_backups_handler() -> impl IntoResponse {
 }
 
 /// SStart deploy handler.
+async fn openclaw_versions_handler() -> impl IntoResponse {
+    match crate::commands::openclaw_version::list_versions().await {
+        Ok(versions) => Json(serde_json::json!({ "versions": versions })).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn start_deploy_handler(
     State(state): State<AppState>,
     Json(req): Json<DeployRequest>,
@@ -815,6 +829,17 @@ async fn start_deploy_handler(
                     "API key for primary model '{}' is required.",
                     req.primary_model
                 ),
+            }),
+        )
+            .into_response();
+    }
+
+    if req.openclaw_version.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                message: "OpenClaw version is required. Use the version dropdown to select one."
+                    .to_string(),
             }),
         )
             .into_response();
@@ -935,6 +960,7 @@ async fn start_deploy_handler(
             failover_2: req.failover_2,
             profile: req.profile,
             spot: req.spot,
+            openclaw_version: req.openclaw_version,
             non_interactive: true,
             progress_tx: Some(tx.clone()),
             db: Some(db_clone.clone()),
@@ -1317,7 +1343,6 @@ fn qr_fetch_cmd(home: &str) -> String {
          nohup script -q -f -c \"TERM=dumb NO_COLOR=1 FORCE_COLOR=0 timeout 90s openclaw channels login --channel whatsapp\" \"$QF\" >/dev/null 2>&1 & \
          for I in $(seq 1 30); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); [ \"$SZ\" -ge 1000 ] && break; done; \
          sleep 0.5; cat \"$QF\" 2>/dev/null | tr -d '\\r' || echo 'QR not ready'",
-        home = home,
     )
 }
 
@@ -3684,6 +3709,15 @@ function addDeployCard(initialState) {
         </div>
       </fieldset>
       <fieldset class="space-y-3">
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">OpenClaw Version <span class="text-red-400">*</span></legend>
+        <div>
+          <select name="openclaw_version" required class="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+            <option value="" disabled selected>Loading versions…</option>
+          </select>
+          <p class="text-xs text-slate-500 mt-1">Select an OpenClaw version — required to avoid breaking changes from untested releases</p>
+        </div>
+      </fieldset>
+      <fieldset class="space-y-3">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Options</legend>
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" name="enable_backups" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
@@ -4441,7 +4475,13 @@ async function startDeploy(e, cardNum) {
     tailscale_auth_key: val('tailscale_auth_key'),
     profile: val('profile'),
     spot: form.querySelector('[name="spot"]').checked,
+    openclaw_version: selVal('openclaw_version'),
   };
+
+  if (!body.openclaw_version) {
+    alert('Please select an OpenClaw version before deploying.');
+    return;
+  }
 
   // Disable button and show progress
   panelSetStatus(card, 'running');
@@ -5667,6 +5707,25 @@ async function confirmSnapshot(id, provider) {
     btn.className = 'px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors';
   }
 }
+
+// Populate openclaw version dropdowns on all deploy forms
+(async function loadOpenClawVersions() {
+  try {
+    const res = await fetch('/api/openclaw-versions', {headers:{'x-api-key': window._pin || ''}});
+    if (!res.ok) return;
+    const data = await res.json();
+    const versions = data.versions || [];
+    document.querySelectorAll('select[name="openclaw_version"]').forEach(sel => {
+      // Add versions in reverse (newest first)
+      for (let i = versions.length - 1; i >= 0; i--) {
+        const opt = document.createElement('option');
+        opt.value = versions[i];
+        opt.textContent = versions[i] + (i === versions.length - 1 ? ' (latest)' : '');
+        sel.appendChild(opt);
+      }
+    });
+  } catch(e) { /* silent — dropdown stays with just "latest" */ }
+})();
 </script>
 
 <!-- WhatsApp output / QR modal -->

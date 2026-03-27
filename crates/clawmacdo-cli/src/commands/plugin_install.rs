@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_multi_async;
 use std::path::PathBuf;
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -34,54 +34,74 @@ fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> 
     bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
 }
 
+fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
+    match provider.as_deref() {
+        Some("lightsail") => "ubuntu",
+        _ => "root",
+    }
+}
+
 pub async fn run(query: &str, plugin: &str) -> Result<()> {
-    let (ip, key, _provider) = find_deploy_record(query)?;
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Installing plugin '{plugin}' on {ip}...");
 
-    // Step 1: Install the plugin package via pnpm
-    println!("[1/3] Installing plugin package...");
-    let install_cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         cd {home}/.openclaw && \
-         pnpm add {plugin} 2>&1"
-    );
-    let install_out = ssh_as_openclaw_async(&ip, &key, &install_cmd).await?;
-    if !install_out.trim().is_empty() {
-        println!("  {}", install_out.trim());
-    }
-
-    // Step 2: Enable the plugin in openclaw
-    println!("[2/3] Enabling plugin...");
     // Extract the short plugin name (e.g. @openguardrails/moltguard -> moltguard)
     let short_name = plugin
         .rsplit('/')
         .next()
         .unwrap_or(plugin)
         .trim_start_matches('@');
+
+    let install_cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
+         export HOME=\"{home}\" && \
+         cd {home}/.openclaw && \
+         pnpm add {plugin} 2>&1"
+    );
     let enable_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
-         (openclaw plugins enable {short_name} 2>&1 || true)"
+         (openclaw plugins install {plugin} 2>&1 || openclaw plugins enable {short_name} 2>&1 || true)"
     );
-    let enable_out = ssh_as_openclaw_async(&ip, &key, &enable_cmd).await?;
-    if !enable_out.trim().is_empty() {
-        println!("  {}", enable_out.trim());
-    }
-
-    // Step 3: Restart gateway
-    println!("[3/3] Restarting gateway service...");
     let restart_cmd =
         "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
          (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
-         sleep 2 && \
-         echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let restart_out = ssh_as_openclaw_async(&ip, &key, restart_cmd).await?;
-    println!("  {}", restart_out.trim());
+         for i in 1 2 3; do \
+           s=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null) && \
+           [ \"$s\" = 'active' ] && break; \
+           sleep 1; \
+         done && \
+         echo \"gateway: $(systemctl --user is-active openclaw-gateway.service 2>/dev/null || echo unknown)\"";
+
+    println!("[1/3] Installing plugin package...");
+    println!("[2/3] Enabling plugin...");
+    println!("[3/3] Restarting gateway...");
+
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![install_cmd, enable_cmd, restart_cmd.to_string()],
+        ssh_user,
+    )
+    .await?;
+
+    // outputs[0] = install
+    if !outputs[0].trim().is_empty() {
+        for line in outputs[0].trim().lines().take(5) {
+            println!("  {line}");
+        }
+    }
+    // outputs[1] = enable
+    if !outputs[1].trim().is_empty() {
+        println!("  {}", outputs[1].trim());
+    }
+    // outputs[2] = restart
+    println!("  {}", outputs[2].trim());
 
     println!("\nPlugin '{plugin}' installed and gateway restarted on {ip}.");
     Ok(())

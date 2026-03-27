@@ -111,6 +111,48 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reset WhatsApp pairing state on a deployed instance.
+/// Clears the WhatsApp session credentials and restarts the gateway,
+/// forcing a fresh QR code pairing on next login.
+pub async fn reset(query: &str) -> Result<()> {
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let home = config::OPENCLAW_HOME;
+
+    println!("Resetting WhatsApp pairing on {ip}...");
+
+    let reset_cmd = format!(
+        "rm -rf {home}/.openclaw/credentials/whatsapp && \
+         echo 'WhatsApp session cleared'"
+    );
+    let restart_cmd =
+        "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         (systemctl --user daemon-reload 2>/dev/null || true) && \
+         (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
+          systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
+         sleep 2 && \
+         echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
+
+    println!("[1/2] Clearing WhatsApp session credentials...");
+    println!("[2/2] Restarting gateway...");
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![reset_cmd, restart_cmd.to_string()],
+        ssh_user,
+    )
+    .await?;
+
+    println!("  {}", outputs[0].trim());
+    println!("  {}", outputs[1].trim());
+
+    println!("\nWhatsApp pairing reset. To re-pair, run:");
+    println!("  clawmacdo whatsapp-qr --instance {query}");
+    println!("Then scan the QR code with your WhatsApp app.");
+
+    Ok(())
+}
+
 /// Fetch the WhatsApp pairing QR code from a deployed instance.
 pub async fn fetch_qr(query: &str) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;

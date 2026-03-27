@@ -17,6 +17,7 @@ pub mod docker_fix;
 pub mod ls_restore;
 #[cfg(feature = "lightsail")]
 pub mod ls_snapshot;
+pub mod openclaw_version;
 pub mod plugin_install;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]
