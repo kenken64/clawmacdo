@@ -5716,11 +5716,13 @@ async function confirmSnapshot(id, provider) {
     const data = await res.json();
     const versions = data.versions || [];
     document.querySelectorAll('select[name="openclaw_version"]').forEach(sel => {
-      // Add versions in reverse (newest first)
+      sel.innerHTML = '';
+      // Add versions in reverse (newest first), auto-select latest
       for (let i = versions.length - 1; i >= 0; i--) {
         const opt = document.createElement('option');
         opt.value = versions[i];
         opt.textContent = versions[i] + (i === versions.length - 1 ? ' (latest)' : '');
+        if (i === versions.length - 1) opt.selected = true;
         sel.appendChild(opt);
       }
     });
