@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.53.0
+## v0.54.0
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
