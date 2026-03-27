@@ -55,10 +55,11 @@ pub async fn configure_bot(query: &str, bot_token: &str) -> Result<()> {
 
     println!("Configuring Telegram bot on {ip}...");
 
-    // Wipe pairing credentials and update offsets from any previous bot so the new
-    // bot starts with a clean slate.
+    // Wipe all pairing state (including allowFrom so the bot forces a fresh pairing flow)
+    // and update offsets from any previous bot so the new bot starts with a clean slate.
     let reset_cmd = format!(
         "rm -f {home}/.openclaw/credentials/telegram-pairing.json && \
+         rm -f {home}/.openclaw/credentials/telegram-default-allowFrom.json && \
          rm -f {home}/.openclaw/telegram/update-offset-*.json && \
          echo 'pairing state cleared'",
     );
@@ -165,6 +166,49 @@ pub async fn get_chat_id(query: &str) -> Result<()> {
     } else {
         println!("{}", output.trim());
     }
+
+    Ok(())
+}
+
+/// Reset the Telegram pairing state on a deployed instance.
+/// Clears allowFrom, pairing credentials, and update offsets, then restarts the gateway.
+/// After reset, send /start to the bot to get a fresh pairing code.
+pub async fn reset(query: &str) -> Result<()> {
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let home = config::OPENCLAW_HOME;
+
+    println!("Resetting Telegram pairing on {ip}...");
+
+    let reset_cmd = format!(
+        "rm -f {home}/.openclaw/credentials/telegram-pairing.json && \
+         rm -f {home}/.openclaw/credentials/telegram-default-allowFrom.json && \
+         rm -f {home}/.openclaw/telegram/update-offset-*.json && \
+         echo 'pairing state cleared'"
+    );
+    let restart_cmd =
+        "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         (systemctl --user daemon-reload 2>/dev/null || true) && \
+         (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
+          systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
+         sleep 2 && \
+         echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
+
+    println!("[1/2] Clearing pairing credentials...");
+    println!("[2/2] Restarting gateway...");
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![reset_cmd, restart_cmd.to_string()],
+        ssh_user,
+    )
+    .await?;
+
+    println!("  {}", outputs[0].trim());
+    println!("  {}", outputs[1].trim());
+
+    println!("\nTelegram pairing reset. Send /start to your bot to receive a new pairing code.");
+    println!("Then run: clawmacdo telegram-pair --instance {query} --code <PAIRING_CODE>");
 
     Ok(())
 }

@@ -28,6 +28,7 @@ pub struct ProvisionOpts<'a> {
     pub telegram_bot_token: &'a str,
     pub public_key_openssh: &'a str,
     pub hostname: &'a str,
+    pub openclaw_version: &'a str,
     pub tailscale: bool,
     pub tailscale_auth_key: Option<&'a str>,
     /// SSH username to connect as (e.g. "root" for DigitalOcean, "ubuntu" for AWS Lightsail).
@@ -111,6 +112,7 @@ pub async fn run(ip: &str, key: &Path, opts: &ProvisionOpts<'_>) -> Result<(), A
         opts.whatsapp_phone_number,
         opts.telegram_bot_token,
         ssh_user,
+        opts.openclaw_version,
     )
     .await?;
     progress::emit(tx, "  OpenClaw installed");

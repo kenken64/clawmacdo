@@ -19,6 +19,7 @@ pub async fn provision(
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
     ssh_user: &str,
+    openclaw_version: &str,
 ) -> Result<(), AppError> {
     let user = OPENCLAW_USER;
     let home = OPENCLAW_HOME;
@@ -180,11 +181,12 @@ chmod 700 {cd}"#,
     // Install openclaw globally. Try pnpm first (user-scoped), fall back to npm (system-wide as root).
     // On some Tencent Ubuntu images, npm global install fails with ENOENT due to /bin/sh quirks,
     // so pnpm is preferred. If pnpm also fails to make it accessible, install via npm as root.
+    let version_spec = openclaw_version.to_string();
     let install_cmd = format!(
         "PNPM_HOME={home}/.local/share/pnpm \
          PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
          HOME={home} \
-         pnpm install -g openclaw@latest 2>&1 || true",
+         pnpm install -g openclaw@{version_spec} 2>&1 || true",
     );
     ssh_as_openclaw_with_user_async(ip, key, &install_cmd, ssh_user)
         .await
@@ -207,7 +209,7 @@ chmod 700 {cd}"#,
         ssh_root_as_async(
             ip,
             key,
-            "npm install -g openclaw@latest 2>&1 || pnpm install -g openclaw@latest 2>&1",
+            &format!("npm install -g openclaw@{version_spec} 2>&1 || pnpm install -g openclaw@{version_spec} 2>&1"),
             ssh_user,
         )
         .await

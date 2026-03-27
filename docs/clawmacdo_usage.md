@@ -38,6 +38,8 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [update-model](#update-model) — Update the AI model on a deployed instance
 - [update-ip](#update-ip) — Refresh IP address from cloud provider
 - [plugin-install](#plugin-install) — Install an OpenClaw plugin on a deployed instance
+- [openclaw-versions](#openclaw-versions) — List available OpenClaw versions from npm
+- [openclaw-install](#openclaw-install) — Install a specific OpenClaw version on an instance
 - [snapshot-restore-progress](#snapshot-restore-progress) — Progress tracking for snapshot/restore operations
 - [serve](#serve) — Start the web UI server
 - [Environment Variables](#environment-variables)
@@ -714,6 +716,49 @@ Looking up Telegram chat ID on 52.77.236.5...
 
 ---
 
+## telegram-reset
+
+Clear all Telegram pairing state on a deployed instance and restart the gateway. After reset, the bot will prompt for a fresh pairing code when you send `/start`.
+
+### Syntax
+
+```
+clawmacdo telegram-reset --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### What it clears
+
+- `telegram-default-allowFrom.json` — paired chat IDs
+- `telegram-pairing.json` — pending pairing requests
+- `update-offset-*.json` — Telegram update polling offsets
+
+### Examples
+
+```bash
+clawmacdo telegram-reset --instance abc123
+```
+
+### Sample Output
+
+```
+Resetting Telegram pairing on 165.22.98.168...
+[1/2] Clearing pairing credentials...
+[2/2] Restarting gateway...
+  pairing state cleared
+  gateway: active
+
+Telegram pairing reset. Send /start to your bot to receive a new pairing code.
+Then run: clawmacdo telegram-pair --instance abc123 --code <PAIRING_CODE>
+```
+
+---
+
 ## whatsapp-setup
 
 Set up WhatsApp on a deployed instance. Sets the phone number, enables the WhatsApp plugin, restarts the gateway, and fetches the pairing QR code.
@@ -791,6 +836,48 @@ clawmacdo whatsapp-qr --instance 52.221.247.33
 ```
 
 The command runs `openclaw channels login --channel whatsapp` on the remote instance with a 45-second timeout to capture the QR code output.
+
+---
+
+## whatsapp-reset
+
+Clear WhatsApp session credentials on a deployed instance and restart the gateway. After reset, a new QR code scan is required to re-pair.
+
+### Syntax
+
+```
+clawmacdo whatsapp-reset --instance <QUERY>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+
+### What it clears
+
+- `/home/openclaw/.openclaw/credentials/whatsapp/` — entire WhatsApp session directory (creds, pre-keys, app-state sync keys)
+
+### Examples
+
+```bash
+clawmacdo whatsapp-reset --instance abc123
+```
+
+### Sample Output
+
+```
+Resetting WhatsApp pairing on 165.22.98.168...
+[1/2] Clearing WhatsApp session credentials...
+[2/2] Restarting gateway...
+  WhatsApp session cleared
+  gateway: active
+
+WhatsApp pairing reset. To re-pair, run:
+  clawmacdo whatsapp-qr --instance abc123
+Then scan the QR code with your WhatsApp app.
+```
 
 ---
 
@@ -2142,7 +2229,7 @@ The Deployments tab has a **"Refresh IP"** button for each instance that calls `
 
 ## plugin-install
 
-Install an OpenClaw plugin on a deployed instance and restart the gateway.
+Install an OpenClaw plugin on a deployed instance and restart the gateway. All 3 steps (install, enable, restart) run over a single SSH session. Lightsail and Azure instances automatically use their default SSH user (`ubuntu` / `azureuser`).
 
 ### Syntax
 
@@ -2159,10 +2246,10 @@ clawmacdo plugin-install --instance <QUERY> --plugin <PACKAGE>
 
 ### What It Does
 
-1. SSHs into the instance as the `openclaw` user
+1. SSHs into the instance as the `openclaw` user (provider-aware: `ubuntu` for Lightsail, `root` for others)
 2. Installs the plugin package via `pnpm add <package>` in `~/.openclaw`
-3. Enables the plugin via `openclaw plugins enable <name>`
-4. Restarts the gateway service to apply
+3. Enables the plugin via `openclaw plugins install <package>` (falls back to `openclaw plugins enable <short_name>`)
+4. Restarts the gateway service and polls for readiness
 
 ### Examples
 
@@ -2174,6 +2261,10 @@ clawmacdo plugin-install --instance my-deploy \
 # Install by IP address
 clawmacdo plugin-install --instance 52.221.247.33 \
   --plugin "@openguardrails/moltguard"
+
+# Install on a Lightsail instance (automatically SSHs as ubuntu)
+clawmacdo plugin-install --instance openclaw-9e280c1f \
+  --plugin "@openguardrails/moltguard"
 ```
 
 ### Sample Output
@@ -2181,16 +2272,111 @@ clawmacdo plugin-install --instance 52.221.247.33 \
 ```
 Installing plugin '@openguardrails/moltguard' on 52.221.247.33...
 [1/3] Installing plugin package...
-  dependencies:
+[2/3] Enabling plugin...
+[3/3] Restarting gateway...
   + @openguardrails/moltguard 6.8.21
   Done in 14.3s using pnpm v10.32.1
-[2/3] Enabling plugin...
-  Enabled plugin "moltguard". Restart the gateway to apply.
-[3/3] Restarting gateway service...
+  Installed plugin "moltguard". Restart the gateway to apply.
   gateway: active
 
 Plugin '@openguardrails/moltguard' installed and gateway restarted on 52.221.247.33.
 ```
+
+---
+
+## openclaw-versions
+
+List all available OpenClaw versions from the npm registry.
+
+### Syntax
+
+```
+clawmacdo openclaw-versions [--json]
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--json` | No | Output the full version list as a JSON array |
+
+### Examples
+
+```bash
+# Show recent versions (last 20, newest last)
+clawmacdo openclaw-versions
+
+# Full list as JSON (for scripting)
+clawmacdo openclaw-versions --json
+```
+
+### Sample Output
+
+```
+(43 older versions omitted, use --json for full list)
+
+  2026.3.22
+  2026.3.23
+  2026.3.24  (latest)
+
+63 versions available.
+```
+
+---
+
+## openclaw-install
+
+Install a specific OpenClaw version on a running instance. SSHs in, runs `pnpm install -g openclaw@<version>`, verifies the installation, and restarts the gateway.
+
+### Syntax
+
+```
+clawmacdo openclaw-install --instance <QUERY> --version <VERSION>
+```
+
+### Options
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--instance` | Yes | Deploy ID, hostname, or IP address |
+| `--version` | Yes | OpenClaw version to install (e.g. `2026.3.22`) |
+
+### Examples
+
+```bash
+# Pin a specific version
+clawmacdo openclaw-install --instance my-deploy --version 2026.3.22
+
+# Downgrade after a broken release
+clawmacdo openclaw-install --instance 52.77.236.5 --version 2026.3.11
+```
+
+### Sample Output
+
+```
+Installing openclaw@2026.3.22 on 52.77.236.5...
+[1/3] Installing openclaw@2026.3.22...
+  + openclaw 2026.3.22
+[2/3] Verifying installation...
+  OpenClaw version: OpenClaw 2026.3.22 (abc1234)
+[3/3] Restarting gateway...
+  gateway: active
+
+openclaw@2026.3.22 installed on 52.77.236.5.
+```
+
+### Deploy with pinned version
+
+The `deploy` command also accepts `--openclaw-version` (required) to pin a version during initial deployment:
+
+```bash
+clawmacdo deploy --provider digitalocean \
+  --customer-name "my-openclaw" --customer-email "you@example.com" \
+  --do-token "$DO_TOKEN" --anthropic-key "$ANTHROPIC_API_KEY" \
+  --openclaw-version 2026.3.22
+```
+
+The web UI deploy form includes a version dropdown populated from the npm registry. The version field is mandatory in both the CLI and web UI.
 
 ---
 

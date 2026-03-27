@@ -112,12 +112,20 @@ clawmacdo track <deploy-id> --follow
 clawmacdo telegram-setup --instance <deploy-id> --bot-token "$TELEGRAM_TOKEN"
 clawmacdo telegram-pair --instance <deploy-id> --code <PAIRING_CODE>
 clawmacdo telegram-chat-id --instance <deploy-id>
+clawmacdo telegram-reset --instance <deploy-id>    # clear pairing, force new code
 
 # Set up WhatsApp (displays QR code to scan)
 clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
 clawmacdo whatsapp-qr --instance <deploy-id>   # re-fetch QR if expired
+clawmacdo whatsapp-reset --instance <deploy-id> # clear session, force new QR
 # Lightsail/Azure instances automatically use their default SSH users for WhatsApp repair/QR.
 # The web UI QR fetch now ignores a missing prior login process instead of failing with an empty SSH error.
+
+# OpenClaw version management
+clawmacdo openclaw-versions                       # list available versions
+clawmacdo openclaw-versions --json                # JSON output
+clawmacdo openclaw-install --instance <deploy-id> --version 2026.3.22  # pin version
+clawmacdo deploy --provider digitalocean --openclaw-version 2026.3.22 ...  # deploy with pinned version
 
 # Change AI model on a running instance
 clawmacdo update-model --instance <deploy-id> \
@@ -838,6 +846,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.52.0
+**Current version:** 0.53.0
 
 

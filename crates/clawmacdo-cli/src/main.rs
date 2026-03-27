@@ -121,6 +121,9 @@ enum Commands {
         /// Use spot instance for BytePlus (up to ~80% cheaper, may be reclaimed with 5 min warning)
         #[arg(long)]
         spot: bool,
+        /// OpenClaw version to install (e.g. 2026.3.22). Use `openclaw-versions` to list available versions.
+        #[arg(long)]
+        openclaw_version: String,
         /// Detach: fork deploy to background, print deploy ID, exit immediately
         #[arg(long)]
         detach: bool,
@@ -213,6 +216,12 @@ enum Commands {
     },
     /// Retrieve the Telegram chat ID from a deployed instance
     TelegramChatId {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Reset Telegram pairing state so the bot prompts for a new pairing code
+    TelegramReset {
         /// Deploy ID, hostname, or IP address of the instance
         #[arg(long)]
         instance: String,
@@ -467,6 +476,27 @@ enum Commands {
         #[arg(long)]
         instance: String,
     },
+    /// Reset WhatsApp pairing state so a new QR code scan is required
+    WhatsappReset {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// List available OpenClaw versions from the npm registry
+    OpenclawVersions {
+        /// Output as JSON array
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a specific OpenClaw version on a deployed instance
+    OpenclawInstall {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Version to install (e.g. 2026.3.20)
+        #[arg(long)]
+        version: String,
+    },
     /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
     SkillDeploy {
         /// Deploy ID, hostname, or IP address of the instance
@@ -665,6 +695,7 @@ async fn async_main() -> anyhow::Result<()> {
             failover_2,
             profile,
             spot,
+            openclaw_version,
             detach,
             json,
             _deploy_id,
@@ -704,6 +735,7 @@ async fn async_main() -> anyhow::Result<()> {
                 failover_2,
                 profile,
                 spot,
+                openclaw_version,
                 detach,
                 json,
                 deploy_id: _deploy_id,
@@ -768,6 +800,7 @@ async fn async_main() -> anyhow::Result<()> {
             commands::telegram::approve_pairing(&instance, &code).await
         }
         Commands::TelegramChatId { instance } => commands::telegram::get_chat_id(&instance).await,
+        Commands::TelegramReset { instance } => commands::telegram::reset(&instance).await,
         Commands::SkillDeploy { instance, file } => {
             commands::skill_deploy::deploy(&instance, &file).await
         }
@@ -972,6 +1005,11 @@ async fn async_main() -> anyhow::Result<()> {
             phone_number,
         } => commands::whatsapp_setup::setup(&instance, &phone_number).await,
         Commands::WhatsappQr { instance } => commands::whatsapp_setup::fetch_qr(&instance).await,
+        Commands::WhatsappReset { instance } => commands::whatsapp_setup::reset(&instance).await,
+        Commands::OpenclawVersions { json } => commands::openclaw_version::run_list(json).await,
+        Commands::OpenclawInstall { instance, version } => {
+            commands::openclaw_version::run_install(&instance, &version).await
+        }
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await
         }
