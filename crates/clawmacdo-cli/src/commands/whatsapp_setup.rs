@@ -45,33 +45,59 @@ fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
 
 /// Enable WhatsApp channel on a deployed instance, set the phone number in .env,
 /// enable the whatsapp plugin, restart the gateway, and fetch the pairing QR code.
-pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
+pub async fn setup(query: &str, phone_number: &str, reset: bool) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
     println!("Setting up WhatsApp on {ip}...");
 
-    let set_phone_cmd = format!(
+    let mut cmds: Vec<String> = Vec::new();
+    let mut step = 0;
+    let total_steps = if reset { 5 } else { 4 };
+
+    if reset {
+        step += 1;
+        println!("[{step}/{total_steps}] Clearing WhatsApp session credentials...");
+        cmds.push(format!(
+            "rm -rf {home}/.openclaw/credentials/whatsapp && \
+             echo 'WhatsApp session cleared'"
+        ));
+    }
+
+    step += 1;
+    println!("[{step}/{total_steps}] Setting WHATSAPP_PHONE_NUMBER in .env...");
+    cmds.push(format!(
         "if grep -q '^WHATSAPP_PHONE_NUMBER=' {home}/.openclaw/.env 2>/dev/null; then \
            sed -i 's|^WHATSAPP_PHONE_NUMBER=.*|WHATSAPP_PHONE_NUMBER={phone_number}|' {home}/.openclaw/.env; \
          else \
            echo 'WHATSAPP_PHONE_NUMBER={phone_number}' >> {home}/.openclaw/.env; \
          fi && chmod 600 {home}/.openclaw/.env",
-    );
-    let enable_cmd = format!(
+    ));
+
+    step += 1;
+    println!("[{step}/{total_steps}] Enabling WhatsApp plugin...");
+    cmds.push(format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          (openclaw plugins enable whatsapp 2>&1 || true)",
-    );
-    let restart_cmd =
+    ));
+
+    step += 1;
+    println!("[{step}/{total_steps}] Restarting gateway service...");
+    cmds.push(
         "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
          (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
          sleep 2 && \
-         echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)";
-    let qr_cmd = format!(
+         echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)"
+            .to_string(),
+    );
+
+    step += 1;
+    println!("[{step}/{total_steps}] Fetching WhatsApp pairing QR code...");
+    cmds.push(format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
@@ -80,33 +106,26 @@ pub async fn setup(query: &str, phone_number: &str) -> Result<()> {
          else \
            openclaw channels login --channel whatsapp 2>&1 || true; \
          fi",
-    );
+    ));
 
-    // All 4 steps share one SSH session — one TCP connect + handshake instead of four.
-    println!("[1/4] Setting WHATSAPP_PHONE_NUMBER in .env...");
-    println!("[2/4] Enabling WhatsApp plugin...");
-    println!("[3/4] Restarting gateway service...");
-    println!("[4/4] Fetching WhatsApp pairing QR code...");
-    let outputs = ssh_as_openclaw_with_user_multi_async(
-        &ip,
-        &key,
-        vec![set_phone_cmd, enable_cmd, restart_cmd.to_string(), qr_cmd],
-        ssh_user,
-    )
-    .await?;
+    let outputs = ssh_as_openclaw_with_user_multi_async(&ip, &key, cmds, ssh_user).await?;
 
-    // outputs[0] = set_phone (discard)
-    // outputs[1] = enable plugin
-    if !outputs[1].trim().is_empty() {
-        println!("  {}", outputs[1].trim());
+    // Print relevant output
+    let qr_idx = outputs.len() - 1;
+    let gateway_idx = qr_idx - 1;
+    for (i, out) in outputs.iter().enumerate() {
+        let trimmed = out.trim();
+        if i == qr_idx {
+            // QR code gets its own section
+            println!("\n{trimmed}");
+        } else if !trimmed.is_empty() {
+            println!("  {trimmed}");
+        }
     }
-    // outputs[2] = restart gateway
-    println!("  {}", outputs[2].trim());
-    // outputs[3] = QR code
-    println!("\n{}", outputs[3].trim());
 
     println!("\nWhatsApp setup complete. Scan the QR code above with your WhatsApp app.");
     println!("If the QR code expired, run: clawmacdo whatsapp-qr --instance {query}");
+    let _ = gateway_idx;
 
     Ok(())
 }
