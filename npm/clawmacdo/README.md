@@ -110,12 +110,14 @@ clawmacdo track <deploy-id> --follow
 
 # Set up Telegram bot
 clawmacdo telegram-setup --instance <deploy-id> --bot-token "$TELEGRAM_TOKEN"
+clawmacdo telegram-setup --instance <deploy-id> --bot-token "$TELEGRAM_TOKEN" --reset  # reset + setup in one SSH session
 clawmacdo telegram-pair --instance <deploy-id> --code <PAIRING_CODE>
 clawmacdo telegram-chat-id --instance <deploy-id>
 clawmacdo telegram-reset --instance <deploy-id>    # clear pairing, force new code
 
 # Set up WhatsApp (displays QR code to scan)
 clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
+clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678" --reset  # reset + setup in one SSH session
 clawmacdo whatsapp-qr --instance <deploy-id>   # re-fetch QR if expired
 clawmacdo whatsapp-reset --instance <deploy-id> # clear session, force new QR
 # Lightsail/Azure instances automatically use their default SSH users for WhatsApp repair/QR.
@@ -846,6 +848,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.54.0
+**Current version:** 0.55.0
 
 

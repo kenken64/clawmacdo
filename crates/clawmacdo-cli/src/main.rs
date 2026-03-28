@@ -204,6 +204,9 @@ enum Commands {
         /// Telegram bot token (from @BotFather)
         #[arg(long)]
         bot_token: String,
+        /// Clear existing pairing state before setup (reset + setup in one SSH session)
+        #[arg(long)]
+        reset: bool,
     },
     /// Approve a Telegram pairing code to activate chat
     TelegramPair {
@@ -469,6 +472,9 @@ enum Commands {
         /// WhatsApp phone number (with country code, e.g. +6512345678)
         #[arg(long)]
         phone_number: String,
+        /// Clear existing session credentials before setup (reset + setup in one SSH session)
+        #[arg(long)]
+        reset: bool,
     },
     /// Fetch the WhatsApp pairing QR code from a deployed instance
     WhatsappQr {
@@ -795,7 +801,8 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::TelegramSetup {
             instance,
             bot_token,
-        } => commands::telegram::configure_bot(&instance, &bot_token).await,
+            reset,
+        } => commands::telegram::configure_bot(&instance, &bot_token, reset).await,
         Commands::TelegramPair { instance, code } => {
             commands::telegram::approve_pairing(&instance, &code).await
         }
@@ -1003,7 +1010,8 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::WhatsappSetup {
             instance,
             phone_number,
-        } => commands::whatsapp_setup::setup(&instance, &phone_number).await,
+            reset,
+        } => commands::whatsapp_setup::setup(&instance, &phone_number, reset).await,
         Commands::WhatsappQr { instance } => commands::whatsapp_setup::fetch_qr(&instance).await,
         Commands::WhatsappReset { instance } => commands::whatsapp_setup::reset(&instance).await,
         Commands::OpenclawVersions { json } => commands::openclaw_version::run_list(json).await,
