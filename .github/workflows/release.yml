@@ -157,6 +157,8 @@ jobs:
         id: release_body
         run: |
           cat > release_notes.md << 'EOF'
+          📋 [View full CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)
+
           ## 🚀 ClawMacdo ${{ github.ref_name }}
 
           ### ✨ What's New
