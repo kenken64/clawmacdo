@@ -22,6 +22,7 @@ pub struct DestroyParams {
     pub byteplus_access_key: String,
     pub byteplus_secret_key: String,
     pub name: String,
+    pub ip_address: String,
     pub yes: bool,
 }
 
@@ -67,14 +68,48 @@ pub async fn run(params: DestroyParams) -> Result<()> {
 }
 
 async fn run_do(params: DestroyParams) -> Result<()> {
-    let client = DoClient::new(&params.do_token)?;
+    let token = if params.do_token.trim().is_empty() {
+        std::env::var("DO_TOKEN").unwrap_or_default()
+    } else {
+        params.do_token.clone()
+    };
+    if token.trim().is_empty() {
+        bail!("DigitalOcean token is required. Provide it in the destroy modal or set DO_TOKEN env var.");
+    }
+    let client = DoClient::new(&token)?;
 
     println!("Fetching openclaw droplets...");
-    let droplets = client.list_droplets().await?;
-    let droplet = droplets
-        .into_iter()
-        .find(|d| d.name == params.name)
-        .ok_or_else(|| anyhow::anyhow!("No openclaw droplet found with name '{}'", params.name))?;
+    let mut droplets = client.list_droplets().await?;
+    let search_ip = params.ip_address.trim();
+
+    // Try to find the droplet in tagged list first; if not found, search all droplets
+    let droplet = if !search_ip.is_empty() {
+        let found = droplets
+            .iter()
+            .position(|d| d.public_ip().as_deref() == Some(search_ip));
+        if let Some(idx) = found {
+            droplets.swap_remove(idx)
+        } else {
+            // Droplet may not have the clawmacdo tag — search all droplets
+            println!("Not found in tagged droplets, searching all droplets...");
+            let all = client.list_all_droplets().await?;
+            all.into_iter()
+                .find(|d| d.public_ip().as_deref() == Some(search_ip))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No droplet found with IP '{search_ip}' (name hint: '{}')",
+                        params.name
+                    )
+                })?
+        }
+    } else {
+        droplets
+            .into_iter()
+            .find(|d| d.name == params.name)
+            .ok_or_else(|| {
+                anyhow::anyhow!("No openclaw droplet found with name '{}'", params.name)
+            })?
+    };
 
     let ip = droplet.public_ip().unwrap_or_else(|| "N/A".into());
     println!();

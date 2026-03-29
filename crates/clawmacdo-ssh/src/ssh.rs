@@ -143,7 +143,52 @@ fn connect(ip: &str, private_key_path: &Path) -> Result<Session, AppError> {
     connect_as(ip, private_key_path, "root")
 }
 
+/// Returns true for errors that should not be retried: permanent failures
+/// (host key mismatch, auth failure) and connection timeouts (server is down).
+fn is_non_retryable_error(e: &AppError) -> bool {
+    match e {
+        AppError::Ssh(msg) => {
+            msg.contains("host key mismatch")
+                || msg.contains("Username/PublicKey combination invalid")
+                || msg.contains("Invalid address")
+                || msg.contains("connection timed out")
+                || msg.contains("Connection refused")
+        }
+        AppError::HostKeyMismatch { .. } => true,
+        _ => false,
+    }
+}
+
 fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Session, AppError> {
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let mut last_err = None;
+
+    for attempt in 1..=MAX_RETRIES {
+        match try_connect(ip, private_key_path, username) {
+            Ok(sess) => return Ok(sess),
+            Err(e) => {
+                // Don't retry permanent errors or connection timeouts
+                if is_non_retryable_error(&e) {
+                    return Err(e);
+                }
+                if attempt < MAX_RETRIES {
+                    eprintln!(
+                        "SSH connect to {ip} failed (attempt {attempt}/{MAX_RETRIES}): {e} — retrying in {}s",
+                        RETRY_DELAY.as_secs()
+                    );
+                    std::thread::sleep(RETRY_DELAY);
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+
+    Err(last_err.unwrap())
+}
+
+fn try_connect(ip: &str, private_key_path: &Path, username: &str) -> Result<Session, AppError> {
     let addr = format!("{ip}:22");
     let sock_addr: std::net::SocketAddr = addr
         .parse()
