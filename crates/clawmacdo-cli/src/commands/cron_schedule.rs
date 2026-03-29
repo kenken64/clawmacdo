@@ -313,12 +313,12 @@ pub async fn remove(query: &str, name: &str) -> Result<()> {
 
     println!("Looking up cron job '{name}' on {ip}...");
 
-    // Resolve name → ID
+    // Resolve name → ID (stderr suppressed so banner/warnings don't corrupt JSON)
     let list_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         openclaw cron list --json 2>&1"
+         openclaw cron list --json 2>/dev/null"
     );
     let list_out = ssh_as_openclaw_with_user_async(&ip, &key, &list_cmd, ssh_user).await?;
     let job_id = parse_job_id_by_name(&list_out, name)?;
@@ -338,8 +338,12 @@ pub async fn remove(query: &str, name: &str) -> Result<()> {
 }
 
 fn parse_job_id_by_name(json_out: &str, name: &str) -> Result<String> {
-    // `openclaw cron list --json` outputs {"jobs": [...]}
-    let root: serde_json::Value = serde_json::from_str(json_out.trim())
+    // `openclaw cron list --json` outputs {"jobs": [...]}.
+    // The output may be prefixed with banner text or warnings, so find the
+    // first `{` to locate the start of the JSON object.
+    let trimmed = json_out.trim();
+    let json_str = trimmed.find('{').map(|i| &trimmed[i..]).unwrap_or(trimmed);
+    let root: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse cron list output: {e}\n{json_out}"))?;
     let arr = root
         .get("jobs")
