@@ -22,6 +22,7 @@
 - **Gateway port 18789 lost after model set** — `openclaw models set` triggered an internal hot-reload that got stuck; fixed by forcing `systemctl --user restart` after model configuration (all providers)
 
 ### Performance
+- **Deploy Step 15 gateway startup optimization** — health check loop reduced from 150 fixed 1s polls (max 150s) to 30 iterations with exponential backoff (1s→2s→3s, max ~70s, exits immediately on healthy); blind `sleep 2` after Telegram/model gateway restart replaced with the same adaptive health check; model setup and profile setup commands batched into a single SSH session (one TCP connect + handshake instead of two) across all 5 cloud providers (DigitalOcean, Tencent, BytePlus, Lightsail, Azure)
 - **`skill-deploy` single-session optimization** — SCP upload, extraction, and gateway restart now share one SSH session (was two separate connections); extraction uses `unzip` instead of Python; permissions fixed in one `chmod -R` pass instead of two `find` walks; gateway restart polls for readiness instead of a fixed 2s sleep
 - **`skill-list` subcommand** — list all skill directories deployed on an instance, resolved against the gateway-registered skill name from each `SKILL.md`, with readiness status
 - **`skill-check-perms` subcommand** — audit file ownership and permissions for a deployed skill (`--instance` + `--skill`); reports any files not owned by `openclaw:openclaw` or with incorrect permissions (dirs `755`, files `644`); `--fix` flag auto-corrects in place
