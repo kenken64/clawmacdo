@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-provision"
-version = "0.58.0"
+version = "0.59.0"
 edition = "2021"
 description = "Server provisioning and setup logic for ClawMacdo"
 
@@ -13,6 +13,7 @@ tokio = { workspace = true }
 clawmacdo-core = { workspace = true }
 clawmacdo-ssh = { workspace = true }
 clawmacdo-ui = { workspace = true }
+
 
 
 

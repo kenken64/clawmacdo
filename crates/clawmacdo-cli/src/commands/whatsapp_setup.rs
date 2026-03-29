@@ -5,6 +5,33 @@ use clawmacdo_provision::provision::commands::{
 };
 use std::path::PathBuf;
 
+/// Build a shell command that fetches the WhatsApp QR code using a
+/// background process + polling approach.  The openclaw login process
+/// prints the QR and then keeps running (waiting for the scan), so a
+/// synchronous `timeout 45s` blocks until the full timeout expires.
+/// Instead we:
+///   1. Kill any lingering login process.
+///   2. Launch openclaw in the background via `nohup script`, writing
+///      output to a temp file.
+///   3. Poll the file every 0.5 s for up to 30 iterations (≈ 15 s).
+///      As soon as ≥ 1000 bytes appear the QR block is present.
+///   4. Cat the file and return immediately.
+///
+/// The background openclaw process stays alive (up to 90 s) so the
+/// WhatsApp linking handshake can complete after the user scans.
+fn qr_fetch_shell_cmd(home: &str) -> String {
+    format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
+         export HOME=\"{home}\"; \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
+         pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
+         QF=/tmp/wa_qr_$$.txt; \
+         nohup script -q -f -c \"TERM=dumb NO_COLOR=1 FORCE_COLOR=0 timeout 90s openclaw channels login --channel whatsapp\" \"$QF\" >/dev/null 2>&1 & \
+         for I in $(seq 1 30); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); [ \"$SZ\" -ge 1000 ] && break; done; \
+         sleep 0.5; cat \"$QF\" 2>/dev/null | tr -d '\\r' || echo 'QR not ready'",
+    )
+}
+
 /// Look up a deploy record by hostname, IP, or deploy ID.
 fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> {
     let deploys_dir = config::deploys_dir()?;
@@ -97,16 +124,7 @@ pub async fn setup(query: &str, phone_number: &str, reset: bool) -> Result<()> {
 
     step += 1;
     println!("[{step}/{total_steps}] Fetching WhatsApp pairing QR code...");
-    cmds.push(format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if command -v timeout >/dev/null 2>&1; then \
-           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
-         else \
-           openclaw channels login --channel whatsapp 2>&1 || true; \
-         fi",
-    ));
+    cmds.push(qr_fetch_shell_cmd(home));
 
     let outputs = ssh_as_openclaw_with_user_multi_async(&ip, &key, cmds, ssh_user).await?;
 
@@ -180,16 +198,7 @@ pub async fn fetch_qr(query: &str) -> Result<()> {
 
     println!("Fetching WhatsApp QR code from {ip}...");
 
-    let qr_cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         if command -v timeout >/dev/null 2>&1; then \
-           timeout 45s openclaw channels login --channel whatsapp 2>&1 || true; \
-         else \
-           openclaw channels login --channel whatsapp 2>&1 || true; \
-         fi",
-    );
+    let qr_cmd = qr_fetch_shell_cmd(home);
     let qr_out = ssh_as_openclaw_with_user_async(&ip, &key, &qr_cmd, ssh_user).await?;
 
     let lowered = qr_out.to_ascii_lowercase();
