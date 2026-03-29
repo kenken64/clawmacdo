@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.55.0
+## v0.56.0
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
@@ -350,6 +350,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 
