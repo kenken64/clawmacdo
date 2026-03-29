@@ -1341,25 +1341,28 @@ async fn approve_telegram_pairing_handler(
 /// Build the shell command that fetches a WhatsApp QR code.
 ///
 /// Strategy:
-///   1. `script -q -c "..."` allocates a pseudo-TTY so Node.js flushes stdout
-///      immediately instead of buffering (Node.js writes to the PTY in line-by-line
-///      mode).  Without this, background-redirected output sits in Node's buffer.
-///   2. `nohup` makes the process ignore SIGHUP so it survives SSH session end.
-///   3. The script process runs openclaw for up to 90 s in the background, writing
-///      its output to a temp typescript file.
-///   4. We poll the file by byte-size (QR block ≈ 5 KB).  Once ≥ 1000 bytes have
-///      appeared the QR is present; we cat the file and strip PTY carriage returns.
-///   5. openclaw keeps running so WhatsApp can complete the linking handshake after
-///      the user scans.  Killing it at 12 s was the root cause of "can't link".
+///   1. Kill any lingering login process.
+///   2. Launch openclaw in the background with `stdbuf -oL` (line-buffered)
+///      so stdout flushes immediately without needing a PTY.  The old
+///      `script -q -f` approach corrupted output under `TERM=dumb`.
+///   3. Poll the temp file every 0.5 s.  Exit early when ≥ 500 bytes appear
+///      (QR block) or when the file stops growing for 3 s (process exited or
+///      hit an error like "session logged out").
+///   4. openclaw keeps running (up to 90 s) so the WhatsApp linking
+///      handshake can complete after the user scans.
 fn qr_fetch_cmd(home: &str) -> String {
     format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
-     pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
-         QF=/tmp/wa_qr_$$.txt; \
-         nohup script -q -f -c \"TERM=dumb NO_COLOR=1 FORCE_COLOR=0 timeout 90s openclaw channels login --channel whatsapp\" \"$QF\" >/dev/null 2>&1 & \
-         for I in $(seq 1 30); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); [ \"$SZ\" -ge 1000 ] && break; done; \
-         sleep 0.5; cat \"$QF\" 2>/dev/null | tr -d '\\r' || echo 'QR not ready'",
+         pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
+         QF=/tmp/wa_qr_$$.txt; rm -f \"$QF\"; touch \"$QF\"; \
+         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>&1 & \
+         PREV=0; SAME=0; \
+         for I in $(seq 1 40); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); \
+           if [ \"$SZ\" -ge 500 ]; then break; fi; \
+           if [ \"$SZ\" -gt 0 ] && [ \"$SZ\" -eq \"$PREV\" ]; then SAME=$((SAME+1)); if [ \"$SAME\" -ge 6 ]; then break; fi; else SAME=0; fi; \
+           PREV=$SZ; done; \
+         sleep 0.3; cat \"$QF\" 2>/dev/null || echo 'QR not ready'",
     )
 }
 

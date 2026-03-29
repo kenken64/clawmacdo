@@ -12,10 +12,12 @@ use std::path::PathBuf;
 /// synchronous `timeout 45s` blocks until the full timeout expires.
 /// Instead we:
 ///   1. Kill any lingering login process.
-///   2. Launch openclaw in the background via `nohup script`, writing
-///      output to a temp file.
-///   3. Poll the file every 0.5 s for up to 30 iterations (≈ 15 s).
-///      As soon as ≥ 1000 bytes appear the QR block is present.
+///   2. Launch openclaw in the background with stdout/stderr piped to a
+///      temp file via `stdbuf -oL` (line-buffered) so output flushes
+///      immediately without needing a PTY.
+///   3. Poll the file every 0.5 s for up to 40 iterations (≈ 20 s).
+///      As soon as ≥ 500 bytes appear the QR block is likely present;
+///      we also stop early if the file stops growing (openclaw exited).
 ///   4. Cat the file and return immediately.
 ///
 /// The background openclaw process stays alive (up to 90 s) so the
@@ -26,10 +28,14 @@ fn qr_fetch_shell_cmd(home: &str) -> String {
          export HOME=\"{home}\"; \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
          pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
-         QF=/tmp/wa_qr_$$.txt; \
-         nohup script -q -f -c \"TERM=dumb NO_COLOR=1 FORCE_COLOR=0 timeout 90s openclaw channels login --channel whatsapp\" \"$QF\" >/dev/null 2>&1 & \
-         for I in $(seq 1 30); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); [ \"$SZ\" -ge 1000 ] && break; done; \
-         sleep 0.5; cat \"$QF\" 2>/dev/null | tr -d '\\r' || echo 'QR not ready'",
+         QF=/tmp/wa_qr_$$.txt; rm -f \"$QF\"; touch \"$QF\"; \
+         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>&1 & \
+         PREV=0; SAME=0; \
+         for I in $(seq 1 40); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); \
+           if [ \"$SZ\" -ge 500 ]; then break; fi; \
+           if [ \"$SZ\" -gt 0 ] && [ \"$SZ\" -eq \"$PREV\" ]; then SAME=$((SAME+1)); if [ \"$SAME\" -ge 6 ]; then break; fi; else SAME=0; fi; \
+           PREV=$SZ; done; \
+         sleep 0.3; cat \"$QF\" 2>/dev/null || echo 'QR not ready'",
     )
 }
 
