@@ -181,9 +181,12 @@ fn build_model_setup_cmd(primary: &str, failovers: &[&str], telegram_bot_token: 
     // attempts an internal hot-reload that can get stuck (process stays alive at 100% CPU
     // but never rebinds the port), silently breaking Telegram and all message handling.
     cmd.push_str(
-        " (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || true);\
-         sleep 2;\
-         echo ok",
+        " (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || true); \
+         for i in $(seq 1 20); do \
+           STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
+           if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
+           sleep $(( i < 6 ? 1 : 2 )); \
+         done; echo ok",
     );
     cmd
 }
@@ -849,10 +852,10 @@ SVCEOF\n\
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
-         for i in $(seq 1 150); do \
+         for i in $(seq 1 30); do \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
            if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
-           sleep 1; \
+           sleep $(( i < 6 ? 1 : i < 16 ? 2 : 3 )); \
          done; exit 1"
     );
     let ip_c = ip.clone();
@@ -883,29 +886,17 @@ SVCEOF\n\
         &failovers,
         &params.telegram_bot_token,
     );
-    progress::emit(tx, "[Step 15/16] Configuring model setup...");
-    let ip_c = ip.clone();
-    let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
-    })
-    .await??;
-
-    // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(
-        tx,
-        &format!(
-            "[Step 15/16] Setting tools profile to '{}'...",
-            params.profile
-        ),
-    );
+    progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
-    })
-    .await??;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(
+        &ip_c,
+        &key_c,
+        vec![model_cmd, profile_cmd],
+        "root",
+    )
+    .await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1260,10 +1251,10 @@ SVCEOF\n\
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
-         for i in $(seq 1 150); do \
+         for i in $(seq 1 30); do \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
            if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
-           sleep 1; \
+           sleep $(( i < 6 ? 1 : i < 16 ? 2 : 3 )); \
          done; exit 1"
     );
     let ip_c = ip.clone();
@@ -1294,29 +1285,17 @@ SVCEOF\n\
         &failovers,
         &params.telegram_bot_token,
     );
-    progress::emit(tx, "[Step 15/16] Configuring model setup...");
-    let ip_c = ip.clone();
-    let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
-    })
-    .await??;
-
-    // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(
-        tx,
-        &format!(
-            "[Step 15/16] Setting tools profile to '{}'...",
-            params.profile
-        ),
-    );
+    progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
-    })
-    .await??;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(
+        &ip_c,
+        &key_c,
+        vec![model_cmd, profile_cmd],
+        "root",
+    )
+    .await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1548,10 +1527,10 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
-         for i in $(seq 1 150); do \
+         for i in $(seq 1 30); do \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
            if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
-           sleep 1; \
+           sleep $(( i < 6 ? 1 : i < 16 ? 2 : 3 )); \
          done; exit 1"
     );
     let ip_c = ip.clone();
@@ -1577,26 +1556,17 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         byteplus_ark_api_key,
     );
     let model_cmd = build_model_setup_cmd(primary_model, &failovers, telegram_bot_token);
-    progress::emit(tx, "[Step 15/16] Configuring model setup...");
-    let ip_c = ip.clone();
-    let key_c = private_key_path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &model_cmd)
-    })
-    .await??;
-
-    // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(profile);
-    progress::emit(
-        tx,
-        &format!("[Step 15/16] Setting tools profile to '{profile}'..."),
-    );
+    progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw(&ip_c, &key_c, &profile_cmd)
-    })
-    .await??;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(
+        &ip_c,
+        &key_c,
+        vec![model_cmd, profile_cmd],
+        "root",
+    )
+    .await?;
     record_step_complete(step_db, deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1925,10 +1895,10 @@ SVCEOF\n\
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
-         for i in $(seq 1 150); do \
+         for i in $(seq 1 30); do \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
            if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
-           sleep 1; \
+           sleep $(( i < 6 ? 1 : i < 16 ? 2 : 3 )); \
          done; exit 1"
     );
     let ip_c = ip.clone();
@@ -1959,29 +1929,17 @@ SVCEOF\n\
         &failovers,
         &params.telegram_bot_token,
     );
-    progress::emit(tx, "[Step 15/16] Configuring model setup...");
-    let ip_c = ip.clone();
-    let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &model_cmd, "ubuntu")
-    })
-    .await??;
-
-    // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(
-        tx,
-        &format!(
-            "[Step 15/16] Setting tools profile to '{}'...",
-            params.profile
-        ),
-    );
+    progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &profile_cmd, "ubuntu")
-    })
-    .await??;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(
+        &ip_c,
+        &key_c,
+        vec![model_cmd, profile_cmd],
+        "ubuntu",
+    )
+    .await?;
 
     // Step 16: Save DeployRecord
     record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
@@ -2355,10 +2313,10 @@ SVCEOF\n\
          (systemctl --user daemon-reload || true) && \
          (systemctl --user enable openclaw-gateway.service || true) && \
          (systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true) && \
-         for i in $(seq 1 150); do \
+         for i in $(seq 1 30); do \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
            if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo ok; exit 0; fi; \
-           sleep 1; \
+           sleep $(( i < 6 ? 1 : i < 16 ? 2 : 3 )); \
          done; exit 1"
     );
     let ip_c = ip.clone();
@@ -2389,29 +2347,17 @@ SVCEOF\n\
         &failovers,
         &params.telegram_bot_token,
     );
-    progress::emit(tx, "[Step 15/16] Configuring model setup...");
-    let ip_c = ip.clone();
-    let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &model_cmd, "azureuser")
-    })
-    .await??;
-
-    // Profile setup (tools.profile in openclaw.json)
     let profile_cmd = build_profile_setup_cmd(&params.profile);
-    progress::emit(
-        tx,
-        &format!(
-            "[Step 15/16] Setting tools profile to '{}'...",
-            params.profile
-        ),
-    );
+    progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    tokio::task::spawn_blocking(move || {
-        provision::commands::ssh_as_openclaw_with_user(&ip_c, &key_c, &profile_cmd, "azureuser")
-    })
-    .await??;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(
+        &ip_c,
+        &key_c,
+        vec![model_cmd, profile_cmd],
+        "azureuser",
+    )
+    .await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
