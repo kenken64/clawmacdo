@@ -809,6 +809,7 @@ async fn async_main() -> anyhow::Result<()> {
                 byteplus_access_key,
                 byteplus_secret_key,
                 name,
+                ip_address: String::new(),
                 yes,
             })
             .await

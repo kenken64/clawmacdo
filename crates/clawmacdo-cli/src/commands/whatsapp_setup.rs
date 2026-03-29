@@ -29,7 +29,7 @@ fn qr_fetch_shell_cmd(home: &str) -> String {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
          pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
          QF=/tmp/wa_qr_$$.txt; rm -f \"$QF\"; touch \"$QF\"; \
-         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>&1 & \
+         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>/dev/null & \
          PREV=0; SAME=0; \
          for I in $(seq 1 40); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); \
            if [ \"$SZ\" -ge 500 ]; then break; fi; \

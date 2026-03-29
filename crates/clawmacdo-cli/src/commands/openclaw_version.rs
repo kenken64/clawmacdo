@@ -5,7 +5,16 @@ use std::path::PathBuf;
 
 /// Fetch available openclaw versions from the npm registry.
 /// Returns them as a JSON array of version strings (newest last).
+///
+/// Tries the npm registry HTTP API first (works without npm installed),
+/// then falls back to the local `npm` CLI.
 pub async fn list_versions() -> Result<Vec<String>> {
+    // Try HTTP registry API first — works on any platform without npm
+    if let Ok(versions) = list_versions_http().await {
+        return Ok(versions);
+    }
+
+    // Fall back to local npm CLI
     let output = tokio::process::Command::new("npm")
         .args(["view", "openclaw", "versions", "--json"])
         .output()
@@ -22,6 +31,39 @@ pub async fn list_versions() -> Result<Vec<String>> {
         .map_err(|e| anyhow::anyhow!("Failed to parse npm output: {e}"))?;
 
     Ok(versions)
+}
+
+/// Fetch versions directly from the npm registry HTTP API.
+async fn list_versions_http() -> Result<Vec<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp = client
+        .get("https://registry.npmjs.org/openclaw")
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        bail!("npm registry returned {}", resp.status());
+    }
+    let body: serde_json::Value = resp.json().await?;
+    let versions_obj = body
+        .get("versions")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow::anyhow!("No versions field in registry response"))?;
+
+    let mut versions: Vec<String> = versions_obj.keys().cloned().collect();
+    // Sort by semver-ish order (the registry object keys are unordered)
+    versions.sort_by_key(|a| version_sort_key(a));
+    Ok(versions)
+}
+
+/// Parse a version string into a sortable tuple of numeric parts.
+fn version_sort_key(v: &str) -> Vec<u64> {
+    v.split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u64>().unwrap_or(0))
+        .collect()
 }
 
 /// CLI handler: print available openclaw versions.

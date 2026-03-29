@@ -1356,7 +1356,7 @@ fn qr_fetch_cmd(home: &str) -> String {
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
          pkill -f 'openclaw channels login' 2>/dev/null || true; sleep 0.3; \
          QF=/tmp/wa_qr_$$.txt; rm -f \"$QF\"; touch \"$QF\"; \
-         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>&1 & \
+         TERM=dumb NO_COLOR=1 FORCE_COLOR=0 nohup stdbuf -oL timeout 90s openclaw channels login --channel whatsapp >\"$QF\" 2>/dev/null & \
          PREV=0; SAME=0; \
          for I in $(seq 1 40); do sleep 0.5; SZ=$(wc -c <\"$QF\" 2>/dev/null || echo 0); \
            if [ \"$SZ\" -ge 500 ]; then break; fi; \
@@ -1662,8 +1662,8 @@ async fn destroy_deployment_handler(
     Path(id): Path<String>,
     Json(req): Json<DestroyDeploymentRequest>,
 ) -> Response {
-    // Look up deployment to get provider and hostname
-    let (provider, hostname) = {
+    // Look up deployment to get provider, hostname, and IP
+    let (provider, hostname, ip_address) = {
         let conn = match lock_db(&state.db) {
             Ok(conn) => conn,
             Err(resp) => return resp,
@@ -1672,6 +1672,7 @@ async fn destroy_deployment_handler(
             Ok(Some(d)) => (
                 d.provider.unwrap_or_default(),
                 d.hostname.unwrap_or_default(),
+                d.ip_address.unwrap_or_default(),
             ),
             Ok(None) => {
                 return (
@@ -1717,6 +1718,7 @@ async fn destroy_deployment_handler(
         byteplus_access_key: req.byteplus_access_key,
         byteplus_secret_key: req.byteplus_secret_key,
         name: hostname.clone(),
+        ip_address: ip_address.clone(),
         yes: true, // skip interactive confirmation
     };
 
@@ -4583,7 +4585,7 @@ async function startDeploy(e, cardNum) {
     tailscale_auth_key: val('tailscale_auth_key'),
     profile: val('profile'),
     spot: form.querySelector('[name="spot"]').checked,
-    openclaw_version: selVal('openclaw_version'),
+    openclaw_version: val('openclaw_version'),
   };
 
   if (!body.openclaw_version) {
@@ -5112,22 +5114,27 @@ async function confirmDestroy(id, provider) {
   const body = {};
   if (provider === 'digitalocean') {
     body.do_token = (document.getElementById('destroy-do-token') || {}).value || '';
+    if (!body.do_token.trim()) { alert('DigitalOcean token is required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
   } else if (provider === 'tencent') {
     body.tencent_secret_id = (document.getElementById('destroy-tencent-id') || {}).value || '';
     body.tencent_secret_key = (document.getElementById('destroy-tencent-key') || {}).value || '';
+    if (!body.tencent_secret_id.trim() || !body.tencent_secret_key.trim()) { alert('Tencent credentials are required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
   } else if (provider === 'lightsail') {
     body.aws_access_key_id = (document.getElementById('destroy-aws-ak') || {}).value || '';
     body.aws_secret_access_key = (document.getElementById('destroy-aws-sk') || {}).value || '';
     body.aws_region = (document.getElementById('destroy-aws-region') || {}).value || 'ap-southeast-1';
+    if (!body.aws_access_key_id.trim() || !body.aws_secret_access_key.trim()) { alert('AWS credentials are required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
   } else if (provider === 'azure') {
     body.azure_tenant_id = (document.getElementById('destroy-azure-tenant') || {}).value || '';
     body.azure_subscription_id = (document.getElementById('destroy-azure-sub') || {}).value || '';
     body.azure_client_id = (document.getElementById('destroy-azure-client') || {}).value || '';
     body.azure_client_secret = (document.getElementById('destroy-azure-secret') || {}).value || '';
     body.azure_resource_group = (document.getElementById('destroy-azure-rg') || {}).value || '';
+    if (!body.azure_tenant_id.trim() || !body.azure_client_id.trim()) { alert('Azure credentials are required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
   } else if (provider === 'byteplus') {
     body.byteplus_access_key = (document.getElementById('destroy-bp-ak') || {}).value || '';
     body.byteplus_secret_key = (document.getElementById('destroy-bp-sk') || {}).value || '';
+    if (!body.byteplus_access_key.trim() || !body.byteplus_secret_key.trim()) { alert('BytePlus credentials are required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
   }
 
   try {

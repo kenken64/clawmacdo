@@ -349,8 +349,27 @@ impl DoClient {
         Ok(parsed.droplets)
     }
 
+    /// List all droplets (no tag filter).
+    pub async fn list_all_droplets(&self) -> Result<Vec<DropletInfo>, AppError> {
+        let resp = self
+            .client
+            .get(format!("{API_BASE}/droplets?per_page=200"))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::DigitalOcean(format!(
+                "List all droplets failed ({status}): {text}"
+            )));
+        }
+
+        let parsed: ListDropletsResponse = resp.json().await?;
+        Ok(parsed.droplets)
+    }
+
     /// Delete a droplet by ID.
-    /// DDelete droplet.
     pub async fn delete_droplet(&self, droplet_id: u64) -> Result<(), AppError> {
         let resp = self
             .client
