@@ -203,7 +203,9 @@ struct WhatsAppStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     jid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    since: Option<String>,
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registered: Option<bool>,
     message: String,
 }
 
@@ -2393,7 +2395,7 @@ async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResp
     }
 }
 
-/// Check WhatsApp channel status via the Gateway REST API on a deployed instance.
+/// Check WhatsApp pairing status by reading creds.json on a deployed instance.
 async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl IntoResponse {
     let (ip, key, provider) = match resolve_deploy_connection(&id) {
         Ok(v) => v,
@@ -2404,7 +2406,8 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
                     ok: false,
                     status: "unknown".into(),
                     jid: None,
-                    since: None,
+                    name: None,
+                    registered: None,
                     message: msg,
                 }),
             )
@@ -2415,9 +2418,19 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
          export HOME=\"{home}\"; \
-         GW_TOKEN=$(node -e \"const fs=require('fs');try{{const c=JSON.parse(fs.readFileSync('{home}/.openclaw/openclaw.json','utf8'));console.log((c.gateway&&c.gateway.auth&&c.gateway.auth.token)||'')}}catch(e){{console.log('')}}\" 2>/dev/null); \
-         curl -sf -H \"Authorization: Bearer $GW_TOKEN\" http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
-         echo '{{\"status\":\"unreachable\"}}'"
+         CREDS=\"{home}/.openclaw/credentials/whatsapp/default/creds.json\"; \
+         node -e \"\
+           const fs=require('fs');\
+           try{{\
+             const c=JSON.parse(fs.readFileSync('$CREDS','utf8'));\
+             const jid=(c.me&&c.me.id)||'';\
+             const name=(c.me&&c.me.name)||'';\
+             const reg=c.registered;\
+             if(!jid){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
+             else if(reg===false){{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
+             else{{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+           }}catch(e){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
+         \" 2>/dev/null || echo '{{\"status\":\"not_paired\"}}'"
     );
     let ssh_user = ssh_user_for_provider(provider.as_deref());
     let result = if ssh_user == "root" {
@@ -2428,7 +2441,7 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
     match result {
         Ok(out) => {
             let trimmed = out.trim();
-            match serde_json::from_str::<whatsapp_setup::GatewayChannelStatus>(trimmed) {
+            match serde_json::from_str::<whatsapp_setup::WhatsAppCredsStatus>(trimmed) {
                 Ok(s) => {
                     let ok = s.status == "connected";
                     (
@@ -2437,7 +2450,8 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
                             ok,
                             status: s.status,
                             jid: s.jid,
-                            since: s.since,
+                            name: s.name,
+                            registered: s.registered,
                             message: String::new(),
                         }),
                     )
@@ -2448,8 +2462,9 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
                         ok: false,
                         status: "unknown".into(),
                         jid: None,
-                        since: None,
-                        message: format!("Unexpected gateway response: {trimmed}"),
+                        name: None,
+                        registered: None,
+                        message: format!("Unexpected creds output: {trimmed}"),
                     }),
                 ),
             }
@@ -2460,7 +2475,8 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
                 ok: false,
                 status: "unreachable".into(),
                 jid: None,
-                since: None,
+                name: None,
+                registered: None,
                 message: format!("SSH error: {e}"),
             }),
         ),

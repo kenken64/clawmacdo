@@ -217,28 +217,42 @@ pub async fn fetch_qr(query: &str) -> Result<()> {
     Ok(())
 }
 
-// ── WhatsApp status via Gateway REST API ────────────────────────────
+// ── WhatsApp status via creds.json ───────────────────────────────────
 
-/// Response shape from the Gateway `/api/channels/whatsapp/status` endpoint.
+/// Parsed WhatsApp pairing status from `creds.json`.
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct GatewayChannelStatus {
-    pub channel: Option<String>,
+pub struct WhatsAppCredsStatus {
     pub status: String,
     pub jid: Option<String>,
-    pub since: Option<String>,
+    pub name: Option<String>,
+    pub registered: Option<bool>,
 }
 
-/// Build a shell command that reads the gateway auth token from
-/// `openclaw.json` and queries the Gateway REST API for WhatsApp
-/// channel status (port 18789) with `Authorization: Bearer <token>`.
+/// Build a shell command that reads WhatsApp pairing status from
+/// `credentials/whatsapp/default/creds.json`.
+///
+/// Logic:
+///   - File missing       → `{"status":"not_paired"}`
+///   - `me.id` present AND `registered` is not `false` → `connected`
+///   - `me.id` present BUT `registered` is `false`     → `pending`
+///   - `me.id` missing/empty                           → `not_paired`
 fn status_shell_cmd(home: &str) -> String {
     format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
          export HOME=\"{home}\"; \
-         GW_TOKEN=$(node -e \"const fs=require('fs');try{{const c=JSON.parse(fs.readFileSync('{home}/.openclaw/openclaw.json','utf8'));console.log((c.gateway&&c.gateway.auth&&c.gateway.auth.token)||'')}}catch(e){{console.log('')}}\" 2>/dev/null); \
-         curl -sf -H \"Authorization: Bearer $GW_TOKEN\" http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
-         echo '{{\"status\":\"unreachable\"}}'"
+         CREDS=\"{home}/.openclaw/credentials/whatsapp/default/creds.json\"; \
+         node -e \"\
+           const fs=require('fs');\
+           try{{\
+             const c=JSON.parse(fs.readFileSync('$CREDS','utf8'));\
+             const jid=(c.me&&c.me.id)||'';\
+             const name=(c.me&&c.me.name)||'';\
+             const reg=c.registered;\
+             if(!jid){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
+             else if(reg===false){{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
+             else{{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+           }}catch(e){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
+         \" 2>/dev/null || echo '{{\"status\":\"not_paired\"}}'"
     )
 }
 
@@ -252,25 +266,28 @@ pub async fn status(query: &str) -> Result<()> {
     let out = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let trimmed = out.trim();
 
-    match serde_json::from_str::<GatewayChannelStatus>(trimmed) {
+    match serde_json::from_str::<WhatsAppCredsStatus>(trimmed) {
         Ok(s) => {
             println!("WhatsApp status: {}", s.status);
             if let Some(jid) = &s.jid {
-                println!("  JID:   {jid}");
+                println!("  JID:        {jid}");
             }
-            if let Some(since) = &s.since {
-                println!("  Since: {since}");
+            if let Some(name) = &s.name {
+                println!("  Name:       {name}");
+            }
+            if let Some(reg) = s.registered {
+                println!("  Registered: {reg}");
             }
         }
         Err(_) => {
-            println!("Could not parse gateway response:\n{trimmed}");
+            println!("Could not parse credentials output:\n{trimmed}");
         }
     }
 
     Ok(())
 }
 
-/// Poll the WhatsApp channel status until it reaches "connected".
+/// Poll the WhatsApp credentials until the status reaches "connected".
 pub async fn wait_for_scan(query: &str, timeout_secs: u64) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
@@ -287,22 +304,21 @@ pub async fn wait_for_scan(query: &str, timeout_secs: u64) -> Result<()> {
         let out = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
         let trimmed = out.trim();
 
-        if let Ok(s) = serde_json::from_str::<GatewayChannelStatus>(trimmed) {
+        if let Ok(s) = serde_json::from_str::<WhatsAppCredsStatus>(trimmed) {
             match s.status.as_str() {
                 "connected" => {
-                    println!("Connected!");
+                    println!("\rConnected!                    ");
                     if let Some(jid) = &s.jid {
-                        println!("  JID:   {jid}");
+                        println!("  JID:        {jid}");
                     }
-                    if let Some(since) = &s.since {
-                        println!("  Since: {since}");
+                    if let Some(name) = &s.name {
+                        println!("  Name:       {name}");
                     }
                     return Ok(());
                 }
                 other => {
                     let elapsed = start.elapsed().as_secs();
                     print!("\r  status: {other} ({elapsed}s elapsed)");
-                    // Flush so the carriage-return update is visible
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
                 }
