@@ -232,10 +232,14 @@ pub struct WhatsAppCredsStatus {
 /// `credentials/whatsapp/default/creds.json`.
 ///
 /// Logic:
-///   - File missing       → `{"status":"not_paired"}`
-///   - `me.id` present AND `registered` is not `false` → `connected`
-///   - `me.id` present BUT `registered` is `false`     → `pending`
-///   - `me.id` missing/empty                           → `not_paired`
+///   - File missing                                          → `not_paired`
+///   - `me.id` present AND `account.accountSignature` exists → `connected`
+///   - `me.id` present BUT no `accountSignature`             → `pending`
+///   - `me.id` missing/empty                                 → `not_paired`
+///
+/// Note: the `registered` field is unreliable — it can be `false` even
+/// after a successful device link.  The presence of `accountSignature`
+/// is the real proof that the WhatsApp handshake completed.
 fn status_shell_cmd(home: &str) -> String {
     format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
@@ -247,10 +251,10 @@ fn status_shell_cmd(home: &str) -> String {
              const c=JSON.parse(fs.readFileSync('$CREDS','utf8'));\
              const jid=(c.me&&c.me.id)||'';\
              const name=(c.me&&c.me.name)||'';\
-             const reg=c.registered;\
+             const sig=(c.account&&c.account.accountSignature)||'';\
              if(!jid){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
-             else if(reg===false){{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
-             else{{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+             else if(sig){{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+             else{{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
            }}catch(e){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
          \" 2>/dev/null || echo '{{\"status\":\"not_paired\"}}'"
     )

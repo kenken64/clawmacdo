@@ -1,12 +1,12 @@
 # Changelog
 
-## v0.62.0
+## v0.62.1
 
 ### Changed
 - **WhatsApp status checks now read `creds.json`** instead of calling the Gateway REST API (which doesn't exist). Status is derived from `~/.openclaw/credentials/whatsapp/default/creds.json`: `me.id` + `registered` field. Reports `connected` (paired & registered), `pending` (paired but `registered: false`), or `not_paired` (no credentials). Applies to CLI `whatsapp-status`, `whatsapp-wait`, and `GET /api/deployments/{id}/whatsapp/status`.
 - **Status response** now includes `name` and `registered` fields instead of `since`
 
-## v0.62.0
+## v0.62.1
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
@@ -357,6 +357,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 
