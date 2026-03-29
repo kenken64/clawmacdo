@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-ui"
-version = "0.61.0"
+version = "0.62.0"
 edition = "2021"
 description = "User interface components for ClawMacdo"
 
@@ -16,6 +16,7 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 
 clawmacdo-core = { workspace = true }
+
 
 
 
