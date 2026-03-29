@@ -229,20 +229,26 @@ pub struct GatewayChannelStatus {
     pub since: Option<String>,
 }
 
-/// Build a shell command that queries the Gateway REST API for WhatsApp
-/// channel status (port 18789).
-fn status_shell_cmd() -> String {
-    "curl -sf http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
-     echo '{\"status\":\"unreachable\"}'"
-        .to_string()
+/// Build a shell command that reads the gateway auth token from
+/// `openclaw.json` and queries the Gateway REST API for WhatsApp
+/// channel status (port 18789) with `Authorization: Bearer <token>`.
+fn status_shell_cmd(home: &str) -> String {
+    format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
+         export HOME=\"{home}\"; \
+         GW_TOKEN=$(node -e \"const fs=require('fs');try{{const c=JSON.parse(fs.readFileSync('{home}/.openclaw/openclaw.json','utf8'));console.log((c.gateway&&c.gateway.auth&&c.gateway.auth.token)||'')}}catch(e){{console.log('')}}\" 2>/dev/null); \
+         curl -sf -H \"Authorization: Bearer $GW_TOKEN\" http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
+         echo '{{\"status\":\"unreachable\"}}'"
+    )
 }
 
 /// Query the WhatsApp channel status on a deployed instance.
 pub async fn status(query: &str) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
+    let home = config::OPENCLAW_HOME;
 
-    let cmd = status_shell_cmd();
+    let cmd = status_shell_cmd(home);
     let out = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let trimmed = out.trim();
 
@@ -268,7 +274,8 @@ pub async fn status(query: &str) -> Result<()> {
 pub async fn wait_for_scan(query: &str, timeout_secs: u64) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
-    let cmd = status_shell_cmd();
+    let home = config::OPENCLAW_HOME;
+    let cmd = status_shell_cmd(home);
 
     println!("Waiting for WhatsApp scan on {ip} (timeout {timeout_secs}s)...");
 

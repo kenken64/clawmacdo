@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.60.0
+## v0.61.0
 
 ### Added
 - **`whatsapp-status` subcommand** — query WhatsApp channel status via the Gateway REST API (port 18789); reports `connected`, `pending_qr`, or `unreachable`
@@ -10,7 +10,7 @@
 ### Performance
 - **WhatsApp QR fetch speed** — CLI `whatsapp-qr` and `whatsapp-setup` now use background process + polling (same approach as the web UI) instead of blocking for the full 45 s `timeout`; QR typically returns in ~5–10 s
 
-## v0.60.0
+## v0.61.0
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH
@@ -361,6 +361,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 
