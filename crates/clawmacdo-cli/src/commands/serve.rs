@@ -2425,10 +2425,10 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
              const c=JSON.parse(fs.readFileSync('$CREDS','utf8'));\
              const jid=(c.me&&c.me.id)||'';\
              const name=(c.me&&c.me.name)||'';\
-             const reg=c.registered;\
+             const sig=(c.account&&c.account.accountSignature)||'';\
              if(!jid){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
-             else if(reg===false){{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
-             else{{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+             else if(sig){{console.log(JSON.stringify({{status:'connected',jid:jid,name:name,registered:true}}))}}\
+             else{{console.log(JSON.stringify({{status:'pending',jid:jid,name:name,registered:false}}))}}\
            }}catch(e){{console.log(JSON.stringify({{status:'not_paired'}}))}}\
          \" 2>/dev/null || echo '{{\"status\":\"not_paired\"}}'"
     );
