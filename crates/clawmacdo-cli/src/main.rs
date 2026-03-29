@@ -208,7 +208,7 @@ enum Commands {
         #[arg(long)]
         reset: bool,
     },
-    /// Approve a Telegram pairing code to activate chat
+    /// Approve a Telegram pairing code to activate chat; pairing completes immediately and the bot notification is sent in the background
     TelegramPair {
         /// Deploy ID, hostname, or IP address of the instance
         #[arg(long)]

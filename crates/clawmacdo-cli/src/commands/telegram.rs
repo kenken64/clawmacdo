@@ -256,7 +256,9 @@ pub async fn approve_pairing(query: &str, code: &str) -> Result<()> {
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
-         openclaw pairing approve telegram {code} --notify 2>&1",
+         openclaw pairing approve telegram {code} 2>&1 && \
+         (openclaw pairing approve telegram {code} --notify >/dev/null 2>&1 &) && \
+         echo 'pairing approved'",
     );
 
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
