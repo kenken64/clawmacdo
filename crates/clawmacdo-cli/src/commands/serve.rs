@@ -2411,13 +2411,19 @@ async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl Into
         }
     };
 
-    let cmd = "curl -sf http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
-               echo '{\"status\":\"unreachable\"}'";
+    let home = config::OPENCLAW_HOME;
+    let cmd = format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\"; \
+         export HOME=\"{home}\"; \
+         GW_TOKEN=$(node -e \"const fs=require('fs');try{{const c=JSON.parse(fs.readFileSync('{home}/.openclaw/openclaw.json','utf8'));console.log((c.gateway&&c.gateway.auth&&c.gateway.auth.token)||'')}}catch(e){{console.log('')}}\" 2>/dev/null); \
+         curl -sf -H \"Authorization: Bearer $GW_TOKEN\" http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
+         echo '{{\"status\":\"unreachable\"}}'"
+    );
     let ssh_user = ssh_user_for_provider(provider.as_deref());
     let result = if ssh_user == "root" {
-        ssh_as_openclaw_async(&ip, &key, cmd).await
+        ssh_as_openclaw_async(&ip, &key, &cmd).await
     } else {
-        ssh_as_openclaw_with_user_async(&ip, &key, cmd, ssh_user).await
+        ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await
     };
     match result {
         Ok(out) => {
