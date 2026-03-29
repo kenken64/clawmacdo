@@ -3,6 +3,7 @@ use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::{
     ssh_as_openclaw_with_user_async, ssh_as_openclaw_with_user_multi_async,
 };
+use serde::Deserialize;
 use std::path::PathBuf;
 
 /// Build a shell command that fetches the WhatsApp QR code using a
@@ -214,4 +215,101 @@ pub async fn fetch_qr(query: &str) -> Result<()> {
     println!("\nScan the QR code above with your WhatsApp app.");
 
     Ok(())
+}
+
+// ── WhatsApp status via Gateway REST API ────────────────────────────
+
+/// Response shape from the Gateway `/api/channels/whatsapp/status` endpoint.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct GatewayChannelStatus {
+    pub channel: Option<String>,
+    pub status: String,
+    pub jid: Option<String>,
+    pub since: Option<String>,
+}
+
+/// Build a shell command that queries the Gateway REST API for WhatsApp
+/// channel status (port 18789).
+fn status_shell_cmd() -> String {
+    "curl -sf http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
+     echo '{\"status\":\"unreachable\"}'"
+        .to_string()
+}
+
+/// Query the WhatsApp channel status on a deployed instance.
+pub async fn status(query: &str) -> Result<()> {
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+
+    let cmd = status_shell_cmd();
+    let out = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
+    let trimmed = out.trim();
+
+    match serde_json::from_str::<GatewayChannelStatus>(trimmed) {
+        Ok(s) => {
+            println!("WhatsApp status: {}", s.status);
+            if let Some(jid) = &s.jid {
+                println!("  JID:   {jid}");
+            }
+            if let Some(since) = &s.since {
+                println!("  Since: {since}");
+            }
+        }
+        Err(_) => {
+            println!("Could not parse gateway response:\n{trimmed}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Poll the WhatsApp channel status until it reaches "connected".
+pub async fn wait_for_scan(query: &str, timeout_secs: u64) -> Result<()> {
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let cmd = status_shell_cmd();
+
+    println!("Waiting for WhatsApp scan on {ip} (timeout {timeout_secs}s)...");
+
+    let start = std::time::Instant::now();
+    let poll_interval = std::time::Duration::from_secs(3);
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        let out = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
+        let trimmed = out.trim();
+
+        if let Ok(s) = serde_json::from_str::<GatewayChannelStatus>(trimmed) {
+            match s.status.as_str() {
+                "connected" => {
+                    println!("Connected!");
+                    if let Some(jid) = &s.jid {
+                        println!("  JID:   {jid}");
+                    }
+                    if let Some(since) = &s.since {
+                        println!("  Since: {since}");
+                    }
+                    return Ok(());
+                }
+                other => {
+                    let elapsed = start.elapsed().as_secs();
+                    print!("\r  status: {other} ({elapsed}s elapsed)");
+                    // Flush so the carriage-return update is visible
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                }
+            }
+        }
+
+        if start.elapsed() >= deadline {
+            println!();
+            bail!(
+                "Timed out after {timeout_secs}s waiting for WhatsApp to connect. \
+                 Current status: not connected."
+            );
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 }
