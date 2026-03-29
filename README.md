@@ -849,7 +849,8 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.56.0
+**Current version:** 0.57.0
+
 
 
 
