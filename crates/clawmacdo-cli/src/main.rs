@@ -488,6 +488,21 @@ enum Commands {
         #[arg(long)]
         instance: String,
     },
+    /// Check WhatsApp channel status on a deployed instance via the Gateway REST API
+    WhatsappStatus {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Poll WhatsApp channel status until it reaches "connected" (scan complete)
+    WhatsappWait {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Maximum seconds to wait before timing out (default 120)
+        #[arg(long, default_value = "120")]
+        timeout: u64,
+    },
     /// List available OpenClaw versions from the npm registry
     OpenclawVersions {
         /// Output as JSON array
@@ -1014,6 +1029,10 @@ async fn async_main() -> anyhow::Result<()> {
         } => commands::whatsapp_setup::setup(&instance, &phone_number, reset).await,
         Commands::WhatsappQr { instance } => commands::whatsapp_setup::fetch_qr(&instance).await,
         Commands::WhatsappReset { instance } => commands::whatsapp_setup::reset(&instance).await,
+        Commands::WhatsappStatus { instance } => commands::whatsapp_setup::status(&instance).await,
+        Commands::WhatsappWait { instance, timeout } => {
+            commands::whatsapp_setup::wait_for_scan(&instance, timeout).await
+        }
         Commands::OpenclawVersions { json } => commands::openclaw_version::run_list(json).await,
         Commands::OpenclawInstall { instance, version } => {
             commands::openclaw_version::run_install(&instance, &version).await

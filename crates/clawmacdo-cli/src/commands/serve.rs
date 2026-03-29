@@ -1,6 +1,6 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
-use crate::commands::whatsapp;
+use crate::commands::{whatsapp, whatsapp_setup};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, Method, Request, StatusCode};
@@ -194,6 +194,17 @@ struct WhatsAppRepairResponse {
     ok: bool,
     message: String,
     repair_output: String,
+}
+
+#[derive(Serialize)]
+struct WhatsAppStatusResponse {
+    ok: bool,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    since: Option<String>,
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -695,6 +706,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route(
             "/api/deployments/{id}/whatsapp/qr",
             post(deployment_whatsapp_qr_handler),
+        )
+        .route(
+            "/api/deployments/{id}/whatsapp/status",
+            get(deployment_whatsapp_status_handler),
         )
         .route(
             "/api/deployments/{id}/devices/approve",
@@ -2373,6 +2388,74 @@ async fn deployment_whatsapp_qr_handler(Path(id): Path<String>) -> impl IntoResp
                 ok: false,
                 message: format!("Failed to fetch WhatsApp QR: {e}"),
                 qr_output: String::new(),
+            }),
+        ),
+    }
+}
+
+/// Check WhatsApp channel status via the Gateway REST API on a deployed instance.
+async fn deployment_whatsapp_status_handler(Path(id): Path<String>) -> impl IntoResponse {
+    let (ip, key, provider) = match resolve_deploy_connection(&id) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(WhatsAppStatusResponse {
+                    ok: false,
+                    status: "unknown".into(),
+                    jid: None,
+                    since: None,
+                    message: msg,
+                }),
+            )
+        }
+    };
+
+    let cmd = "curl -sf http://localhost:18789/api/channels/whatsapp/status 2>/dev/null || \
+               echo '{\"status\":\"unreachable\"}'";
+    let ssh_user = ssh_user_for_provider(provider.as_deref());
+    let result = if ssh_user == "root" {
+        ssh_as_openclaw_async(&ip, &key, cmd).await
+    } else {
+        ssh_as_openclaw_with_user_async(&ip, &key, cmd, ssh_user).await
+    };
+    match result {
+        Ok(out) => {
+            let trimmed = out.trim();
+            match serde_json::from_str::<whatsapp_setup::GatewayChannelStatus>(trimmed) {
+                Ok(s) => {
+                    let ok = s.status == "connected";
+                    (
+                        StatusCode::OK,
+                        Json(WhatsAppStatusResponse {
+                            ok,
+                            status: s.status,
+                            jid: s.jid,
+                            since: s.since,
+                            message: String::new(),
+                        }),
+                    )
+                }
+                Err(_) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(WhatsAppStatusResponse {
+                        ok: false,
+                        status: "unknown".into(),
+                        jid: None,
+                        since: None,
+                        message: format!("Unexpected gateway response: {trimmed}"),
+                    }),
+                ),
+            }
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(WhatsAppStatusResponse {
+                ok: false,
+                status: "unreachable".into(),
+                jid: None,
+                since: None,
+                message: format!("SSH error: {e}"),
             }),
         ),
     }

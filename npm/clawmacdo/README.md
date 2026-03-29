@@ -120,6 +120,9 @@ clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678"
 clawmacdo whatsapp-setup --instance <deploy-id> --phone-number "+6512345678" --reset  # reset + setup in one SSH session
 clawmacdo whatsapp-qr --instance <deploy-id>   # re-fetch QR if expired
 clawmacdo whatsapp-reset --instance <deploy-id> # clear session, force new QR
+clawmacdo whatsapp-status --instance <deploy-id>               # check channel status via Gateway API
+clawmacdo whatsapp-wait --instance <deploy-id>                 # poll until connected (default 120s)
+clawmacdo whatsapp-wait --instance <deploy-id> --timeout 60    # custom timeout
 # Lightsail/Azure instances automatically use their default SSH users for WhatsApp repair/QR.
 # The web UI QR fetch now ignores a missing prior login process instead of failing with an empty SSH error.
 
@@ -592,6 +595,13 @@ execSync(`${bin} whatsapp-setup \
 const qr = execSync(`${bin} whatsapp-qr --instance <deploy-id>`, { encoding: "utf8" });
 console.log(qr); // ASCII QR code
 
+// --- Check WhatsApp status ---
+const status = execSync(`${bin} whatsapp-status --instance <deploy-id>`, { encoding: "utf8" });
+console.log(status); // "connected", "pending_qr", etc.
+
+// --- Wait for WhatsApp scan (blocks until connected or timeout) ---
+execSync(`${bin} whatsapp-wait --instance <deploy-id> --timeout 120`, { stdio: "inherit" });
+
 // --- Change AI model ---
 execSync(`${bin} update-model \
   --instance <deploy-id> \
@@ -849,7 +859,8 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.59.0
+**Current version:** 0.60.0
+
 
 
 
