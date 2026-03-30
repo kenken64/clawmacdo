@@ -13,6 +13,7 @@ pub mod do_restore;
 #[cfg(feature = "digitalocean")]
 pub mod do_snapshot;
 pub mod docker_fix;
+pub mod hooks;
 #[cfg(feature = "lightsail")]
 pub mod ls_restore;
 #[cfg(feature = "lightsail")]
