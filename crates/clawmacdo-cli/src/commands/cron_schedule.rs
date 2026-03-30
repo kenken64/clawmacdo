@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use clawmacdo_core::config;
-use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
+use clawmacdo_provision::provision::commands::{
+    ssh_as_openclaw_with_user_async, ssh_as_openclaw_with_user_multi_async,
+};
 use std::path::PathBuf;
 
 const SESSIONS_FILE: &str = "/home/openclaw/.openclaw/agents/main/sessions/sessions.json";
@@ -106,25 +108,12 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Read the sessions.json on the instance and return the most-recently-updated
-/// recipient for the given channel (e.g. "telegram" → "7547736315",
-/// "whatsapp" → "+6512345678").
-async fn lookup_channel_recipient(
-    ip: &str,
-    key: &std::path::Path,
-    ssh_user: &str,
-    channel: &str,
-) -> Result<String> {
-    let cmd = format!("cat {SESSIONS_FILE} 2>/dev/null || echo '{{}}'");
-    let raw = ssh_as_openclaw_with_user_async(ip, key, &cmd, ssh_user).await?;
-    let root: serde_json::Value = serde_json::from_str(raw.trim())
-        .map_err(|e| anyhow::anyhow!("Failed to parse sessions.json: {e}"))?;
+/// Parse the most-recently-updated recipient for the given channel from a
+/// sessions.json string. Returns `None` when no matching session is found.
+fn parse_best_recipient(sessions_json: &str, channel: &str) -> Option<String> {
+    let root: serde_json::Value = serde_json::from_str(sessions_json.trim()).ok()?;
+    let map = root.as_object()?;
 
-    let map = root
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("sessions.json is not a JSON object"))?;
-
-    // Find the most recently updated session for this channel
     let mut best: Option<(u64, String)> = None;
     for (_key, session) in map {
         let last_channel = session
@@ -158,44 +147,26 @@ async fn lookup_channel_recipient(
         }
     }
 
-    best.map(|(_, r)| r).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No '{channel}' session found on this instance. \
-             Make sure someone has messaged the bot first, or pass --to <chatId> manually."
-        )
-    })
+    best.map(|(_, r)| r)
 }
 
-/// Resolve the delivery `--to` argument: use the explicit value if provided,
-/// otherwise auto-lookup from sessions for telegram/whatsapp channels.
-async fn resolve_recipient(
-    ip: &str,
-    key: &std::path::Path,
-    ssh_user: &str,
+/// Resolve the delivery `--to` argument from already-fetched sessions JSON.
+/// Returns `None` for the "last" channel (OpenClaw handles routing internally).
+fn resolve_recipient_from_sessions(
+    sessions_json: &str,
     channel: &str,
     to: &Option<String>,
-) -> Result<Option<String>> {
+) -> Option<String> {
     if let Some(explicit) = to {
-        return Ok(Some(explicit.clone()));
+        return Some(explicit.clone());
     }
-    // For "last" channel OpenClaw handles routing internally — no --to needed.
     if channel == "last" {
-        return Ok(None);
+        return None;
     }
-    // For telegram / whatsapp, auto-lookup the most recent session recipient.
     if channel == "telegram" || channel == "whatsapp" {
-        match lookup_channel_recipient(ip, key, ssh_user, channel).await {
-            Ok(recipient) => {
-                println!("  Auto-detected {channel} recipient: {recipient}");
-                return Ok(Some(recipient));
-            }
-            Err(e) => {
-                eprintln!("  Warning: {e}");
-                eprintln!("  Falling back to channel routing without --to.");
-            }
-        }
+        return parse_best_recipient(sessions_json, channel);
     }
-    Ok(None)
+    None
 }
 
 /// Add a scheduled message cron job on an OpenClaw instance.
@@ -225,10 +196,40 @@ pub async fn add_message(
     println!("  Message: {message}");
     println!("  Channel: {channel}");
 
-    // Fix device auth so cron CLI commands don't fail with "pairing required"
-    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
+    // Determine whether we need to auto-lookup the recipient from sessions.json.
+    let needs_lookup = to.is_none() && (channel == "telegram" || channel == "whatsapp");
 
-    let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
+    // Single SSH session: approve pending devices + (optionally) fetch sessions.json.
+    let approve_cmd = build_device_approve_cmd();
+    let sessions_cmd = format!("cat {SESSIONS_FILE} 2>/dev/null || echo '{{}}'");
+
+    let resolved_to = if needs_lookup {
+        let outputs = ssh_as_openclaw_with_user_multi_async(
+            &ip,
+            &key,
+            vec![approve_cmd, sessions_cmd],
+            ssh_user,
+        )
+        .await?;
+        match resolve_recipient_from_sessions(&outputs[1], channel, to) {
+            Some(r) => {
+                println!("  Auto-detected {channel} recipient: {r}");
+                Some(r)
+            }
+            None => {
+                eprintln!(
+                    "  Warning: No '{channel}' session found on this instance. \
+                     Make sure someone has messaged the bot first, or pass --to <chatId> manually."
+                );
+                eprintln!("  Falling back to channel routing without --to.");
+                None
+            }
+        }
+    } else {
+        let _ = ssh_as_openclaw_with_user_async(&ip, &key, &approve_cmd, ssh_user).await;
+        to.clone()
+    };
+
     let cmd = build_cron_add_cmd(name, schedule, every, message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let output = output.trim();
@@ -292,10 +293,40 @@ pub async fn add_tool(p: AddToolParams<'_>) -> Result<()> {
     }
     println!("  Channel: {channel}");
 
-    // Fix device auth so cron CLI commands don't fail with "pairing required"
-    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
+    // Determine whether we need to auto-lookup the recipient from sessions.json.
+    let needs_lookup = to.is_none() && (channel == "telegram" || channel == "whatsapp");
 
-    let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
+    // Single SSH session: approve pending devices + (optionally) fetch sessions.json.
+    let approve_cmd = build_device_approve_cmd();
+    let sessions_cmd = format!("cat {SESSIONS_FILE} 2>/dev/null || echo '{{}}'");
+
+    let resolved_to = if needs_lookup {
+        let outputs = ssh_as_openclaw_with_user_multi_async(
+            &ip,
+            &key,
+            vec![approve_cmd, sessions_cmd],
+            ssh_user,
+        )
+        .await?;
+        match resolve_recipient_from_sessions(&outputs[1], channel, to) {
+            Some(r) => {
+                println!("  Auto-detected {channel} recipient: {r}");
+                Some(r)
+            }
+            None => {
+                eprintln!(
+                    "  Warning: No '{channel}' session found on this instance. \
+                     Make sure someone has messaged the bot first, or pass --to <chatId> manually."
+                );
+                eprintln!("  Falling back to channel routing without --to.");
+                None
+            }
+        }
+    } else {
+        let _ = ssh_as_openclaw_with_user_async(&ip, &key, &approve_cmd, ssh_user).await;
+        to.clone()
+    };
+
     let cmd = build_cron_add_cmd(name, schedule, every, &message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
     let output = output.trim();
@@ -317,18 +348,22 @@ pub async fn list(query: &str) -> Result<()> {
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
-    // Fix device auth so cron CLI commands don't fail with "pairing required"
-    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
-
-    let cmd = format!(
+    let list_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          openclaw cron list 2>&1"
     );
 
-    let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
-    println!("{}", output.trim());
+    // Single SSH session: approve pending devices + list crons.
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![build_device_approve_cmd(), list_cmd],
+        ssh_user,
+    )
+    .await?;
+    println!("{}", outputs[1].trim());
     Ok(())
 }
 
@@ -340,23 +375,28 @@ pub async fn remove(query: &str, name: &str) -> Result<()> {
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
-    // Fix device auth so cron CLI commands don't fail with "pairing required"
-    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
-
     println!("Looking up cron job '{name}' on {ip}...");
 
-    // Resolve name → ID (stderr suppressed so banner/warnings don't corrupt JSON)
     let list_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          openclaw cron list --json 2>/dev/null"
     );
-    let list_out = ssh_as_openclaw_with_user_async(&ip, &key, &list_cmd, ssh_user).await?;
-    let job_id = parse_job_id_by_name(&list_out, name)?;
+
+    // Session 1: approve pending devices + list crons as JSON to resolve name → ID.
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![build_device_approve_cmd(), list_cmd],
+        ssh_user,
+    )
+    .await?;
+    let job_id = parse_job_id_by_name(&outputs[1], name)?;
 
     println!("Removing cron job '{name}' (id: {job_id})...");
 
+    // Session 2: remove by ID (device is already approved from session 1).
     let rm_cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
