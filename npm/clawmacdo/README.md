@@ -859,7 +859,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.64.0
+**Current version:** 0.65.0
 
 
 
