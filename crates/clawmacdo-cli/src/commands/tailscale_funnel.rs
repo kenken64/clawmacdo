@@ -183,8 +183,14 @@ fi
                if (!cfg.gateway.trustedProxies) {{
                  cfg.gateway.trustedProxies = ['127.0.0.1/8', '::1/128'];
                }}
+               // Set auth mode to password — required when gateway detects funnel
+               if (!cfg.gateway.auth) cfg.gateway.auth = {{}};
+               const token = cfg.gateway.auth.token || '';
+               if (token && cfg.gateway.auth.mode !== 'password') {{
+                 cfg.gateway.auth.mode = 'password';
+                 cfg.gateway.auth.password = token;
+               }}
                fs.writeFileSync('$CONFIG', JSON.stringify(cfg, null, 2) + '\n');
-               const token = (cfg.gateway && cfg.gateway.auth && cfg.gateway.auth.token) || '';
                console.log('ORIGINS=' + JSON.stringify(origins));
                console.log('PROXIES=' + JSON.stringify(cfg.gateway.trustedProxies));
                console.log('AUTH_TOKEN=' + token);
@@ -416,8 +422,14 @@ pub async fn funnel_toggle(
                      if (!cfg.gateway.trustedProxies) {{
                        cfg.gateway.trustedProxies = ['127.0.0.1/8', '::1/128'];
                      }}
+                     // Set auth mode to password — required when gateway detects funnel
+                     if (!cfg.gateway.auth) cfg.gateway.auth = {{}};
+                     const token = cfg.gateway.auth.token || '';
+                     if (token && cfg.gateway.auth.mode !== 'password') {{
+                       cfg.gateway.auth.mode = 'password';
+                       cfg.gateway.auth.password = token;
+                     }}
                      fs.writeFileSync('$CONFIG', JSON.stringify(cfg, null, 2) + '\n');
-                     const token = (cfg.gateway && cfg.gateway.auth && cfg.gateway.auth.token) || '';
                      console.log('AUTH_TOKEN=' + token);
                    "; \
                  else \

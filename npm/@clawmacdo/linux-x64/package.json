@@ -1,6 +1,6 @@
 {
   "name": "@clawmacdo/linux-x64",
-  "version": "0.67.0",
+  "version": "0.67.1",
   "description": "clawmacdo binary for Linux x86_64",
   "license": "MIT",
   "repository": {
