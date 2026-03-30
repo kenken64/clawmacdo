@@ -191,6 +191,24 @@ fn build_model_setup_cmd(primary: &str, failovers: &[&str], telegram_bot_token: 
     cmd
 }
 
+/// Auto-approve any pending device pairing requests so local CLI commands
+/// (cron, models, etc.) don't fail with "pairing required" after deploy.
+/// Uses `openclaw devices approve` which has a local file fallback.
+fn build_device_approve_cmd() -> String {
+    let home = config::OPENCLAW_HOME;
+    format!(
+        "PENDING=$(node -e 'try{{const d=JSON.parse(require(\"fs\").readFileSync(\"{home}/.openclaw/devices/pending.json\",\"utf8\"));console.log(Object.keys(d).join(\" \"))}}catch(e){{}}' 2>/dev/null); \
+         if [ -n \"$PENDING\" ]; then \
+           for REQ in $PENDING; do \
+             openclaw devices approve \"$REQ\" 2>/dev/null || true; \
+           done; \
+           echo 'devices: approved pending'; \
+         else \
+           echo 'devices: none pending'; \
+         fi"
+    )
+}
+
 fn build_profile_setup_cmd(profile: &str) -> String {
     let home = config::OPENCLAW_HOME;
     let uid = "$(id -u)";
@@ -893,7 +911,7 @@ SVCEOF\n\
     provision::commands::ssh_as_openclaw_with_user_multi_async(
         &ip_c,
         &key_c,
-        vec![model_cmd, profile_cmd],
+        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
         "root",
     )
     .await?;
@@ -1292,7 +1310,7 @@ SVCEOF\n\
     provision::commands::ssh_as_openclaw_with_user_multi_async(
         &ip_c,
         &key_c,
-        vec![model_cmd, profile_cmd],
+        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
         "root",
     )
     .await?;
@@ -1563,7 +1581,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
     provision::commands::ssh_as_openclaw_with_user_multi_async(
         &ip_c,
         &key_c,
-        vec![model_cmd, profile_cmd],
+        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
         "root",
     )
     .await?;
@@ -1936,7 +1954,7 @@ SVCEOF\n\
     provision::commands::ssh_as_openclaw_with_user_multi_async(
         &ip_c,
         &key_c,
-        vec![model_cmd, profile_cmd],
+        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
         "ubuntu",
     )
     .await?;
@@ -2354,7 +2372,7 @@ SVCEOF\n\
     provision::commands::ssh_as_openclaw_with_user_multi_async(
         &ip_c,
         &key_c,
-        vec![model_cmd, profile_cmd],
+        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
         "azureuser",
     )
     .await?;

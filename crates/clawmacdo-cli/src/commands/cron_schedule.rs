@@ -44,6 +44,26 @@ fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
     }
 }
 
+/// Auto-approve all pending device pairing requests using the openclaw CLI.
+/// The CLI uses a local file fallback to read pending.json and approve entries
+/// without needing a WebSocket connection to the gateway. After approving,
+/// subsequent CLI commands can connect to the gateway successfully.
+fn build_device_approve_cmd() -> String {
+    let home = config::OPENCLAW_HOME;
+    format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
+         export HOME=\"{home}\" && \
+         export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
+         PENDING=$(node -e 'try{{const d=JSON.parse(require(\"fs\").readFileSync(\"{home}/.openclaw/devices/pending.json\",\"utf8\"));console.log(Object.keys(d).join(\" \"))}}catch(e){{}}' 2>/dev/null); \
+         if [ -n \"$PENDING\" ]; then \
+           for REQ in $PENDING; do \
+             openclaw devices approve \"$REQ\" 2>/dev/null || true; \
+           done; \
+           echo \"approved pending device(s)\"; \
+         fi; true"
+    )
+}
+
 fn build_cron_add_cmd(
     name: &str,
     schedule: &Option<String>,
@@ -205,6 +225,9 @@ pub async fn add_message(
     println!("  Message: {message}");
     println!("  Channel: {channel}");
 
+    // Fix device auth so cron CLI commands don't fail with "pairing required"
+    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
+
     let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
     let cmd = build_cron_add_cmd(name, schedule, every, message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
@@ -269,6 +292,9 @@ pub async fn add_tool(p: AddToolParams<'_>) -> Result<()> {
     }
     println!("  Channel: {channel}");
 
+    // Fix device auth so cron CLI commands don't fail with "pairing required"
+    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
+
     let resolved_to = resolve_recipient(&ip, &key, ssh_user, channel, to).await?;
     let cmd = build_cron_add_cmd(name, schedule, every, &message, channel, &resolved_to, true)?;
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
@@ -291,6 +317,9 @@ pub async fn list(query: &str) -> Result<()> {
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
 
+    // Fix device auth so cron CLI commands don't fail with "pairing required"
+    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
+
     let cmd = format!(
         "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
          export HOME=\"{home}\" && \
@@ -310,6 +339,9 @@ pub async fn remove(query: &str, name: &str) -> Result<()> {
     let (ip, key, provider) = find_deploy_record(query)?;
     let ssh_user = ssh_user_for_provider(&provider);
     let home = config::OPENCLAW_HOME;
+
+    // Fix device auth so cron CLI commands don't fail with "pairing required"
+    let _ = ssh_as_openclaw_with_user_async(&ip, &key, &build_device_approve_cmd(), ssh_user).await;
 
     println!("Looking up cron job '{name}' on {ip}...");
 
