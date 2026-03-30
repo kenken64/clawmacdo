@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-db"
-version = "0.66.2"
+version = "0.67.0"
 edition = "2021"
 description = "Database operations and storage for ClawMacdo"
 
