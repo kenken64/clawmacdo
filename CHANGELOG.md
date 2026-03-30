@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.66.1
+## v0.66.2
 
 ### Fixed
 - **Cron commands fail with "pairing required" on loopback** — `cron-list`, `cron-message`, `cron-tool`, and `cron-remove` now auto-approve any pending device pairing requests (via `openclaw devices approve`) before executing the cron command. This fixes the chicken-and-egg problem where the gateway rejects local CLI WebSocket connections from unrecognised devices. Deploy also auto-approves pending devices after gateway start.
@@ -9,7 +9,7 @@
 - **WhatsApp status checks now read `creds.json`** instead of calling the Gateway REST API (which doesn't exist). Status is derived from `~/.openclaw/credentials/whatsapp/default/creds.json`: `me.id` + `registered` field. Reports `connected` (paired & registered), `pending` (paired but `registered: false`), or `not_paired` (no credentials). Applies to CLI `whatsapp-status`, `whatsapp-wait`, and `GET /api/deployments/{id}/whatsapp/status`.
 - **Status response** now includes `name` and `registered` fields instead of `since`
 
-## v0.66.1
+## v0.66.2
 
 ### Added
 - **`telegram-chat-id` subcommand** — retrieve the Telegram chat ID from a deployed instance by searching openclaw credentials and data directories via SSH

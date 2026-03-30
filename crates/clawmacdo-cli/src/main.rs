@@ -646,6 +646,36 @@ enum Commands {
         #[arg(long)]
         name: String,
     },
+    /// Enable webhook hooks on an OpenClaw instance
+    HooksEnable {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Disable webhook hooks on an OpenClaw instance
+    HooksDisable {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Show webhook hooks status and mappings on an OpenClaw instance
+    HooksStatus {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Send a task to an OpenClaw instance via webhook hooks
+    HooksSend {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// The task/instruction for the agent
+        #[arg(long)]
+        task: String,
+        /// Mapping ID to use (default: "notify")
+        #[arg(long, default_value = "notify")]
+        mapping: String,
+    },
     /// Refresh the IP address of a deployed instance from the cloud provider
     UpdateIp {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1081,6 +1111,14 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::CronRemove { instance, name } => {
             commands::cron_schedule::remove(&instance, &name).await
         }
+        Commands::HooksEnable { instance } => commands::hooks::enable(&instance).await,
+        Commands::HooksDisable { instance } => commands::hooks::disable(&instance).await,
+        Commands::HooksStatus { instance } => commands::hooks::status(&instance).await,
+        Commands::HooksSend {
+            instance,
+            task,
+            mapping,
+        } => commands::hooks::send(&instance, &task, &mapping).await,
         Commands::UpdateIp { instance } => commands::update_ip::run(&instance).await,
         #[cfg(feature = "web-ui")]
         Commands::Serve { port } => commands::serve::run(port).await,

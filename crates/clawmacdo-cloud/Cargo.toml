@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cloud"
-version = "0.66.1"
+version = "0.66.2"
 edition = "2021"
 description = "Cloud provider implementations for ClawMacdo"
 

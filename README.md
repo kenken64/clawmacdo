@@ -554,6 +554,35 @@ clawmacdo cron-remove --instance my-server --name daily-digest
 
 > **Performance note:** All cron commands batch the device-pairing approval step with the first gateway command into a single SSH session, minimising handshake overhead.
 
+### Webhook Hooks
+
+```bash
+# Enable webhook hooks on an instance (generates token, creates default notify mapping)
+clawmacdo hooks-enable --instance my-server
+
+# Send a task to the agent via webhook (delivers response to Telegram)
+clawmacdo hooks-send --instance my-server --task "Check today's weather for Singapore"
+
+# Send to a specific mapping
+clawmacdo hooks-send --instance my-server --task "Generate a report" --mapping notify
+
+# Show hooks status and all mappings
+clawmacdo hooks-status --instance my-server
+
+# Disable webhook hooks
+clawmacdo hooks-disable --instance my-server
+```
+
+External services can also POST directly:
+```bash
+curl -X POST https://<funnel-url>/hooks/notify \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"task":"your instruction to the agent"}'
+```
+
+> **Template note:** The `messageTemplate` uses `{{task}}` to extract the `task` field from the JSON payload. Other available template variables: `{{payload.field}}`, `{{headers.X-Header}}`, `{{query.param}}`, `{{path}}`, `{{now}}`.
+
 ## Examples
 
 ### Full Deploy with All Options
@@ -898,7 +927,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.66.1
+**Current version:** 0.66.2
 
 
 
