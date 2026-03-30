@@ -515,6 +515,44 @@ clawmacdo list-backups
 clawmacdo deploy --restore-from ~/.openclaw/backups/openclaw-2024-03-09_14-30-15.tar.gz
 ```
 
+### Scheduled Cron Jobs
+
+```bash
+# Add a scheduled message (sent via telegram on a cron schedule)
+clawmacdo cron-message \
+  --instance my-server \
+  --name "daily-digest" \
+  --schedule "0 9 * * *" \
+  --message "Summarise today's headlines" \
+  --channel telegram
+
+# Add a scheduled message using an interval instead of a cron expression
+clawmacdo cron-message \
+  --instance my-server \
+  --name "hourly-check" \
+  --every 1h \
+  --message "What is the current BTC price?" \
+  --channel telegram \
+  --to 7547736315
+
+# Add a scheduled tool execution
+clawmacdo cron-tool \
+  --instance my-server \
+  --name "weekly-report" \
+  --schedule "0 8 * * 1" \
+  --tool web-search \
+  --args "latest AI news" \
+  --channel telegram
+
+# List all cron jobs on an instance
+clawmacdo cron-list --instance my-server
+
+# Remove a cron job by name
+clawmacdo cron-remove --instance my-server --name daily-digest
+```
+
+> **Performance note:** All cron commands batch the device-pairing approval step with the first gateway command into a single SSH session, minimising handshake overhead.
+
 ## Examples
 
 ### Full Deploy with All Options
@@ -859,7 +897,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.65.0
+**Current version:** 0.66.0
 
 
 
