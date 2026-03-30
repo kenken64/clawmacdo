@@ -143,6 +143,7 @@ clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltgu
 clawmacdo update-ip --instance <deploy-id>
 
 # Enable Tailscale Funnel (public HTTPS access)
+# Performs clean Tailscale registration (wipes stale state if hostname mismatch)
 clawmacdo tailscale-funnel --instance <deploy-id> --auth-key "$TAILSCALE_AUTH_KEY"
 clawmacdo funnel-on --instance <deploy-id>
 
@@ -897,7 +898,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.66.0
+**Current version:** 0.66.1
 
 
 

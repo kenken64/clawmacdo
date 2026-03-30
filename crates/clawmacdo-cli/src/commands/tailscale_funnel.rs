@@ -74,13 +74,27 @@ fi
         println!("  Tailscale installed successfully.");
     }
 
-    // Step 2: Connect Tailscale with auth key
+    // Step 2: Connect Tailscale with auth key.
+    // Always verify the node hostname matches the expected value; if not,
+    // do a full clean re-registration (logout → wipe state → restart → up)
+    // to avoid stale-identity collisions between servers sharing an auth key.
     println!("[2/6] Connecting Tailscale...");
     let auth_key_escaped = auth_key.replace('\'', "'\\''");
     let connect_cmd = format!(
-        "tailscale status --json 2>/dev/null | grep -q '\"BackendState\": \"Running\"' && \
-         echo 'ALREADY_CONNECTED' || \
-         (tailscale up --auth-key '{auth_key_escaped}' --hostname $(hostname -s) 2>&1 && echo 'CONNECTED')"
+        "EXPECTED=$(hostname -s); \
+         BACKEND=$(tailscale status --json 2>/dev/null | grep -o '\"BackendState\":\"[^\"]*\"' | cut -d'\"' -f4 || true); \
+         CURRENT=$(tailscale status --json 2>/dev/null | grep -o '\"HostName\":\"[^\"]*\"' | head -1 | cut -d'\"' -f4 || true); \
+         if [ \"$BACKEND\" = 'Running' ] && [ \"$CURRENT\" = \"$EXPECTED\" ]; then \
+           echo 'ALREADY_CONNECTED'; \
+         else \
+           echo \"Clean re-registration (current=$CURRENT expected=$EXPECTED)...\"; \
+           tailscale logout 2>/dev/null || true; \
+           systemctl stop tailscaled 2>/dev/null; \
+           rm -f /var/lib/tailscale/tailscaled.state; \
+           systemctl start tailscaled; \
+           sleep 3; \
+           tailscale up --auth-key '{auth_key_escaped}' --hostname $EXPECTED 2>&1 && echo 'CONNECTED'; \
+         fi"
     );
     let connect_out = ssh_root_async(&ip, &key, &connect_cmd).await?;
     let connect_trimmed = connect_out.trim();
@@ -158,12 +172,11 @@ fi
                if (!cfg.gateway) cfg.gateway = {{}};
                // controlUi.allowedOrigins
                if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {{}};
-               const origins = cfg.gateway.controlUi.allowedOrigins || [];
                const url = '{funnel_url}';
-               if (!origins.includes(url) && !origins.includes('*')) {{
-                 origins.push(url);
-               }}
-               cfg.gateway.controlUi.allowedOrigins = origins;
+               // Replace any stale tailnet origins (hostname may have changed)
+               const old = (cfg.gateway.controlUi.allowedOrigins || []).filter(o => !o.includes('.ts.net'));
+               old.push(url);
+               cfg.gateway.controlUi.allowedOrigins = old;
                // Disable device pairing for Control UI via Funnel
                cfg.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
                // trustedProxies — trust loopback (Tailscale Funnel proxies via 127.0.0.1)
@@ -393,12 +406,11 @@ pub async fn funnel_toggle(
                      const cfg = JSON.parse(fs.readFileSync('$CONFIG', 'utf8'));
                      if (!cfg.gateway) cfg.gateway = {{}};
                      if (!cfg.gateway.controlUi) cfg.gateway.controlUi = {{}};
-                     const origins = cfg.gateway.controlUi.allowedOrigins || [];
                      const url = '{url}';
-                     if (!origins.includes(url) && !origins.includes('*')) {{
-                       origins.push(url);
-                     }}
-                     cfg.gateway.controlUi.allowedOrigins = origins;
+                     // Replace any stale tailnet origins (hostname may have changed)
+                     const old = (cfg.gateway.controlUi.allowedOrigins || []).filter(o => !o.includes('.ts.net'));
+                     old.push(url);
+                     cfg.gateway.controlUi.allowedOrigins = old;
                      // Disable device pairing for Control UI via Funnel
                      cfg.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
                      if (!cfg.gateway.trustedProxies) {{
