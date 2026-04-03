@@ -516,6 +516,21 @@ clawmacdo list-backups
 clawmacdo deploy --restore-from ~/.openclaw/backups/openclaw-2024-03-09_14-30-15.tar.gz
 ```
 
+### Memory Archive Download
+
+```bash
+# Download all memory archives from an instance to the current directory
+clawmacdo memory-download --instance my-server
+
+# Download to a specific output directory
+clawmacdo memory-download --instance my-server --output ~/backups/
+
+# Download to a specific file path
+clawmacdo memory-download --instance 1.2.3.4 --output ~/backups/memory.tar.gz
+```
+
+The command SSHes into the instance, creates a tar.gz of all files under `/home/openclaw/.openclaw/memory/`, downloads it locally, and cleans up the temporary archive on the remote host.
+
 ### Scheduled Cron Jobs
 
 ```bash
@@ -927,7 +942,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.67.1
+**Current version:** 0.68.0
 
 
 

@@ -682,6 +682,15 @@ enum Commands {
         #[arg(long)]
         instance: String,
     },
+    /// Download all memory archive files from an OpenClaw instance
+    MemoryDownload {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Output path (directory or file). Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        output: std::path::PathBuf,
+    },
     /// Start the web UI server
     #[cfg(feature = "web-ui")]
     Serve {
@@ -1120,6 +1129,9 @@ async fn async_main() -> anyhow::Result<()> {
             mapping,
         } => commands::hooks::send(&instance, &task, &mapping).await,
         Commands::UpdateIp { instance } => commands::update_ip::run(&instance).await,
+        Commands::MemoryDownload { instance, output } => {
+            commands::memory_download::run(&instance, &output).await
+        }
         #[cfg(feature = "web-ui")]
         Commands::Serve { port } => commands::serve::run(port).await,
     }
