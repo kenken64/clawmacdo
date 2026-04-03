@@ -587,6 +587,29 @@ pub fn scp_download(
     Ok(())
 }
 
+/// Download a file from the remote host via SCP, connecting as a specific user.
+pub fn scp_download_as(
+    ip: &str,
+    private_key_path: &Path,
+    remote_path: &str,
+    local_path: &Path,
+    username: &str,
+) -> Result<(), AppError> {
+    let sess = connect_as(ip, private_key_path, username)?;
+
+    let (mut remote_file, _stat) = sess
+        .scp_recv(Path::new(remote_path))
+        .map_err(|e| AppError::Ssh(format!("SCP recv init: {e}")))?;
+
+    let mut contents = Vec::new();
+    remote_file
+        .read_to_end(&mut contents)
+        .map_err(|e| AppError::Ssh(format!("SCP read: {e}")))?;
+
+    std::fs::write(local_path, &contents)?;
+    Ok(())
+}
+
 /// Wait for SSH to accept connections (retries every 5s).
 ///
 /// `preferred_user` — when `Some`, only that user is tried (e.g. `"ubuntu"` for

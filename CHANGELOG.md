@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.68.0
+
+### Added
+- **`memory-download` subcommand** — download all memory archive files from an OpenClaw instance as a tar.gz archive (`--instance` + optional `--output`); SSHes into the instance, tars the memory directory, SCP-downloads it locally, and cleans up the remote temp file
+- **`scp_download_as` SSH helper** — supports SCP file downloads as a specific SSH user (e.g. `ubuntu` for Lightsail instances)
+
 ## v0.67.1
 
 ### Fixed

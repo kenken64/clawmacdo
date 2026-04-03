@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod ls_restore;
 #[cfg(feature = "lightsail")]
 pub mod ls_snapshot;
+pub mod memory_download;
 pub mod openclaw_version;
 pub mod plugin_install;
 pub mod scan_security;
