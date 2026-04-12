@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-core"
-version = "0.68.0"
+version = "0.69.0"
 edition = "2021"
 description = "Core types, configuration, and error handling for ClawMacdo"
 
@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
 
 
 

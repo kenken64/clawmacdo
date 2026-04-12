@@ -92,6 +92,8 @@ struct DeployRequest {
     openai_key: String,
     #[serde(default)]
     gemini_key: String,
+    #[serde(default)]
+    opencode_api_key: String,
     #[serde(default = "default_primary_model")]
     primary_model: String,
     #[serde(default)]
@@ -836,6 +838,7 @@ async fn start_deploy_handler(
         "openai" => !req.openai_key.trim().is_empty(),
         "gemini" => !req.gemini_key.trim().is_empty(),
         "byteplus" => !req.byteplus_ark_api_key.trim().is_empty(),
+        "opencode" => !req.opencode_api_key.trim().is_empty(),
         _ => false,
     };
     if !primary_key_present {
@@ -950,6 +953,7 @@ async fn start_deploy_handler(
             anthropic_key: req.anthropic_key,
             openai_key: req.openai_key,
             gemini_key: req.gemini_key,
+            opencode_api_key: req.opencode_api_key,
             whatsapp_phone_number: req.whatsapp_phone_number,
             telegram_bot_token: req.telegram_bot_token,
             region: if req.region.is_empty() {
@@ -3002,15 +3006,15 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
     --ink-850: #12233a;
     --panel: rgba(10, 24, 40, 0.78);
     --panel-border: rgba(148, 163, 184, 0.18);
-    --teal: #52e3c2;
-    --teal-deep: #1aa98c;
-    --amber: #ffb84d;
+    --lobster: #ff6b57;
+    --lobster-deep: #d94a3a;
+    --ember: #ffb38a;
   }
   body {
     font-family: 'Space Grotesk', sans-serif;
     background:
-      radial-gradient(circle at top left, rgba(82, 227, 194, 0.18), transparent 28%),
-      radial-gradient(circle at top right, rgba(255, 184, 77, 0.14), transparent 26%),
+      radial-gradient(circle at top left, rgba(255, 107, 87, 0.18), transparent 28%),
+      radial-gradient(circle at top right, rgba(255, 179, 138, 0.14), transparent 26%),
       linear-gradient(160deg, var(--ink-950), #08101b 46%, #06121f 100%);
   }
   body::before {
@@ -3028,10 +3032,10 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
 </head>
 <body class="min-h-screen flex items-center justify-center px-4 py-8 text-slate-100">
 <div class="w-full max-w-lg rounded-[28px] border border-white/10 bg-[var(--panel)] shadow-[0_30px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl overflow-hidden">
-  <div class="border-b border-white/10 bg-gradient-to-r from-emerald-400/10 via-transparent to-amber-300/10 px-8 py-7">
-    <div class="inline-flex items-center gap-2 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-emerald-200">Secure Access Console</div>
+  <div class="border-b border-white/10 bg-gradient-to-r from-rose-400/10 via-transparent to-orange-300/10 px-8 py-7">
+    <div class="inline-flex items-center gap-2 rounded-full border border-rose-300/20 bg-rose-300/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-rose-200">Secure Access Console</div>
     <div class="mt-5 flex items-start gap-4">
-      <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-300 via-teal-400 to-cyan-500 text-slate-950 shadow-[0_12px_35px_rgba(52,211,153,0.35)]">
+      <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-300 via-red-400 to-orange-400 text-slate-950 shadow-[0_12px_35px_rgba(255,107,87,0.35)]">
         <svg class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
       </div>
       <div>
@@ -3046,12 +3050,12 @@ const LOGIN_HTML: &str = r##"<!DOCTYPE html>
       <label class="mb-2 block text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Session PIN</label>
     <input type="password" name="pin" maxlength="6" inputmode="numeric"
       placeholder="000000" autocomplete="off"
-      class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-4 text-center font-['IBM_Plex_Mono'] text-3xl tracking-[0.45em] text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-300/70 focus:border-transparent"
+      class="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-5 py-4 text-center font-['IBM_Plex_Mono'] text-3xl tracking-[0.45em] text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-rose-300/70 focus:border-transparent"
       aria-describedby="pin-help"
       autofocus />
     </div>
     <button type="submit"
-      class="w-full rounded-2xl bg-gradient-to-r from-emerald-300 via-teal-400 to-cyan-500 py-3.5 text-sm font-bold uppercase tracking-[0.2em] text-slate-950 transition-transform duration-200 hover:-translate-y-0.5 hover:brightness-105">
+      class="w-full rounded-2xl bg-gradient-to-r from-rose-300 via-red-400 to-orange-400 py-3.5 text-sm font-bold uppercase tracking-[0.2em] text-slate-950 transition-transform duration-200 hover:-translate-y-0.5 hover:brightness-105">
       Unlock
     </button>
     <p id="pin-help" class="text-center text-xs text-slate-500">Local-only session gate. The PIN rotates when the serve process restarts unless you set CLAWMACDO_PIN.</p>
@@ -3099,18 +3103,18 @@ tailwind.config = {
     --panel-strong: rgba(10, 24, 40, 0.92);
     --panel-soft: rgba(14, 31, 51, 0.62);
     --panel-border: rgba(148, 163, 184, 0.16);
-    --teal: #52e3c2;
-    --teal-deep: #1aa98c;
-    --amber: #ffb84d;
+    --lobster: #ff6b57;
+    --lobster-deep: #d94a3a;
+    --ember: #ffb38a;
     --text-strong: #eff8ff;
     --text-soft: #93a5bc;
   }
   body {
     font-family: 'Space Grotesk', sans-serif;
     background:
-      radial-gradient(circle at top left, rgba(82, 227, 194, 0.2), transparent 25%),
-      radial-gradient(circle at 88% 12%, rgba(255, 184, 77, 0.12), transparent 24%),
-      radial-gradient(circle at 50% 100%, rgba(82, 227, 194, 0.08), transparent 32%),
+      radial-gradient(circle at top left, rgba(255, 107, 87, 0.2), transparent 25%),
+      radial-gradient(circle at 88% 12%, rgba(255, 179, 138, 0.12), transparent 24%),
+      radial-gradient(circle at 50% 100%, rgba(255, 107, 87, 0.08), transparent 32%),
       linear-gradient(160deg, var(--ink-950), #07121f 45%, #05101a 100%);
     color: var(--text-strong);
   }
@@ -3130,8 +3134,8 @@ tailwind.config = {
     position: fixed;
     inset: 0;
     background:
-      radial-gradient(circle at 15% 20%, rgba(82, 227, 194, 0.16), transparent 24%),
-      radial-gradient(circle at 82% 8%, rgba(255, 184, 77, 0.14), transparent 18%);
+      radial-gradient(circle at 15% 20%, rgba(255, 107, 87, 0.16), transparent 24%),
+      radial-gradient(circle at 82% 8%, rgba(255, 179, 138, 0.14), transparent 18%);
     filter: blur(60px);
     pointer-events: none;
   }
@@ -3157,8 +3161,8 @@ tailwind.config = {
     border-radius: 28px;
     border: 1px solid rgba(255,255,255,0.08);
     background:
-      radial-gradient(circle at top left, rgba(82, 227, 194, 0.18), transparent 34%),
-      radial-gradient(circle at bottom right, rgba(255, 184, 77, 0.14), transparent 30%),
+      radial-gradient(circle at top left, rgba(255, 107, 87, 0.18), transparent 34%),
+      radial-gradient(circle at bottom right, rgba(255, 179, 138, 0.14), transparent 30%),
       linear-gradient(145deg, rgba(14, 30, 48, 0.94), rgba(7, 16, 26, 0.96));
     box-shadow: 0 30px 100px rgba(0, 0, 0, 0.34);
   }
@@ -3174,14 +3178,14 @@ tailwind.config = {
     align-items: center;
     gap: 0.5rem;
     border-radius: 9999px;
-    border: 1px solid rgba(82, 227, 194, 0.24);
-    background: rgba(82, 227, 194, 0.08);
+    border: 1px solid rgba(255, 107, 87, 0.24);
+    background: rgba(255, 107, 87, 0.08);
     padding: 0.45rem 0.85rem;
     font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: #c6fff2;
+    color: #ffd8d1;
   }
   .metric-pill {
     border-radius: 18px;
@@ -3213,10 +3217,10 @@ tailwind.config = {
     transition: all 160ms ease;
   }
   .app-tab-active {
-    border-color: rgba(82, 227, 194, 0.28);
-    background: linear-gradient(135deg, rgba(82, 227, 194, 0.18), rgba(82, 227, 194, 0.08));
-    color: #dcfff7;
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 12px 35px rgba(82, 227, 194, 0.14);
+    border-color: rgba(255, 107, 87, 0.28);
+    background: linear-gradient(135deg, rgba(255, 107, 87, 0.18), rgba(255, 107, 87, 0.08));
+    color: #ffe3de;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 12px 35px rgba(255, 107, 87, 0.14);
   }
   .app-tab-inactive {
     color: #93a5bc;
@@ -3253,12 +3257,12 @@ tailwind.config = {
   #deploy-view select:focus,
   #snapshots-view input:focus,
   #snapshots-view select:focus {
-    box-shadow: 0 0 0 3px rgba(82, 227, 194, 0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
+    box-shadow: 0 0 0 3px rgba(255, 107, 87, 0.18), inset 0 1px 0 rgba(255,255,255,0.03) !important;
   }
   .cta-primary {
-    background: linear-gradient(135deg, #52e3c2, #22c1a1 58%, #13917d);
+    background: linear-gradient(135deg, #ff8d7d, #ff6b57 58%, #d94a3a);
     color: #041019 !important;
-    box-shadow: 0 16px 35px rgba(34, 193, 161, 0.22);
+    box-shadow: 0 16px 35px rgba(255, 107, 87, 0.22);
   }
   .cta-primary:hover { filter: brightness(1.05); transform: translateY(-1px); }
   .cta-secondary {
@@ -3279,7 +3283,7 @@ tailwind.config = {
     position: absolute;
     inset: 0 0 auto 0;
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(82, 227, 194, 0.48), transparent);
+    background: linear-gradient(90deg, transparent, rgba(255, 107, 87, 0.48), transparent);
   }
   .deploy-card-shell fieldset {
     border-top: 1px solid rgba(255,255,255,0.06);
@@ -3306,7 +3310,7 @@ tailwind.config = {
 <!-- Header -->
 <header class="sticky top-0 z-10 border-b border-white/5 bg-slate-950/55 backdrop-blur-xl">
   <div class="app-shell w-full px-4 sm:px-8 lg:px-12 py-4 sm:py-5 flex items-center gap-3 sm:gap-4">
-    <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-300 via-teal-400 to-cyan-500 text-slate-950 shadow-[0_14px_35px_rgba(52,211,153,0.28)]">
+    <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-300 via-red-400 to-orange-400 text-slate-950 shadow-[0_14px_35px_rgba(255,107,87,0.28)]">
       <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
     </div>
     <div>
@@ -3344,7 +3348,7 @@ tailwind.config = {
         <h2 class="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-white">Deploy OpenClaw with less friction and better control.</h2>
         <p class="mt-3 max-w-2xl text-sm sm:text-base leading-7 text-slate-300">Provision fresh agents, resume saved deployments, and manage cloud snapshots from one console across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
         <div class="mt-5 flex flex-col sm:flex-row gap-3">
-          <button type="button" onclick="addDeployCard()" class="cta-primary w-full sm:w-auto text-sm font-semibold py-3 px-5 rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-emerald-300/60 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
+          <button type="button" onclick="addDeployCard()" class="cta-primary w-full sm:w-auto text-sm font-semibold py-3 px-5 rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-rose-300/60 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
         New Deployment
       </button>
@@ -3500,8 +3504,9 @@ const MODEL_DEFS = {
   openai:    { keyField: 'openai_key',           label: 'OpenAI API Key',              placeholder: 'sk-...' },
   gemini:    { keyField: 'gemini_key',           label: 'Gemini API Key',              placeholder: 'AI...' },
   byteplus:  { keyField: 'byteplus_ark_api_key', label: 'BytePlus ARK API Key',        placeholder: 'AKLT...' },
+  opencode:  { keyField: 'opencode_api_key',     label: 'OpenCode API Key',            placeholder: 'sk-...' },
 };
-const ALL_MODELS = ['anthropic', 'openai', 'gemini', 'byteplus'];
+const ALL_MODELS = ['anthropic', 'openai', 'gemini', 'byteplus', 'opencode'];
 
 function syncModelSelectors(n) {
   const container = document.getElementById('model-selectors-' + n);
@@ -3540,15 +3545,17 @@ function syncModelSelectors(n) {
   });
   html += '</select></div>';
   const pDef = MODEL_DEFS[primary];
-  html += '<div data-field="' + pDef.keyField + '">';
-  html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + pDef.label + ' <span class="field-required-indicator text-red-400">*</span></label>';
-  // Wrap input+eye in its own relative div so the eye button sits inside the input
-  // regardless of whether the Generate button is present alongside it.
-  html += '<div class="flex gap-2"><div class="relative flex-1"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn() + '</div>';
-  if (primary === 'byteplus') {
-    html += '<button type="button" onclick="generateArkKey(' + n + ')" class="shrink-0 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors" title="Generate ARK API Key from BytePlus credentials">Generate</button>';
+  if (pDef.keyField) {
+    html += '<div data-field="' + pDef.keyField + '">';
+    html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + pDef.label + ' <span class="field-required-indicator text-red-400">*</span></label>';
+    // Wrap input+eye in its own relative div so the eye button sits inside the input
+    // regardless of whether the Generate button is present alongside it.
+    html += '<div class="flex gap-2"><div class="relative flex-1"><input type="password" name="' + pDef.keyField + '" data-model-key="primary" data-required class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 pr-10 sm:pr-12 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="' + pDef.placeholder + '" value="' + esc(saved[pDef.keyField] || '') + '">' + eyeBtn() + '</div>';
+    if (primary === 'byteplus') {
+      html += '<button type="button" onclick="generateArkKey(' + n + ')" class="shrink-0 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors" title="Generate ARK API Key from BytePlus credentials">Generate</button>';
+    }
+    html += '</div></div>';
   }
-  html += '</div></div>';
   html += '</div>';
 
   // Failover 1
@@ -3561,7 +3568,7 @@ function syncModelSelectors(n) {
     html += '<option value="' + m + '"' + (m === fo1 ? ' selected' : '') + '>' + capitalize(m) + '</option>';
   });
   html += '</select></div>';
-  if (fo1 && MODEL_DEFS[fo1]) {
+  if (fo1 && MODEL_DEFS[fo1] && MODEL_DEFS[fo1].keyField) {
     const f1Def = MODEL_DEFS[fo1];
     html += '<div data-field="' + f1Def.keyField + '">';
     html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + f1Def.label + ' <span class="field-required-indicator text-slate-500">(optional)</span></label>';
@@ -3580,7 +3587,7 @@ function syncModelSelectors(n) {
       html += '<option value="' + m + '"' + (m === fo2 ? ' selected' : '') + '>' + capitalize(m) + '</option>';
     });
     html += '</select></div>';
-    if (fo2 && MODEL_DEFS[fo2]) {
+    if (fo2 && MODEL_DEFS[fo2] && MODEL_DEFS[fo2].keyField) {
       const f2Def = MODEL_DEFS[fo2];
       html += '<div data-field="' + f2Def.keyField + '">';
       html += '<label class="block text-sm font-medium text-slate-300 mb-1">' + f2Def.label + ' <span class="field-required-indicator text-slate-500">(optional)</span></label>';
@@ -3846,7 +3853,7 @@ function addDeployCard(initialState) {
           <span class="text-sm text-slate-300">Use spot instance — BytePlus only, up to ~80% cheaper (may be reclaimed)</span>
         </label>
       </fieldset>
-      <button type="submit" class="deploy-submit-btn cta-primary w-full font-semibold py-3 sm:py-3.5 text-sm sm:text-base rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-emerald-300/60 focus:ring-offset-2 focus:ring-offset-slate-900">
+      <button type="submit" class="deploy-submit-btn cta-primary w-full font-semibold py-3 sm:py-3.5 text-sm sm:text-base rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-rose-300/60 focus:ring-offset-2 focus:ring-offset-slate-900">
         Deploy
       </button>
     </form>
@@ -4570,6 +4577,7 @@ async function startDeploy(e, cardNum) {
     anthropic_key: val('anthropic_key'),
     openai_key: val('openai_key'),
     gemini_key: val('gemini_key'),
+    opencode_api_key: val('opencode_api_key'),
     primary_model: selVal('primary'),
     failover_1: selVal('failover_1'),
     failover_2: selVal('failover_2'),
@@ -4826,7 +4834,7 @@ function deploymentActionsMenu(d) {
       '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Instance</div>' +
       deploymentActionButton('Repair WhatsApp', 'text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/20', 'Install/Repair WhatsApp Support', 'closeDeploymentActionMenu(this); depRepairWhatsApp(\'' + id + '\',this)') +
       deploymentActionButton('WhatsApp QR', 'text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/20', 'Fetch WhatsApp QR Code', 'closeDeploymentActionMenu(this); depFetchWhatsAppQr(\'' + id + '\',this)') +
-      deploymentActionButton('Snapshot', 'text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20', 'Create snapshot', 'closeDeploymentActionMenu(this); depSnapshot(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\')') +
+      deploymentActionButton('Snapshot', 'text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/20', 'Create snapshot', 'closeDeploymentActionMenu(this); depSnapshot(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\')') +
       deploymentActionButton('Refresh IP', 'text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20', 'Refresh IP from cloud provider', 'closeDeploymentActionMenu(this); refreshIp(\'' + id + '\',this)') +
       deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')') +
     '</div>' +
@@ -5724,13 +5732,13 @@ function depSnapshot(id, provider, hostname) {
   const defaultName = hostname + '-' + new Date().toISOString().slice(0,10);
   let credsHtml = '';
   if (provider === 'digitalocean') {
-    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">DigitalOcean Token <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-do-token" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent" placeholder="dop_v1_...">' + eyeBtn() + '</div></div>';
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">DigitalOcean Token <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-do-token" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-rose-500 focus:border-transparent" placeholder="dop_v1_...">' + eyeBtn() + '</div></div>';
   } else if (provider === 'lightsail') {
-    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="snap-modal-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></div>';
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="snap-modal-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-rose-500 focus:border-transparent"></div>';
   } else if (provider === 'byteplus') {
-    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent" placeholder="AKLT...">' + eyeBtn() + '</div></div>' +
-      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Secret Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-cyan-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
-      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Region</label><input type="text" id="snap-modal-bp-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></div>';
+    credsHtml = '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-rose-500 focus:border-transparent" placeholder="AKLT...">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">BytePlus Secret Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="snap-modal-bp-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-rose-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
+      '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Region</label><input type="text" id="snap-modal-bp-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-rose-500 focus:border-transparent"></div>';
   } else {
     credsHtml = '<p class="text-slate-400 text-sm mt-3">Snapshot not supported for provider "' + esc(provider) + '".</p>';
   }
@@ -5741,10 +5749,10 @@ function depSnapshot(id, provider, hostname) {
   modal.innerHTML = `
     <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
       <div class="flex items-center gap-3 mb-4">
-        <div class="w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center">
-          <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+        <div class="w-10 h-10 rounded-full bg-rose-500/20 flex items-center justify-center">
+          <svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         </div>
-        <h3 class="text-lg font-semibold text-cyan-400">Create Snapshot</h3>
+        <h3 class="text-lg font-semibold text-rose-400">Create Snapshot</h3>
       </div>
       <div class="bg-slate-800/50 rounded-lg p-3 mb-4 text-xs text-slate-400 space-y-1">
         <div><span class="text-slate-500">Hostname:</span> <span class="text-slate-200">${esc(hostname || '-')}</span></div>
@@ -5752,13 +5760,13 @@ function depSnapshot(id, provider, hostname) {
       </div>
       <div>
         <label class="block text-sm font-medium text-slate-300 mb-1">Snapshot Name <span class="text-red-400">*</span></label>
-        <input type="text" id="snap-modal-name" value="${esc(defaultName)}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:border-transparent">
+        <input type="text" id="snap-modal-name" value="${esc(defaultName)}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-rose-500 focus:border-transparent">
       </div>
       ${credsHtml}
       <div id="snap-modal-status" class="text-sm mt-3 hidden"></div>
       <div class="flex gap-3 justify-end mt-4">
         <button onclick="closeSnapshotModal()" class="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors">Cancel</button>
-        <button id="snap-modal-btn" onclick="confirmSnapshot('${esc(id)}','${esc(provider)}')" class="px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors">Create Snapshot</button>
+        <button id="snap-modal-btn" onclick="confirmSnapshot('${esc(id)}','${esc(provider)}')" class="px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors">Create Snapshot</button>
       </div>
     </div>
   `;
@@ -5812,14 +5820,14 @@ async function confirmSnapshot(id, provider) {
       status.textContent = data.message || 'Snapshot failed.';
       btn.disabled = false;
       btn.textContent = 'Create Snapshot';
-      btn.className = 'px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors';
+      btn.className = 'px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors';
     }
   } catch (e) {
     status.className = 'text-sm mt-3 text-red-400';
     status.textContent = 'Network error: ' + e.message;
     btn.disabled = false;
     btn.textContent = 'Create Snapshot';
-    btn.className = 'px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors';
+    btn.className = 'px-4 py-2 text-sm font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors';
   }
 }
 

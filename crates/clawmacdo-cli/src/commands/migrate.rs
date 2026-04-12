@@ -98,6 +98,7 @@ pub async fn run(params: MigrateParams) -> Result<()> {
         anthropic_key: params.anthropic_key,
         openai_key: params.openai_key,
         gemini_key: params.gemini_key,
+        opencode_api_key: String::new(),
         whatsapp_phone_number: params.whatsapp_phone_number,
         telegram_bot_token: params.telegram_bot_token,
         region: params.region,

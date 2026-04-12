@@ -16,6 +16,7 @@ pub async fn provision(
     openai_key: &str,
     gemini_key: &str,
     byteplus_ark_api_key: &str,
+    opencode_api_key: &str,
     whatsapp_phone_number: &str,
     telegram_bot_token: &str,
     ssh_user: &str,
@@ -41,6 +42,7 @@ chown -R {user}:{user} {cd}"#,
          OPENAI_API_KEY={openai_key}\n\
          GEMINI_API_KEY={gemini_key}\n\
          BYTEPLUS_API_KEY={byteplus_ark_api_key}\n\
+         OPENCODE_API_KEY={opencode_api_key}\n\
          WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}\n\
          TELEGRAM_BOT_TOKEN={telegram_bot_token}\n",
     );
@@ -49,6 +51,7 @@ chown -R {user}:{user} {cd}"#,
             OPENAI_API_KEY={openai_key}\n\
             GEMINI_API_KEY={gemini_key}\n\
             BYTEPLUS_API_KEY={byteplus_ark_api_key}\n\
+            OPENCODE_API_KEY={opencode_api_key}\n\
             WHATSAPP_PHONE_NUMBER={whatsapp_phone_number}\n\
             TELEGRAM_BOT_TOKEN={telegram_bot_token}\n",
     );

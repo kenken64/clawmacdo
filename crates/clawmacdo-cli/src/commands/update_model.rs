@@ -3,7 +3,7 @@ use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::ssh_as_openclaw_async;
 use std::path::PathBuf;
 
-const VALID_MODELS: &[&str] = &["anthropic", "openai", "gemini", "byteplus"];
+const VALID_MODELS: &[&str] = &["anthropic", "openai", "gemini", "byteplus", "opencode"];
 
 fn has_value(s: &str) -> bool {
     !s.trim().is_empty()
@@ -15,6 +15,7 @@ fn model_identifier(model: &str) -> Option<&'static str> {
         "openai" => Some("openai/gpt-5-mini"),
         "gemini" => Some("google/gemini-2.5-flash"),
         "byteplus" => Some("byteplus/ark-code-latest"),
+        "opencode" => Some("opencode/minimax-m2.5-free"),
         _ => None,
     }
 }
@@ -60,6 +61,7 @@ pub struct UpdateModelParams {
     pub openai_key: String,
     pub gemini_key: String,
     pub byteplus_ark_api_key: String,
+    pub opencode_api_key: String,
 }
 
 pub async fn run(params: UpdateModelParams) -> Result<()> {
@@ -97,6 +99,7 @@ pub async fn run(params: UpdateModelParams) -> Result<()> {
         ("OPENAI_API_KEY", &params.openai_key),
         ("GEMINI_API_KEY", &params.gemini_key),
         ("BYTEPLUS_API_KEY", &params.byteplus_ark_api_key),
+        ("OPENCODE_API_KEY", &params.opencode_api_key),
     ];
 
     let mut env_cmds = Vec::new();
@@ -129,6 +132,7 @@ pub async fn run(params: UpdateModelParams) -> Result<()> {
         "openai" => has_value(&params.openai_key),
         "gemini" => has_value(&params.gemini_key),
         "byteplus" => has_value(&params.byteplus_ark_api_key),
+        "opencode" => true,
         _ => false,
     };
     if !primary_key_provided {
@@ -172,6 +176,35 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         println!("  The instance must already have BytePlus provider configured in openclaw.json.");
     } else {
         println!("  No provider config changes needed.");
+    }
+
+    // Step 2b: Wire OpenCode auth profile if opencode is involved
+    let needs_opencode = params.primary_model == "opencode"
+        || (has_value(&params.failover_1) && params.failover_1 == "opencode")
+        || (has_value(&params.failover_2) && params.failover_2 == "opencode");
+    if needs_opencode && has_value(&params.opencode_api_key) {
+        let key_escaped = params
+            .opencode_api_key
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let oc_cmd = format!(
+            "mkdir -p {home}/.openclaw/credentials && \
+             node -e 'const fs=require(\"fs\");\
+const ap=\"{home}/.openclaw/credentials/auth-profiles.json\";\
+let p={{}};\
+try{{p=JSON.parse(fs.readFileSync(ap,\"utf8\"))}}catch(e){{}}\
+const t=\"{key_escaped}\";\
+p[\"opencode:default\"]={{provider:\"opencode\",method:\"api-key\",apiKey:t}};\
+p[\"opencode-go:default\"]={{provider:\"opencode-go\",method:\"api-key\",apiKey:t}};\
+fs.writeFileSync(ap,JSON.stringify(p,null,2)+\"\\n\",{{mode:0o600}});' && echo ok"
+        );
+        let out = ssh_as_openclaw_async(&ip, &key, &oc_cmd).await?;
+        if !out.trim().is_empty() {
+            println!("  OpenCode auth profile: {}", out.trim());
+        }
+    } else if needs_opencode {
+        println!("  Warning: OpenCode model selected but no --opencode-api-key provided.");
+        println!("  The instance must already have OpenCode auth in ~/.openclaw/credentials/auth-profiles.json.");
     }
 
     // Step 3: Set primary model and failovers
