@@ -76,6 +76,9 @@ enum Commands {
         /// Gemini API key
         #[arg(long, default_value = "", env = "GEMINI_API_KEY")]
         gemini_key: String,
+        /// OpenCode API key (installs OpenCode and configures kimi-k2.5 model)
+        #[arg(long, default_value = "", env = "OPENCODE_API_KEY")]
+        opencode_api_key: String,
         /// WhatsApp phone number
         #[arg(long, default_value = "")]
         whatsapp_phone_number: String,
@@ -106,7 +109,7 @@ enum Commands {
         /// Tailscale auth key
         #[arg(long, default_value = "")]
         tailscale_auth_key: String,
-        /// Primary AI model (anthropic, openai, gemini, byteplus)
+        /// Primary AI model (anthropic, openai, gemini, byteplus, opencode)
         #[arg(long, default_value = "anthropic")]
         primary_model: String,
         /// First failover model
@@ -442,7 +445,7 @@ enum Commands {
         /// Deploy ID, hostname, or IP address of the instance
         #[arg(long)]
         instance: String,
-        /// Primary AI model (anthropic, openai, gemini, byteplus)
+        /// Primary AI model (anthropic, openai, gemini, byteplus, opencode)
         #[arg(long)]
         primary_model: String,
         /// First failover model
@@ -463,6 +466,9 @@ enum Commands {
         /// BytePlus Ark API key (only needed if changing to/adding byteplus)
         #[arg(long, default_value = "", env = "BYTEPLUS_ARK_API_KEY")]
         byteplus_ark_api_key: String,
+        /// OpenCode API key (only needed if changing to/adding opencode)
+        #[arg(long, default_value = "", env = "OPENCODE_API_KEY")]
+        opencode_api_key: String,
     },
     /// Set up WhatsApp on a deployed instance (set phone number, enable plugin, fetch QR)
     WhatsappSetup {
@@ -740,6 +746,7 @@ async fn async_main() -> anyhow::Result<()> {
             anthropic_key,
             openai_key,
             gemini_key,
+            opencode_api_key,
             whatsapp_phone_number,
             telegram_bot_token,
             region,
@@ -780,6 +787,7 @@ async fn async_main() -> anyhow::Result<()> {
                 anthropic_key,
                 openai_key,
                 gemini_key,
+                opencode_api_key,
                 whatsapp_phone_number,
                 telegram_bot_token,
                 region,
@@ -1049,6 +1057,7 @@ async fn async_main() -> anyhow::Result<()> {
             openai_key,
             gemini_key,
             byteplus_ark_api_key,
+            opencode_api_key,
         } => {
             commands::update_model::run(commands::update_model::UpdateModelParams {
                 instance,
@@ -1059,6 +1068,7 @@ async fn async_main() -> anyhow::Result<()> {
                 openai_key,
                 gemini_key,
                 byteplus_ark_api_key,
+                opencode_api_key,
             })
             .await
         }

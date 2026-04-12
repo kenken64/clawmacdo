@@ -8,13 +8,13 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 ## Features
 
 - **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
-- **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
+- **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI + OpenCode, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
 - **Snapshot & restore**: create and restore named snapshots for DigitalOcean, BytePlus, and AWS Lightsail
 - **Destroy**: delete an instance by name with confirmation, clean up SSH keys (cloud + local)
 - **Status**: list all openclaw-tagged instances with IPs
 - **Backup**: back up local `~/.openclaw/` config into a timestamped `.tar.gz`
-- **Web UI**: browser-based deploy interface with real-time SSE progress streaming (optional)
+- **Web UI**: browser-based deploy interface with a lobster-red OpenClaw-inspired theme and real-time SSE progress streaming (optional)
 - **Security groups**: auto-create firewall rules on Tencent Cloud and BytePlus (SSH + HTTP/HTTPS + Gateway)
 
 ## Supported Cloud Providers
@@ -242,7 +242,7 @@ clawmacdo deploy \
 
 ### AI Model Configuration
 
-Set a primary AI model and optional failovers for the deployed instance. Supported models: `anthropic`, `openai`, `gemini`, `byteplus`.
+Set a primary AI model and optional failovers for the deployed instance. Supported models: `anthropic`, `openai`, `gemini`, `byteplus`, `opencode`.
 
 ```bash
 # Anthropic as primary (default)
@@ -260,6 +260,10 @@ clawmacdo deploy --provider do --customer-email "user@example.com" \
   --primary-model anthropic --failover-1 openai --failover-2 gemini \
   --anthropic-key "$ANTHROPIC_API_KEY" \
   --openai-key "$OPENAI_API_KEY" --gemini-key "$GEMINI_API_KEY"
+
+# OpenCode with MiniMax M2.5 Free as primary (no API key required)
+clawmacdo deploy --provider do --customer-email "user@example.com" \
+  --primary-model opencode
 ```
 
 | Model | `--primary-model` value | Model identifier | Required flag |
@@ -268,6 +272,7 @@ clawmacdo deploy --provider do --customer-email "user@example.com" \
 | OpenAI | `openai` | `openai/gpt-5-mini` | `--openai-key` |
 | Google Gemini | `gemini` | `google/gemini-2.5-flash` | `--gemini-key` |
 | BytePlus ARK | `byteplus` | `byteplus/ark-code-latest` | `--byteplus-ark-api-key` |
+| OpenCode (MiniMax M2.5 Free) | `opencode` | `opencode/minimax-m2.5-free` | none (free) |
 
 ### Update AI Model on a Running Instance
 
@@ -289,9 +294,13 @@ clawmacdo update-model --instance <deploy-id> \
   --primary-model anthropic --failover-1 openai --failover-2 gemini \
   --anthropic-key "$ANTHROPIC_API_KEY" \
   --openai-key "$OPENAI_API_KEY" --gemini-key "$GEMINI_API_KEY"
+
+# Switch to OpenCode (MiniMax M2.5 Free, no API key required)
+clawmacdo update-model --instance <deploy-id> \
+  --primary-model opencode
 ```
 
-The command updates API keys in `.env`, configures provider settings (BytePlus `openclaw.json`), sets the model via `openclaw models set`, adds failovers, and restarts the gateway service. API keys are optional — if omitted, the existing key on the instance is preserved.
+The command updates API keys in `.env`, configures provider settings (BytePlus `openclaw.json`), sets the model via `openclaw models set`, adds failovers, and restarts the gateway service. When `opencode` is selected, OpenCode is installed via `curl -fsSL https://opencode.ai/install | bash` and configured with MiniMax M2.5 Free (`opencode/minimax-m2.5-free`) — no API key required. API keys for other providers are optional — if omitted, the existing key on the instance is preserved.
 
 ### ARK API Key Management
 
@@ -942,7 +951,8 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.68.0
+**Current version:** 0.69.0
+
 
 
 

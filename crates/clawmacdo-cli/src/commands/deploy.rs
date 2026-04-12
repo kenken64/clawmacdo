@@ -45,6 +45,7 @@ pub struct DeployParams {
     pub anthropic_key: String,
     pub openai_key: String,
     pub gemini_key: String,
+    pub opencode_api_key: String,
     pub whatsapp_phone_number: String,
     pub telegram_bot_token: String,
     pub region: Option<String>,
@@ -145,6 +146,7 @@ fn model_identifier(model: &str) -> Option<&'static str> {
         "openai" => Some("openai/gpt-5-mini"),
         "gemini" => Some("google/gemini-2.5-flash"),
         "byteplus" => Some("byteplus/ark-code-latest"),
+        "opencode" => Some("opencode/minimax-m2.5-free"),
         _ => None,
     }
 }
@@ -209,6 +211,53 @@ fn build_device_approve_cmd() -> String {
     )
 }
 
+/// Install the OpenCode CLI binary (for direct shell use on the instance)
+/// and configure it with MiniMax M2.5 Free as the default model.
+/// Only runs when the primary model is `opencode` and an API key is provided.
+/// Note: this is separate from how OpenClaw's gateway uses OpenCode — the
+/// gateway integration is handled via `--opencode-zen-api-key` passed to
+/// `openclaw onboard` and an entry in `~/.openclaw/credentials/auth-profiles.json`.
+fn build_opencode_install_cmd(primary_model: &str, opencode_api_key: &str) -> Option<String> {
+    if primary_model != "opencode" || !has_value(opencode_api_key) {
+        return None;
+    }
+    let home = config::OPENCLAW_HOME;
+    Some(format!(
+        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:$PATH\"; \
+         curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1 || true; \
+         export PATH=\"$HOME/.local/bin:$PATH\"; \
+         mkdir -p {home}/.opencode; \
+         cat > {home}/.opencode/config.json << 'OCEOF'\n\
+{{\n\
+  \"env\": {{ \"OPENCODE_API_KEY\": \"{opencode_api_key}\" }},\n\
+  \"agents\": {{ \"defaults\": {{ \"model\": {{ \"primary\": \"opencode/minimax-m2.5-free\" }} }} }}\n\
+}}\n\
+OCEOF\n\
+         echo ok"
+    ))
+}
+
+/// Build the command that wires the OpenCode API key into OpenClaw's
+/// auth-profiles.json so the gateway can authenticate to OpenCode Zen.
+/// Required for `--primary-model opencode` to actually serve Telegram replies.
+fn build_opencode_auth_cmd(primary_model: &str, opencode_api_key: &str) -> Option<String> {
+    if primary_model != "opencode" || !has_value(opencode_api_key) {
+        return None;
+    }
+    let home = config::OPENCLAW_HOME;
+    Some(format!(
+        "mkdir -p {home}/.openclaw/credentials && \
+         node -e 'const fs=require(\"fs\");\
+const ap=\"{home}/.openclaw/credentials/auth-profiles.json\";\
+let p={{}};\
+try{{p=JSON.parse(fs.readFileSync(ap,\"utf8\"))}}catch(e){{}}\
+const t=\"{opencode_api_key}\";\
+p[\"opencode:default\"]={{provider:\"opencode\",method:\"api-key\",apiKey:t}};\
+p[\"opencode-go:default\"]={{provider:\"opencode-go\",method:\"api-key\",apiKey:t}};\
+fs.writeFileSync(ap,JSON.stringify(p,null,2)+\"\\n\",{{mode:0o600}});' && echo ok"
+    ))
+}
+
 fn build_profile_setup_cmd(profile: &str) -> String {
     let home = config::OPENCLAW_HOME;
     let uid = "$(id -u)";
@@ -243,6 +292,7 @@ fn collect_failovers<'a>(
     openai_key: &str,
     gemini_key: &str,
     byteplus_ark_key: &str,
+    opencode_api_key: &str,
 ) -> Vec<&'a str> {
     let mut out = Vec::new();
     for fo in [failover_1, failover_2] {
@@ -254,6 +304,7 @@ fn collect_failovers<'a>(
             "openai" => has_value(openai_key),
             "gemini" => has_value(gemini_key),
             "byteplus" => has_value(byteplus_ark_key),
+            "opencode" => has_value(opencode_api_key),
             _ => false,
         };
         if keyed {
@@ -332,6 +383,17 @@ fn anthropic_onboard_arg(anthropic_api_key: &str) -> &'static str {
 fn byteplus_onboard_arg(byteplus_ark_api_key: &str) -> &'static str {
     if has_value(byteplus_ark_api_key) {
         " --auth-choice byteplus-api-key"
+    } else {
+        ""
+    }
+}
+
+/// OpenClaw onboard flag for OpenCode Zen — wires the key into the
+/// `opencode:default` and `opencode-go:default` auth profiles so the
+/// gateway can authenticate to opencode.ai/zen/v1.
+fn opencode_onboard_arg(opencode_api_key: &str) -> &'static str {
+    if has_value(opencode_api_key) {
+        " --opencode-zen-api-key \"$OPENCODE_API_KEY\""
     } else {
         ""
     }
@@ -548,6 +610,7 @@ async fn run_do(params: DeployParams) -> Result<DeployRecord> {
         &params.primary_model,
         &params.failover_1,
         &params.failover_2,
+        &params.opencode_api_key,
         &params.profile,
         &params.progress_tx,
         &params.db,
@@ -763,6 +826,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
         byteplus_ark_api_key: &params.byteplus_ark_api_key,
+        opencode_api_key: &params.opencode_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -803,6 +867,7 @@ async fn run_tencent(params: DeployParams) -> Result<DeployRecord> {
         ""
     };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
+    let opencode_onboard_arg = opencode_onboard_arg(&params.opencode_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -832,7 +897,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg}{opencode_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -898,6 +963,7 @@ SVCEOF\n\
         &params.openai_key,
         &params.gemini_key,
         &params.byteplus_ark_api_key,
+        &params.opencode_api_key,
     );
     let model_cmd = build_model_setup_cmd(
         &params.primary_model,
@@ -905,16 +971,20 @@ SVCEOF\n\
         &params.telegram_bot_token,
     );
     let profile_cmd = build_profile_setup_cmd(&params.profile);
+    let mut cmds = vec![model_cmd, profile_cmd, build_device_approve_cmd()];
+    if let Some(oc_cmd) =
+        build_opencode_install_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(oc_cmd);
+    }
+    if let Some(auth_cmd) = build_opencode_auth_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(auth_cmd);
+    }
     progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    provision::commands::ssh_as_openclaw_with_user_multi_async(
-        &ip_c,
-        &key_c,
-        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
-        "root",
-    )
-    .await?;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(&ip_c, &key_c, cmds, "root").await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1164,6 +1234,7 @@ fi"#;
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
         byteplus_ark_api_key: &params.byteplus_ark_api_key,
+        opencode_api_key: &params.opencode_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -1201,6 +1272,7 @@ fi"#;
     };
     // BytePlus ARK: use openclaw onboard --auth-choice byteplus-api-key
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
+    let opencode_onboard_arg = opencode_onboard_arg(&params.opencode_api_key);
     // Write BytePlus ARK provider config into openclaw.json (Coding Plan base URL)
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
@@ -1231,7 +1303,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg}{opencode_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1297,6 +1369,7 @@ SVCEOF\n\
         &params.openai_key,
         &params.gemini_key,
         &params.byteplus_ark_api_key,
+        &params.opencode_api_key,
     );
     let model_cmd = build_model_setup_cmd(
         &params.primary_model,
@@ -1304,16 +1377,20 @@ SVCEOF\n\
         &params.telegram_bot_token,
     );
     let profile_cmd = build_profile_setup_cmd(&params.profile);
+    let mut cmds = vec![model_cmd, profile_cmd, build_device_approve_cmd()];
+    if let Some(oc_cmd) =
+        build_opencode_install_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(oc_cmd);
+    }
+    if let Some(auth_cmd) = build_opencode_auth_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(auth_cmd);
+    }
     progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    provision::commands::ssh_as_openclaw_with_user_multi_async(
-        &ip_c,
-        &key_c,
-        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
-        "root",
-    )
-    .await?;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(&ip_c, &key_c, cmds, "root").await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1373,6 +1450,7 @@ async fn deploy_steps_5_through_16(
     primary_model: &str,
     failover_1: &str,
     failover_2: &str,
+    opencode_api_key: &str,
     profile: &str,
     progress_tx: &Option<mpsc::UnboundedSender<String>>,
     step_db: &Option<Db>,
@@ -1465,6 +1543,7 @@ async fn deploy_steps_5_through_16(
         openai_key,
         gemini_key,
         byteplus_ark_api_key,
+        opencode_api_key,
         whatsapp_phone_number,
         telegram_bot_token,
         public_key_openssh,
@@ -1498,6 +1577,7 @@ async fn deploy_steps_5_through_16(
         ""
     };
     let byteplus_onboard_arg = byteplus_onboard_arg(byteplus_ark_api_key);
+    let opencode_onboard_arg = opencode_onboard_arg(opencode_api_key);
     let byteplus_ark_config_cmd = if has_value(byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -1524,7 +1604,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg}{opencode_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1572,19 +1652,21 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         openai_key,
         gemini_key,
         byteplus_ark_api_key,
+        opencode_api_key,
     );
     let model_cmd = build_model_setup_cmd(primary_model, &failovers, telegram_bot_token);
     let profile_cmd = build_profile_setup_cmd(profile);
+    let mut cmds = vec![model_cmd, profile_cmd, build_device_approve_cmd()];
+    if let Some(oc_cmd) = build_opencode_install_cmd(primary_model, opencode_api_key) {
+        cmds.push(oc_cmd);
+    }
+    if let Some(auth_cmd) = build_opencode_auth_cmd(primary_model, opencode_api_key) {
+        cmds.push(auth_cmd);
+    }
     progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = private_key_path.to_path_buf();
-    provision::commands::ssh_as_openclaw_with_user_multi_async(
-        &ip_c,
-        &key_c,
-        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
-        "root",
-    )
-    .await?;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(&ip_c, &key_c, cmds, "root").await?;
     record_step_complete(step_db, deploy_id, 15);
 
     // Step 16: Save DeployRecord
@@ -1811,6 +1893,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
         byteplus_ark_api_key: &params.byteplus_ark_api_key,
+        opencode_api_key: &params.opencode_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -1846,6 +1929,7 @@ async fn run_lightsail(params: DeployParams) -> Result<DeployRecord> {
         ""
     };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
+    let opencode_onboard_arg = opencode_onboard_arg(&params.opencode_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -1875,7 +1959,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg}{opencode_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -1941,6 +2025,7 @@ SVCEOF\n\
         &params.openai_key,
         &params.gemini_key,
         &params.byteplus_ark_api_key,
+        &params.opencode_api_key,
     );
     let model_cmd = build_model_setup_cmd(
         &params.primary_model,
@@ -1948,16 +2033,21 @@ SVCEOF\n\
         &params.telegram_bot_token,
     );
     let profile_cmd = build_profile_setup_cmd(&params.profile);
+    let mut cmds = vec![model_cmd, profile_cmd, build_device_approve_cmd()];
+    if let Some(oc_cmd) =
+        build_opencode_install_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(oc_cmd);
+    }
+    if let Some(auth_cmd) = build_opencode_auth_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(auth_cmd);
+    }
     progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    provision::commands::ssh_as_openclaw_with_user_multi_async(
-        &ip_c,
-        &key_c,
-        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
-        "ubuntu",
-    )
-    .await?;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(&ip_c, &key_c, cmds, "ubuntu")
+        .await?;
 
     // Step 16: Save DeployRecord
     record_step_start(step_db, &deploy_id, 16, "Saving deploy record");
@@ -2228,6 +2318,7 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
         openai_key: &params.openai_key,
         gemini_key: &params.gemini_key,
         byteplus_ark_api_key: &params.byteplus_ark_api_key,
+        opencode_api_key: &params.opencode_api_key,
         whatsapp_phone_number: &params.whatsapp_phone_number,
         telegram_bot_token: &params.telegram_bot_token,
         public_key_openssh: &keypair.public_key_openssh,
@@ -2264,6 +2355,7 @@ async fn run_azure(params: DeployParams) -> Result<DeployRecord> {
         ""
     };
     let byteplus_onboard_arg = byteplus_onboard_arg(&params.byteplus_ark_api_key);
+    let opencode_onboard_arg = opencode_onboard_arg(&params.opencode_api_key);
     let byteplus_ark_config_cmd = if has_value(&params.byteplus_ark_api_key) {
         format!(
             "node -e 'const fs=require(\"fs\");\
@@ -2293,7 +2385,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          if [ ! -S \"$XDG_RUNTIME_DIR/bus\" ]; then dbus-daemon --session --address=\"$DBUS_SESSION_BUS_ADDRESS\" --fork >/dev/null 2>&1 || true; fi && \
          if [ -f {home}/.openclaw/.env ]; then set -a; . {home}/.openclaw/.env; set +a; fi; \
-         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
+         (openclaw onboard --non-interactive --mode local{anthropic_onboard_arg}{openai_onboard_arg}{gemini_onboard_arg}{byteplus_onboard_arg}{opencode_onboard_arg} --gateway-port 18789 --gateway-bind loopback --install-daemon --daemon-runtime node --skip-skills --accept-risk >/dev/null 2>&1 || true); \
          (openclaw doctor --fix >/dev/null 2>&1 || true); \
          (sed -i 's|/root/.openclaw|{home}/.openclaw|g; s|/root/|{home}/|g' {home}/.openclaw/openclaw.json 2>/dev/null || true); \
          if [ -n \"$ANTHROPIC_SETUP_TOKEN\" ]; then \
@@ -2359,6 +2451,7 @@ SVCEOF\n\
         &params.openai_key,
         &params.gemini_key,
         &params.byteplus_ark_api_key,
+        &params.opencode_api_key,
     );
     let model_cmd = build_model_setup_cmd(
         &params.primary_model,
@@ -2366,16 +2459,21 @@ SVCEOF\n\
         &params.telegram_bot_token,
     );
     let profile_cmd = build_profile_setup_cmd(&params.profile);
+    let mut cmds = vec![model_cmd, profile_cmd, build_device_approve_cmd()];
+    if let Some(oc_cmd) =
+        build_opencode_install_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(oc_cmd);
+    }
+    if let Some(auth_cmd) = build_opencode_auth_cmd(&params.primary_model, &params.opencode_api_key)
+    {
+        cmds.push(auth_cmd);
+    }
     progress::emit(tx, "[Step 15/16] Configuring model setup and profile...");
     let ip_c = ip.clone();
     let key_c = keypair.private_key_path.clone();
-    provision::commands::ssh_as_openclaw_with_user_multi_async(
-        &ip_c,
-        &key_c,
-        vec![model_cmd, profile_cmd, build_device_approve_cmd()],
-        "azureuser",
-    )
-    .await?;
+    provision::commands::ssh_as_openclaw_with_user_multi_async(&ip_c, &key_c, cmds, "azureuser")
+        .await?;
     record_step_complete(step_db, &deploy_id, 15);
 
     // Step 16: Save DeployRecord

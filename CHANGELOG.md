@@ -1,8 +1,9 @@
 # Changelog
 
-## v0.68.0
+## v0.69.0
 
 ### Added
+- **OpenCode support** — new `opencode` model option for deploy and update-model commands. When `--primary-model opencode` is selected, the deploy installs OpenCode via `curl -fsSL https://opencode.ai/install | bash` and configures MiniMax M2.5 Free (`opencode/minimax-m2.5-free`) as the default model. No API key required — the free model works out of the box.
 - **`memory-download` subcommand** — download all memory archive files from an OpenClaw instance as a tar.gz archive (`--instance` + optional `--output`); SSHes into the instance, tars the memory directory, SCP-downloads it locally, and cleans up the remote temp file
 - **`scp_download_as` SSH helper** — supports SCP file downloads as a specific SSH user (e.g. `ubuntu` for Lightsail instances)
 
@@ -366,6 +367,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 
