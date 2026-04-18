@@ -1,5 +1,9 @@
 # clawmacdo
 
+<p align="center">
+  <img src="clawmacdo.png" alt="clawmacdo logo" width="200" />
+</p>
+
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
