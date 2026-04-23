@@ -5864,3 +5864,118 @@ async function confirmSnapshot(id, provider) {
 </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+    use tower::util::ServiceExt;
+
+    fn test_state() -> AppState {
+        AppState {
+            jobs: Arc::new(RwLock::new(HashMap::new())),
+            db: Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap())),
+            rate_limiter: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn extract_last_qr_block_returns_last_contiguous_block() {
+        let output = "before\n██\n██\nafter\n▀▀\n▄▄\nend";
+
+        assert_eq!(extract_last_qr_block(output), "▀▀\n▄▄");
+    }
+
+    #[test]
+    fn normalize_pairing_code_accepts_valid_input_and_rejects_invalid() {
+        assert_eq!(
+            normalize_pairing_code(" ab12cd34 "),
+            Some("AB12CD34".to_string())
+        );
+        assert_eq!(normalize_pairing_code("bad-code"), None);
+        assert_eq!(normalize_pairing_code("short"), None);
+    }
+
+    #[test]
+    fn ssh_user_for_provider_maps_known_clouds() {
+        assert_eq!(ssh_user_for_provider(Some("lightsail")), "ubuntu");
+        assert_eq!(ssh_user_for_provider(Some("azure")), "azureuser");
+        assert_eq!(ssh_user_for_provider(Some("digitalocean")), "root");
+        assert_eq!(ssh_user_for_provider(None), "root");
+    }
+
+    #[tokio::test]
+    async fn api_key_middleware_rejects_missing_header_and_allows_valid_header() {
+        static ENV_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _guard = ENV_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+
+        std::env::set_var("CLAWMACDO_API_KEY", "secret-token");
+
+        let app = Router::new()
+            .route("/", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn(api_key_middleware));
+
+        let unauthorized = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-api-key", "secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorized.status(), StatusCode::OK);
+
+        std::env::remove_var("CLAWMACDO_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_middleware_blocks_after_configured_limit() {
+        let state = test_state();
+        let app = Router::new()
+            .route("/", get(|| async { StatusCode::OK }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                rate_limit_middleware,
+            ))
+            .with_state(state);
+
+        for attempt in 1..=RATE_LIMIT_MAX {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        .header("x-forwarded-for", "203.0.113.42")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "attempt {attempt}");
+        }
+
+        let limited = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-forwarded-for", "203.0.113.42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+}

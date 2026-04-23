@@ -205,3 +205,69 @@ impl DeployRecord {
         Ok(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_name(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{prefix}-{}-{nanos}", std::process::id())
+    }
+
+    #[test]
+    fn normalize_hostname_accepts_valid_names_and_lowercases() {
+        assert_eq!(
+            normalize_hostname("  ExAmple-Host.Sub.Domain  ").unwrap(),
+            Some("example-host.sub.domain".to_string())
+        );
+        assert_eq!(normalize_hostname("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn normalize_hostname_rejects_invalid_names() {
+        for invalid in [
+            ".example",
+            "example.",
+            "bad..host",
+            "-edge",
+            "edge-",
+            "bad_host",
+        ] {
+            assert!(
+                normalize_hostname(invalid).is_err(),
+                "{invalid} should fail"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_key_path_accepts_files_within_keys_dir() {
+        let keys_dir = keys_dir().unwrap();
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        let file_path = keys_dir.join(unique_name("key"));
+        std::fs::write(&file_path, "ssh-private-key").unwrap();
+
+        let resolved = resolve_key_path(file_path.to_str().unwrap()).unwrap();
+        let expected = std::fs::canonicalize(&file_path).unwrap();
+        assert_eq!(resolved, expected);
+
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn resolve_key_path_rejects_files_outside_keys_dir() {
+        let outside_path = std::env::temp_dir().join(unique_name("outside-key"));
+        std::fs::write(&outside_path, "ssh-private-key").unwrap();
+
+        let err = resolve_key_path(outside_path.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("must stay within"));
+
+        let _ = std::fs::remove_file(outside_path);
+    }
+}
