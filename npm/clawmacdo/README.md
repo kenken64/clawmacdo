@@ -1,7 +1,7 @@
 # clawmacdo
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/kenken64/clawmacdo/main/clawmacdo.png" alt="clawmacdo logo" width="280" />
+  <img src="clawmacdo.png" alt="clawmacdo logo" width="280" />
 </p>
 
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
@@ -849,18 +849,19 @@ clawmacdo/
 # Build all crates
 cargo build
 
-# Test all crates
+# Run the full Rust quality pipeline
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 
 # Build specific crate
 cargo build -p clawmacdo-core
 
-# Run clippy on workspace
-cargo clippy --all
-
 # Update dependencies
 cargo update
 ```
+
+The workspace now includes focused Rust tests around config/path validation, deployment database lookups, cron/hook command construction helpers, QR parsing, and web middleware behavior. Add new tests close to the module they protect.
 
 ### Adding Dependencies
 
@@ -917,7 +918,7 @@ See [docs/HIGH_SECURITY_FIXES.md](docs/HIGH_SECURITY_FIXES.md) for the finding-b
 1. Fork the repository
 2. Create a feature branch
 3. Add tests for new functionality
-4. Run `cargo clippy` and `cargo test`
+4. Run `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test`
 5. Submit a pull request
 
 ## License
@@ -955,8 +956,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.69.0
-
+**Current version:** 0.70.0
 
 
 
