@@ -98,13 +98,12 @@ fn parse_funnel_url(status_output: &str) -> Option<String> {
     status_output.lines().find_map(|line| {
         let trimmed = line.trim();
         if trimmed.starts_with("https://") {
-            let url = trimmed.trim_end_matches(':');
-            let url = if let Some(idx) = url.find(" (") {
-                &url[..idx]
+            let url = if let Some(idx) = trimmed.find(" (") {
+                &trimmed[..idx]
             } else {
-                url
+                trimmed
             };
-            Some(url.to_string())
+            Some(url.trim_end_matches(':').to_string())
         } else {
             None
         }
@@ -535,4 +534,41 @@ pub async fn send(query: &str, task: &str, mapping_id: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_funnel_url_extracts_https_url_without_annotations() {
+        let status = r#"
+            # Funnel on
+            https://my-node.ts.net: (funnel on)
+            |-- proxy http://127.0.0.1:18789
+        "#;
+
+        assert_eq!(
+            parse_funnel_url(status),
+            Some("https://my-node.ts.net".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_best_recipient_returns_latest_matching_channel() {
+        let sessions = r#"{
+            "telegram": {"lastChannel":"telegram","updatedAt":50,"lastTo":"telegram:7547736315"},
+            "whatsapp": {"lastChannel":"whatsapp","updatedAt":10,"lastTo":"whatsapp:111222333"}
+        }"#;
+
+        assert_eq!(
+            parse_best_recipient(sessions, "telegram"),
+            Some("7547736315".to_string())
+        );
+        assert_eq!(
+            parse_best_recipient(sessions, "whatsapp"),
+            Some("111222333".to_string())
+        );
+        assert_eq!(parse_best_recipient(sessions, "last"), None);
+    }
 }

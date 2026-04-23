@@ -360,3 +360,113 @@ pub fn find_deployment_by_query(conn: &Connection, query: &str) -> Result<Option
         None => Ok(None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE deployments (
+                id              TEXT PRIMARY KEY,
+                customer_name   TEXT NOT NULL,
+                customer_email  TEXT NOT NULL,
+                provider        TEXT,
+                hostname        TEXT,
+                ip_address      TEXT,
+                region          TEXT,
+                size            TEXT,
+                status          TEXT NOT NULL DEFAULT 'running',
+                created_at      TEXT NOT NULL
+            );
+            CREATE TABLE deploy_steps (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                deploy_id    TEXT NOT NULL,
+                step_number  INTEGER NOT NULL,
+                total_steps  INTEGER NOT NULL DEFAULT 16,
+                label        TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'running',
+                started_at   TEXT NOT NULL,
+                completed_at TEXT,
+                error_msg    TEXT,
+                UNIQUE(deploy_id, step_number)
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_sample_deployment(conn: &Connection, id: &str, hostname: &str, ip: &str) {
+        insert_deployment(
+            conn,
+            id,
+            "Jane Doe",
+            "jane@example.com",
+            "digitalocean",
+            "sgp1",
+            "s-2vcpu-4gb",
+            hostname,
+        )
+        .unwrap();
+        update_deployment_status(conn, id, "completed", Some(ip), Some(hostname)).unwrap();
+    }
+
+    #[test]
+    fn deployment_lookup_matches_id_hostname_and_ip() {
+        let conn = test_conn();
+        insert_sample_deployment(&conn, "deploy-1", "openclaw-one", "203.0.113.10");
+
+        assert_eq!(
+            get_deployment_by_id(&conn, "deploy-1")
+                .unwrap()
+                .unwrap()
+                .hostname,
+            Some("openclaw-one".to_string())
+        );
+        assert_eq!(
+            find_deployment_by_query(&conn, "openclaw-one")
+                .unwrap()
+                .unwrap()
+                .id,
+            "deploy-1"
+        );
+        assert_eq!(
+            find_deployment_by_query(&conn, "203.0.113.10")
+                .unwrap()
+                .unwrap()
+                .id,
+            "deploy-1"
+        );
+    }
+
+    #[test]
+    fn empty_query_returns_most_recent_deployment() {
+        let conn = test_conn();
+        insert_sample_deployment(&conn, "deploy-older", "older-host", "203.0.113.11");
+        insert_sample_deployment(&conn, "deploy-newer", "newer-host", "203.0.113.12");
+
+        conn.execute(
+            "UPDATE deployments SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params!["2026-01-01 00:00:00", "deploy-older"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE deployments SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params!["2026-01-02 00:00:00", "deploy-newer"],
+        )
+        .unwrap();
+
+        let found = find_deployment_by_query(&conn, "").unwrap().unwrap();
+        assert_eq!(found.id, "deploy-newer");
+    }
+
+    #[test]
+    fn delete_deployment_removes_existing_row() {
+        let conn = test_conn();
+        insert_sample_deployment(&conn, "deploy-1", "openclaw-one", "203.0.113.10");
+
+        assert!(delete_deployment(&conn, "deploy-1").unwrap());
+        assert!(get_deployment_by_id(&conn, "deploy-1").unwrap().is_none());
+    }
+}

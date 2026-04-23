@@ -430,3 +430,57 @@ fn parse_job_id_by_name(json_out: &str, name: &str) -> Result<String> {
     }
     bail!("No cron job named '{name}' found on this instance");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_escape_wraps_and_escapes_single_quotes() {
+        assert_eq!(shell_escape("plain"), "'plain'");
+        assert_eq!(shell_escape("o'hare"), "'o'\\''hare'");
+    }
+
+    #[test]
+    fn parse_best_recipient_picks_latest_matching_channel() {
+        let sessions = r#"{
+            "first": {"lastChannel":"telegram","updatedAt":10,"lastTo":"telegram:111"},
+            "second": {"lastChannel":"whatsapp","updatedAt":20,"lastTo":"whatsapp:222"},
+            "third": {"lastChannel":"telegram","updatedAt":30,"lastTo":"telegram:333"}
+        }"#;
+
+        assert_eq!(
+            parse_best_recipient(sessions, "telegram"),
+            Some("333".to_string())
+        );
+        assert_eq!(
+            parse_best_recipient(sessions, "whatsapp"),
+            Some("222".to_string())
+        );
+        assert_eq!(parse_best_recipient(sessions, "last"), None);
+    }
+
+    #[test]
+    fn build_cron_add_cmd_quotes_user_supplied_fields() {
+        let schedule = Some("0 9 * * *".to_string());
+        let to = Some("telegram:ops'o".to_string());
+
+        let cmd = build_cron_add_cmd(
+            "daily'o",
+            &schedule,
+            &None,
+            "say 'hello'",
+            "telegram",
+            &to,
+            true,
+        )
+        .unwrap();
+
+        assert!(cmd.contains("openclaw cron add"));
+        assert!(cmd.contains("--name 'daily'\\''o'"));
+        assert!(cmd.contains("--message 'say '\\''hello'\\'''"));
+        assert!(cmd.contains("--cron '0 9 * * *'"));
+        assert!(cmd.contains("--announce --channel 'telegram'"));
+        assert!(cmd.contains("--to 'telegram:ops'\\''o'"));
+    }
+}
