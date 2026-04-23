@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.69.0
+## v0.70.0
 
 ### Added
 - **OpenCode support** — new `opencode` model option for deploy and update-model commands. When `--primary-model opencode` is selected, the deploy installs OpenCode via `curl -fsSL https://opencode.ai/install | bash` and configures MiniMax M2.5 Free (`opencode/minimax-m2.5-free`) as the default model. No API key required — the free model works out of the box.
