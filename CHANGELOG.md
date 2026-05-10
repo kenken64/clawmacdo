@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.72.0
+
+### Added
+- **Remotion avatar OpenAI and voice options** - `remotion-avatar-setup` now accepts `--openai-api-key`/`--open-api-key` and `--voice-gender male|female`, writing `OPENAI_API_KEY`, `VOICE_GENDER`, and `TTS_VOICE` into the Remotion app `.env`.
+- **Remotion avatar GLB upload** - `remotion-avatar-setup --avatar-glb <path>` uploads `avatar.glb` or `<userid>_avatar.glb` to the Remotion app as `public/avatar.glb`.
+- **Tailscale deploy form regression coverage** - Playwright now covers entering the Tailscale auth key before enabling the Tailscale checkbox.
+
+### Fixed
+- **Tailscale auth key UI validation** - the deploy form now detects a typed Tailscale auth key immediately, auto-enables the Tailscale option, and uses one value reader for validation and deploy payloads.
+
 ## v0.71.0
 
 ### Added
@@ -379,7 +389,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 

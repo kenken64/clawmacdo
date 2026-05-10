@@ -550,6 +550,19 @@ enum Commands {
         /// Chat model value to write into .env
         #[arg(long, default_value = "openclaw")]
         chat_model: String,
+        /// OpenAI API key for Remotion TTS/image/vision features
+        #[arg(
+            long = "openai-api-key",
+            visible_alias = "open-api-key",
+            env = "OPENAI_API_KEY"
+        )]
+        openai_api_key: Option<String>,
+        /// Avatar voice gender; maps male to onyx and female to nova
+        #[arg(long, default_value = "male")]
+        voice_gender: String,
+        /// Local avatar GLB to upload as public/avatar.glb; accepts avatar.glb or *_avatar.glb
+        #[arg(long, value_name = "PATH")]
+        avatar_glb: Option<std::path::PathBuf>,
     },
     /// Set an OpenClaw agent display name and owner context
     OpenclawIdentity {
@@ -1159,6 +1172,9 @@ async fn async_main() -> anyhow::Result<()> {
             app_dir,
             port,
             chat_model,
+            openai_api_key,
+            voice_gender,
+            avatar_glb,
         } => {
             commands::remotion_avatar::setup(commands::remotion_avatar::RemotionAvatarParams {
                 instance,
@@ -1166,6 +1182,9 @@ async fn async_main() -> anyhow::Result<()> {
                 app_dir,
                 port,
                 chat_model,
+                openai_api_key,
+                voice_gender,
+                avatar_glb,
             })
             .await
         }

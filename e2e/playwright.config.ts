@@ -30,7 +30,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      "CLAWMACDO_DRY_RUN=true cargo run --bin clawmacdo -- serve --port 3456",
+      `CLAWMACDO_DRY_RUN=true CLAWMACDO_PIN=${process.env.CLAWMACDO_E2E_PIN || "111111"} cargo run --bin clawmacdo -- serve --port 3456`,
     url: "http://localhost:3456",
     timeout: 300_000, // 5 min for Rust compile + startup
     reuseExistingServer: !process.env.CI,
