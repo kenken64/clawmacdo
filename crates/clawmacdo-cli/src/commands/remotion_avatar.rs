@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::{
     ssh_as_openclaw_with_user_multi_async, ssh_root_as_async,
@@ -13,6 +13,9 @@ pub struct RemotionAvatarParams {
     pub app_dir: String,
     pub port: u16,
     pub chat_model: String,
+    pub openai_api_key: Option<String>,
+    pub voice_gender: String,
+    pub avatar_glb: Option<PathBuf>,
 }
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -73,6 +76,33 @@ fn clean_required(flag: &str, value: &str, max_len: usize) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+fn clean_optional_secret(
+    flag: &str,
+    value: Option<String>,
+    max_len: usize,
+) -> Result<Option<String>> {
+    match value {
+        Some(v) if v.trim().is_empty() => Ok(None),
+        Some(v) => clean_required(flag, &v, max_len).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn clean_voice_gender(value: &str) -> Result<String> {
+    let gender = clean_required("voice-gender", value, 16)?.to_ascii_lowercase();
+    match gender.as_str() {
+        "male" | "female" => Ok(gender),
+        _ => bail!("--voice-gender must be either 'male' or 'female'."),
+    }
+}
+
+fn tts_voice_for_gender(gender: &str) -> &'static str {
+    match gender {
+        "female" => "nova",
+        _ => "onyx",
+    }
+}
+
 fn clean_app_dir(value: &str) -> Result<String> {
     let app_dir = clean_required("app-dir", value, 512)?;
     let workspace = format!("{}/.openclaw/workspace/", config::OPENCLAW_HOME);
@@ -83,6 +113,31 @@ fn clean_app_dir(value: &str) -> Result<String> {
         bail!("--app-dir cannot contain '..' path segments.");
     }
     Ok(app_dir)
+}
+
+fn clean_avatar_glb_path(value: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    let Some(path) = value else {
+        return Ok(None);
+    };
+    if !path.exists() {
+        bail!("--avatar-glb file does not exist: {}", path.display());
+    }
+    if !path.is_file() {
+        bail!("--avatar-glb must point to a file: {}", path.display());
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("--avatar-glb filename must be valid UTF-8."))?;
+    let lower = file_name.to_ascii_lowercase();
+    if lower != "avatar.glb" && !lower.ends_with("_avatar.glb") {
+        bail!("--avatar-glb filename must be avatar.glb or end with _avatar.glb.");
+    }
+
+    Ok(Some(path.canonicalize().with_context(|| {
+        format!("Failed to resolve --avatar-glb path {}", path.display())
+    })?))
 }
 
 fn install_cloudflared_cmd() -> String {
@@ -109,10 +164,14 @@ echo "cloudflared: $(cloudflared --version | head -1)"
     .to_string()
 }
 
-fn configure_app_cmd(params: &RemotionAvatarParams) -> String {
+fn configure_app_cmd(params: &RemotionAvatarParams, avatar_upload_tmp: Option<&str>) -> String {
     let app_dir = shell_escape(&params.app_dir);
     let name = shell_escape(&params.name);
     let chat_model = shell_escape(&params.chat_model);
+    let openai_api_key = shell_escape(params.openai_api_key.as_deref().unwrap_or(""));
+    let voice_gender = shell_escape(&params.voice_gender);
+    let tts_voice = shell_escape(tts_voice_for_gender(&params.voice_gender));
+    let avatar_upload_tmp = shell_escape(avatar_upload_tmp.unwrap_or(""));
     let home = config::OPENCLAW_HOME;
     let port = params.port;
 
@@ -125,6 +184,10 @@ export AVATAR_NAME={name}
 export REMOTION_PORT="{port}"
 export CHAT_BASE_URL="{chat_base_url}"
 export CHAT_MODEL={chat_model}
+export REQUESTED_OPENAI_API_KEY={openai_api_key}
+export VOICE_GENDER={voice_gender}
+export TTS_VOICE={tts_voice}
+export AVATAR_UPLOAD_TMP={avatar_upload_tmp}
 
 CONFIG="{home}/.openclaw/openclaw.json"
 CHAT_API_KEY=$(node -e "const fs=require('fs');const p=process.env.CONFIG||'{home}/.openclaw/openclaw.json';try{{const cfg=JSON.parse(fs.readFileSync(p,'utf8'));process.stdout.write((cfg.gateway&&cfg.gateway.auth&&cfg.gateway.auth.token)||'')}}catch(e){{process.exit(1)}}")
@@ -139,17 +202,45 @@ if [ ! -d "$APP_DIR" ]; then
 fi
 
 cd "$APP_DIR"
+OPENAI_API_KEY_VALUE="$REQUESTED_OPENAI_API_KEY"
+OPENAI_API_KEY_SOURCE="provided"
+if [ -z "$OPENAI_API_KEY_VALUE" ] && [ -f .env ]; then
+  OPENAI_API_KEY_VALUE=$(node -e "const fs=require('fs');const text=fs.readFileSync('.env','utf8');const line=text.split(/\r?\n/).find(l=>l.startsWith('OPENAI_API_KEY='));process.stdout.write(line ? line.slice('OPENAI_API_KEY='.length).trim() : '')" 2>/dev/null || true)
+  if [ -n "$OPENAI_API_KEY_VALUE" ]; then
+    OPENAI_API_KEY_SOURCE="existing_env"
+  fi
+fi
+if [ -z "$OPENAI_API_KEY_VALUE" ]; then
+  OPENAI_API_KEY_VALUE="$CHAT_API_KEY"
+  OPENAI_API_KEY_SOURCE="gateway_token_fallback"
+fi
+
 umask 077
 cat > .env <<ENVEOF
 CHAT_BASE_URL=$CHAT_BASE_URL
 CHAT_API_KEY=$CHAT_API_KEY
 CHAT_MODEL=$CHAT_MODEL
 VITE_AVATAR_NAME=$AVATAR_NAME
-OPENAI_API_KEY=$CHAT_API_KEY
-OPENAI_BASE_URL=$CHAT_BASE_URL
+OPENAI_API_KEY=$OPENAI_API_KEY_VALUE
+VOICE_GENDER=$VOICE_GENDER
+TTS_VOICE=$TTS_VOICE
 ENVEOF
 chmod 600 .env
 echo "env: $APP_DIR/.env"
+echo "openai_api_key_source=$OPENAI_API_KEY_SOURCE"
+echo "voice_gender=$VOICE_GENDER"
+echo "tts_voice=$TTS_VOICE"
+
+if [ -n "$AVATAR_UPLOAD_TMP" ]; then
+  if [ ! -f "$AVATAR_UPLOAD_TMP" ]; then
+    echo "Avatar upload file not found: $AVATAR_UPLOAD_TMP"
+    exit 1
+  fi
+  mkdir -p "$APP_DIR/public"
+  install -m 0644 "$AVATAR_UPLOAD_TMP" "$APP_DIR/public/avatar.glb"
+  rm -f "$AVATAR_UPLOAD_TMP"
+  echo "avatar_glb=$APP_DIR/public/avatar.glb"
+fi
 
 if command -v claude >/dev/null 2>&1; then
   timeout 180 claude -p "In this project, find all user-facing occurrences of kenken64 and replace them with $AVATAR_NAME. Keep behavior unchanged." \
@@ -315,33 +406,80 @@ echo "tunnel_service=$(systemctl --user is-active remotion-avatar-tunnel.service
         port = port,
         chat_base_url = DEFAULT_CHAT_BASE_URL,
         chat_model = chat_model,
+        openai_api_key = openai_api_key,
+        voice_gender = voice_gender,
+        tts_voice = tts_voice,
+        avatar_upload_tmp = avatar_upload_tmp,
     )
 }
 
 pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
+    let avatar_glb = clean_avatar_glb_path(params.avatar_glb)?;
     let params = RemotionAvatarParams {
         instance: clean_required("instance", &params.instance, 255)?,
         name: clean_required("name", &params.name, 120)?,
         app_dir: clean_app_dir(&params.app_dir)?,
         port: params.port,
         chat_model: clean_required("chat-model", &params.chat_model, 80)?,
+        openai_api_key: clean_optional_secret("openai-api-key", params.openai_api_key, 4096)?,
+        voice_gender: clean_voice_gender(&params.voice_gender)?,
+        avatar_glb: None,
     };
 
     let (ip, key, provider) = find_deploy_record(&params.instance)?;
     let ssh_user = ssh_user_for_provider(&provider);
+    let total_steps = if avatar_glb.is_some() { 3 } else { 2 };
 
     println!("Setting up Remotion avatar app on {ip}...");
-    println!("[1/2] Installing cloudflared if needed...");
+    println!("[1/{total_steps}] Installing cloudflared if needed...");
     let install_out = ssh_root_as_async(&ip, &key, &install_cloudflared_cmd(), ssh_user).await?;
     if !install_out.trim().is_empty() {
         println!("  {}", install_out.trim());
     }
 
-    println!("[2/2] Configuring app, services, and Quick Tunnel...");
+    let avatar_upload_tmp = if let Some(avatar_glb) = avatar_glb {
+        let remote_tmp = format!(
+            "/tmp/clawmacdo-remotion-avatar-{}.glb",
+            uuid::Uuid::new_v4()
+        );
+        println!("[2/{total_steps}] Uploading avatar GLB...");
+        let scp_ip = ip.clone();
+        let scp_key = key.clone();
+        let scp_user = ssh_user.to_string();
+        let remote_tmp_for_upload = remote_tmp.clone();
+        tokio::task::spawn_blocking(move || {
+            clawmacdo_ssh::scp_upload_as(
+                &scp_ip,
+                &scp_key,
+                &avatar_glb,
+                &remote_tmp_for_upload,
+                &scp_user,
+            )
+        })
+        .await
+        .context("avatar upload task failed")??;
+
+        let remote_tmp_escaped = shell_escape(&remote_tmp);
+        ssh_root_as_async(
+            &ip,
+            &key,
+            &format!(
+                "chown openclaw:openclaw {remote_tmp_escaped} && chmod 0644 {remote_tmp_escaped}"
+            ),
+            ssh_user,
+        )
+        .await?;
+        println!("  uploaded as public/avatar.glb");
+        Some(remote_tmp)
+    } else {
+        None
+    };
+
+    println!("[{total_steps}/{total_steps}] Configuring app, services, and Quick Tunnel...");
     let outputs = ssh_as_openclaw_with_user_multi_async(
         &ip,
         &key,
-        vec![configure_app_cmd(&params)],
+        vec![configure_app_cmd(&params, avatar_upload_tmp.as_deref())],
         ssh_user,
     )
     .await?;
@@ -355,6 +493,10 @@ pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
     for line in out.lines() {
         if line.starts_with("env:")
             || line.starts_with("name_replacement_files=")
+            || line.starts_with("openai_api_key_source=")
+            || line.starts_with("voice_gender=")
+            || line.starts_with("tts_voice=")
+            || line.starts_with("avatar_glb=")
             || line.starts_with("remotion_service=")
             || line.starts_with("tunnel_service=")
         {

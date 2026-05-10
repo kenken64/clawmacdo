@@ -151,7 +151,9 @@ clawmacdo openclaw-md-download --instance <deploy-id> --output ~/backups/
 clawmacdo openclaw-gateway-token --instance <deploy-id>
 
 # Configure Remotion avatar app and return a Cloudflare Quick Tunnel URL
-clawmacdo remotion-avatar-setup --instance <deploy-id> --name "Kenny"
+clawmacdo remotion-avatar-setup --instance <deploy-id> --name "Kenny" \
+  --openai-api-key "$OPENAI_API_KEY" --voice-gender female \
+  --avatar-glb ./kenny_avatar.glb
 
 # Install a plugin
 clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltguard"
@@ -586,10 +588,13 @@ Regenerates `gateway.auth.token` in `/home/openclaw/.openclaw/openclaw.json`, ke
 ### Remotion Avatar Setup
 
 ```bash
-clawmacdo remotion-avatar-setup --instance my-server --name "Kenny"
+clawmacdo remotion-avatar-setup --instance my-server --name "Kenny" \
+  --openai-api-key "$OPENAI_API_KEY" \
+  --voice-gender female \
+  --avatar-glb ./kenny_avatar.glb
 ```
 
-Configures `/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar/.env` with `CHAT_BASE_URL=http://127.0.0.1:18789/v1`, `CHAT_API_KEY` from the OpenClaw gateway token, `CHAT_MODEL=openclaw`, and `VITE_AVATAR_NAME` from `--name`; writes OpenAI-compatible aliases for apps that still expect them; replaces `kenken64` with the provided name; starts the app; starts a free Cloudflare Quick Tunnel to the frontend port; and prints the public `trycloudflare.com` URL.
+Configures `/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar/.env` with `CHAT_BASE_URL=http://127.0.0.1:18789/v1`, `CHAT_API_KEY` from the OpenClaw gateway token, `CHAT_MODEL=openclaw`, `VITE_AVATAR_NAME` from `--name`, `OPENAI_API_KEY` from `--openai-api-key`/`OPENAI_API_KEY`, and voice settings (`VOICE_GENDER`, `TTS_VOICE`; male maps to `onyx`, female maps to `nova`); optionally uploads `avatar.glb` or `<userid>_avatar.glb` to the app as `public/avatar.glb`; replaces `kenken64` with the provided name; starts the app; starts a free Cloudflare Quick Tunnel to the frontend port; and prints the public `trycloudflare.com` URL.
 
 ### Scheduled Cron Jobs
 
@@ -1003,9 +1008,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.71.0
-
-
+**Current version:** 0.72.0
 
 
 

@@ -1,8 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
 import { loadScenarios, DeployScenario } from "../helpers/csv-reader";
 import { DeployFormFiller } from "../helpers/form-filler";
 
 const scenarios = loadScenarios();
+const e2ePin = process.env.CLAWMACDO_E2E_PIN || "111111";
 
 test.describe("Deploy Form — All Providers & Permutations", () => {
   for (const scenario of scenarios) {
@@ -10,8 +11,7 @@ test.describe("Deploy Form — All Providers & Permutations", () => {
       page,
     }) => {
       // Fresh page — creates one deploy card automatically
-      await page.goto("/");
-      await page.waitForSelector('[id^="deploy-card-"]', { timeout: 10_000 });
+      await openDeployPage(page);
 
       const filler = new DeployFormFiller(page, 1);
 
@@ -47,6 +47,56 @@ test.describe("Deploy Form — All Providers & Permutations", () => {
     });
   }
 });
+
+test("Tailscale auth key stays detected when entered before enabling Tailscale", async ({
+  page,
+}) => {
+  await openDeployPage(page);
+
+  const card = page.locator("#deploy-card-1");
+  const tailscaleKey = card.locator('input[name="tailscale_auth_key"]');
+  const tailscaleToggle = card.locator('input[name="tailscale"]');
+
+  await tailscaleKey.fill("tskey-auth-test-before-checkbox");
+  await expect(tailscaleToggle).toBeChecked();
+  await expect(tailscaleKey).toHaveValue("tskey-auth-test-before-checkbox");
+
+  await tailscaleToggle.setChecked(false);
+  await expect(tailscaleKey).toHaveValue("tskey-auth-test-before-checkbox");
+  await tailscaleToggle.setChecked(true);
+  await expect(tailscaleKey).toHaveValue("tskey-auth-test-before-checkbox");
+
+  const state = await card.locator("form").evaluate((form: HTMLFormElement) => {
+    const input = form.querySelector<HTMLInputElement>(
+      'input[name="tailscale_auth_key"]'
+    );
+    const toggle = form.querySelector<HTMLInputElement>(
+      'input[name="tailscale"]'
+    );
+    return {
+      required: input?.hasAttribute("data-required") ?? false,
+      tailscale: toggle?.checked ?? false,
+      value: input?.value ?? "",
+    };
+  });
+
+  expect(state).toEqual({
+    required: true,
+    tailscale: true,
+    value: "tskey-auth-test-before-checkbox",
+  });
+});
+
+async function openDeployPage(page: Page) {
+  await page.goto("/login");
+  const pinInput = page.locator('input[name="pin"]');
+  if (await pinInput.isVisible()) {
+    await pinInput.fill(e2ePin);
+    await page.locator('button[type="submit"]').click();
+  }
+  await page.goto("/");
+  await page.waitForSelector('[id^="deploy-card-"]', { timeout: 10_000 });
+}
 
 async function verifyFormState(page: any, s: DeployScenario) {
   const card = page.locator("#deploy-card-1");

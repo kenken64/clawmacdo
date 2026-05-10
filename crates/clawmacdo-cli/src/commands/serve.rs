@@ -3884,11 +3884,7 @@ function addDeployCard(initialState) {
   container.appendChild(card);
   syncModelSelectors(n);
   const form = card.querySelector('form');
-  const tailscaleToggle = form.querySelector('[name="tailscale"]');
-  if (tailscaleToggle) {
-    tailscaleToggle.addEventListener('change', () => syncTailscaleKeyRequirement(form));
-    syncTailscaleKeyRequirement(form);
-  }
+  bindTailscaleControls(form);
   if (initialState && initialState.completed) {
     const progressDiv = card.querySelector('.deploy-progress');
     progressDiv.classList.remove('hidden');
@@ -3921,7 +3917,7 @@ function validateForm(form) {
     // Skip hidden fields (e.g. provider credentials toggled off)
     if (input.offsetParent === null) return;
 
-    const value = input.value.trim();
+    const value = readInputValue(input).trim();
     let errorMsg = null;
 
     if (!value) {
@@ -3953,6 +3949,16 @@ function validateForm(form) {
 
   if (firstError) firstError.focus();
   return valid;
+}
+
+function readInputValue(input) {
+  if (!input || typeof input.value !== 'string') return '';
+  return input.value;
+}
+
+function readFormValue(form, name) {
+  const input = form.querySelector(`[name="${name}"]`);
+  return readInputValue(input);
 }
 
 // Clear error styling on input
@@ -4072,6 +4078,22 @@ function syncTailscaleKeyRequirement(form) {
       indicator.textContent = '(optional)';
     }
   }
+}
+
+function bindTailscaleControls(form) {
+  const tailscaleToggle = form.querySelector('[name="tailscale"]');
+  const tailscaleKeyInput = form.querySelector('[name="tailscale_auth_key"]');
+  if (!tailscaleToggle || !tailscaleKeyInput) return;
+
+  tailscaleToggle.addEventListener('change', () => syncTailscaleKeyRequirement(form));
+  tailscaleKeyInput.addEventListener('input', () => {
+    if (readInputValue(tailscaleKeyInput).trim() && !tailscaleToggle.checked) {
+      tailscaleToggle.checked = true;
+    }
+    syncTailscaleKeyRequirement(form);
+  });
+  tailscaleKeyInput.addEventListener('change', () => syncTailscaleKeyRequirement(form));
+  syncTailscaleKeyRequirement(form);
 }
 
 function toggleProvider(select, n) {
@@ -4552,7 +4574,7 @@ async function startDeploy(e, cardNum) {
   syncTailscaleKeyRequirement(form);
   if (!validateForm(form)) return;
 
-  const val = (name) => (form.querySelector(`[name="${name}"]`) || {}).value || '';
+  const val = (name) => readFormValue(form, name);
   const selVal = (slot) => {
     const sel = card.querySelector(`select[data-model-slot="${slot}"]`);
     return sel ? sel.value : '';
