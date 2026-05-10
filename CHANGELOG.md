@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.76.0
+
+### Changed
+- **Faster Telegram and identity setup** - `telegram-setup` and `openclaw-identity` now update remote OpenClaw config files directly and use bounded gateway health polling instead of invoking slower remote OpenClaw CLI setup paths.
+
 ## v0.75.0
 
 ### Added
@@ -415,8 +420,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 
