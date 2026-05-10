@@ -58,10 +58,6 @@ fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
     }
 }
 
-fn shell_escape(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
 fn clean_required(flag: &str, value: &str, max_len: usize) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -99,35 +95,6 @@ fn js_string(value: &str) -> Result<String> {
     Ok(serde_json::to_string(value)?)
 }
 
-fn build_identity_cmd(
-    agent: &str,
-    openclaw_name: &str,
-    theme: Option<&str>,
-    emoji: Option<&str>,
-    avatar: Option<&str>,
-) -> String {
-    let mut cmd = format!(
-        "export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         openclaw agents set-identity --agent {agent} --name {name}",
-        home = config::OPENCLAW_HOME,
-        agent = shell_escape(agent),
-        name = shell_escape(openclaw_name),
-    );
-
-    if let Some(theme) = theme {
-        cmd.push_str(&format!(" --theme {}", shell_escape(theme)));
-    }
-    if let Some(emoji) = emoji {
-        cmd.push_str(&format!(" --emoji {}", shell_escape(emoji)));
-    }
-    if let Some(avatar) = avatar {
-        cmd.push_str(&format!(" --avatar {}", shell_escape(avatar)));
-    }
-    cmd.push_str(" --json 2>&1");
-    cmd
-}
-
 fn build_workspace_cmd(params: &OpenclawIdentityParams) -> Result<String> {
     let home = config::OPENCLAW_HOME;
     let agent = js_string(&params.agent)?;
@@ -141,112 +108,154 @@ fn build_workspace_cmd(params: &OpenclawIdentityParams) -> Result<String> {
         Some(v) => js_string(v)?,
         None => "null".to_string(),
     };
+    let avatar = match &params.avatar {
+        Some(v) => js_string(v)?,
+        None => "null".to_string(),
+    };
 
-    Ok(format!(
-        r#"export HOME="{home}" && \
+    let mut cmd = r#"export HOME="__OPENCLAW_HOME__" && \
          node <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
-const home = process.env.HOME || '{home}';
+const home = process.env.HOME || '__OPENCLAW_HOME__';
 const configPath = path.join(home, '.openclaw', 'openclaw.json');
-const agentId = {agent};
-const agentName = {openclaw_name};
-const ownerName = {owner_name};
-const theme = {theme};
-const emoji = {emoji};
+const agentId = __AGENT_JSON__;
+const agentName = __OPENCLAW_NAME_JSON__;
+const ownerName = __OWNER_NAME_JSON__;
+const theme = __THEME_JSON__;
+const emoji = __EMOJI_JSON__;
+const avatar = __AVATAR_JSON__;
 
-function readJson(file) {{
-  try {{
+function readJson(file) {
+  try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
-  }} catch (_) {{
-    return {{}};
-  }}
-}}
+  } catch (_) {
+    return {};
+  }
+}
 
-function expandWorkspace(raw) {{
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function expandWorkspace(raw) {
   let value = typeof raw === 'string' && raw.trim()
     ? raw.trim()
     : path.join(home, '.openclaw', 'workspace');
   if (value === '~') value = home;
   if (value.startsWith('~/')) value = path.join(home, value.slice(2));
   if (value.startsWith('$HOME/')) value = path.join(home, value.slice(6));
-  if (value.startsWith('${{HOME}}/')) value = path.join(home, value.slice(8));
+  if (value.startsWith('${HOME}/')) value = path.join(home, value.slice(8));
   if (!path.isAbsolute(value)) value = path.join(home, value);
   return path.normalize(value);
-}}
+}
 
-function escapeRegExp(value) {{
-  return value.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&');
-}}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-function upsertManagedBlock(file, start, end, block) {{
+function upsertManagedBlock(file, start, end, block) {
   let existing = '';
-  try {{
+  try {
     existing = fs.readFileSync(file, 'utf8');
-  }} catch (_) {{}}
+  } catch (_) {}
 
   const re = new RegExp(escapeRegExp(start) + '[\\s\\S]*?' + escapeRegExp(end) + '\\n?', 'm');
   const body = start + '\n' + block.trimEnd() + '\n' + end + '\n';
   let next;
-  if (re.test(existing)) {{
+  if (re.test(existing)) {
     next = existing.replace(re, body);
-  }} else {{
+  } else {
     const trimmed = existing.trimEnd();
     next = body + (trimmed ? '\n' + trimmed + '\n' : '');
-  }}
-  fs.writeFileSync(file, next, {{ mode: 0o644 }});
-}}
+  }
+  fs.writeFileSync(file, next, { mode: 0o644 });
+}
 
 const cfg = readJson(configPath);
-const agents = cfg.agents || {{}};
-const list = Array.isArray(agents.list) ? agents.list : [];
-const agent = list.find((item) => item && item.id === agentId);
+cfg.agents = object(cfg.agents);
+cfg.agents.defaults = object(cfg.agents.defaults);
+if (!Array.isArray(cfg.agents.list)) cfg.agents.list = [];
+
+let agent = cfg.agents.list.find((item) => item && item.id === agentId);
+if (!agent) {
+  agent = { id: agentId };
+  cfg.agents.list.push(agent);
+}
+
+agent.identity = object(agent.identity);
+agent.identity.name = agentName;
+
+function applyOptional(key, value) {
+  if (!value) return;
+  agent.identity[key] = value;
+}
+
+applyOptional('theme', theme);
+applyOptional('emoji', emoji);
+applyOptional('avatar', avatar);
+
 const workspace = expandWorkspace(
   agent && agent.workspace
     ? agent.workspace
-    : agents.defaults && agents.defaults.workspace
+    : cfg.agents.defaults && cfg.agents.defaults.workspace
 );
 
-fs.mkdirSync(workspace, {{ recursive: true }});
+fs.mkdirSync(path.dirname(configPath), { recursive: true });
+if (fs.existsSync(configPath)) {
+  fs.copyFileSync(configPath, configPath + '.clawmacdo-identity.bak');
+}
+fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+fs.mkdirSync(workspace, { recursive: true });
 
-const identityLines = ['# Agent Identity', '', `Name: ${{agentName}}`];
-if (theme) identityLines.push(`Theme: ${{theme}}`);
-if (emoji) identityLines.push(`Emoji: ${{emoji}}`);
+const identityLines = ['# Agent Identity', '', `Name: ${agentName}`];
+if (theme) identityLines.push(`Theme: ${theme}`);
+if (emoji) identityLines.push(`Emoji: ${emoji}`);
+if (avatar) identityLines.push(`Avatar: ${avatar}`);
 
 upsertManagedBlock(
   path.join(workspace, 'IDENTITY.md'),
-  '{identity_start}',
-  '{identity_end}',
+  '__IDENTITY_START__',
+  '__IDENTITY_END__',
   identityLines.join('\n')
 );
 
 upsertManagedBlock(
   path.join(workspace, 'USER.md'),
-  '{owner_start}',
-  '{owner_end}',
+  '__OWNER_START__',
+  '__OWNER_END__',
   [
     '# Owner',
     '',
-    `The owner of this OpenClaw instance is ${{ownerName}}.`,
-    `Address the owner as "${{ownerName}}" unless they ask for a different name.`
+    `The owner of this OpenClaw instance is ${ownerName}.`,
+    `Address the owner as "${ownerName}" unless they ask for a different name.`
   ].join('\n')
 );
 
-console.log(`workspace=${{workspace}}`);
+console.log('identity=config');
+console.log(`workspace=${workspace}`);
 console.log('files=IDENTITY.md,USER.md');
-NODE"#,
-        home = home,
-        agent = agent,
-        openclaw_name = openclaw_name,
-        owner_name = owner_name,
-        theme = theme,
-        emoji = emoji,
-        identity_start = IDENTITY_BLOCK_START,
-        identity_end = IDENTITY_BLOCK_END,
-        owner_start = OWNER_BLOCK_START,
-        owner_end = OWNER_BLOCK_END,
-    ))
+NODE"#
+        .to_string();
+
+    for (needle, value) in [
+        ("__OPENCLAW_HOME__", home.to_string()),
+        ("__AGENT_JSON__", agent),
+        ("__OPENCLAW_NAME_JSON__", openclaw_name),
+        ("__OWNER_NAME_JSON__", owner_name),
+        ("__THEME_JSON__", theme),
+        ("__EMOJI_JSON__", emoji),
+        ("__AVATAR_JSON__", avatar),
+        ("__IDENTITY_START__", IDENTITY_BLOCK_START.to_string()),
+        ("__IDENTITY_END__", IDENTITY_BLOCK_END.to_string()),
+        ("__OWNER_START__", OWNER_BLOCK_START.to_string()),
+        ("__OWNER_END__", OWNER_BLOCK_END.to_string()),
+    ] {
+        cmd = cmd.replace(needle, &value);
+    }
+
+    Ok(cmd)
 }
 
 fn restart_cmd() -> String {
@@ -254,8 +263,13 @@ fn restart_cmd() -> String {
      (systemctl --user daemon-reload 2>/dev/null || true) && \
      (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
       systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
-     sleep 2 && \
-     echo -n 'gateway: ' && (systemctl --user is-active openclaw-gateway.service 2>&1 || true)"
+     for i in $(seq 1 12); do \
+       if curl -fsS --max-time 1 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo 'gateway: healthy'; exit 0; fi; \
+       STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
+       if [ \"$STATE\" = \"active\" ] && [ \"$i\" -ge 2 ]; then echo 'gateway: active'; exit 0; fi; \
+       sleep 1; \
+     done; \
+     echo 'gateway: FAILED - service not healthy after restart'; exit 1"
         .to_string()
 }
 
@@ -274,36 +288,25 @@ pub async fn run(params: OpenclawIdentityParams) -> Result<()> {
     let ssh_user = ssh_user_for_provider(&provider);
 
     println!("Updating OpenClaw identity on {ip}...");
-    println!("[1/3] Setting OpenClaw agent identity...");
-    println!("[2/3] Writing owner context into the agent workspace...");
-    println!("[3/3] Restarting gateway...");
+    println!("[1/2] Updating identity config and workspace files...");
+    println!("[2/2] Restarting gateway...");
 
-    let identity_cmd = build_identity_cmd(
-        &params.agent,
-        &params.openclaw_name,
-        params.theme.as_deref(),
-        params.emoji.as_deref(),
-        params.avatar.as_deref(),
-    );
     let workspace_cmd = build_workspace_cmd(&params)?;
 
     let outputs = ssh_as_openclaw_with_user_multi_async(
         &ip,
         &key,
-        vec![identity_cmd, workspace_cmd, restart_cmd()],
+        vec![workspace_cmd, restart_cmd()],
         ssh_user,
     )
     .await?;
 
     if !outputs[0].trim().is_empty() {
-        println!("  identity: {}", outputs[0].trim());
-    }
-    if !outputs[1].trim().is_empty() {
-        for line in outputs[1].trim().lines() {
+        for line in outputs[0].trim().lines() {
             println!("  {line}");
         }
     }
-    println!("  {}", outputs[2].trim());
+    println!("  {}", outputs[1].trim());
 
     println!();
     println!("OpenClaw identity updated on {ip}:");

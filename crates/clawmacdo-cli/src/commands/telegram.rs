@@ -40,103 +40,170 @@ fn find_deploy_record(query: &str) -> Result<(String, PathBuf, Option<String>)> 
 fn ssh_user_for_provider(provider: &Option<String>) -> &'static str {
     match provider.as_deref() {
         Some("lightsail") => "ubuntu",
+        Some("azure") => "azureuser",
         _ => "root",
     }
 }
 
-/// Configure the Telegram bot token on a deployed instance.
-/// SSHs in, resets pairing state, updates .env + gateway.env, enables the plugin,
-/// and restarts the gateway. The gateway reads the token from gateway.env automatically —
-/// no interactive `channels login` step is needed.
-pub async fn configure_bot(query: &str, bot_token: &str, reset: bool) -> Result<()> {
-    let (ip, key, provider) = find_deploy_record(query)?;
-    let ssh_user = ssh_user_for_provider(&provider);
+fn js_string(value: &str) -> Result<String> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn build_configure_cmd(bot_token: &str, reset: bool) -> Result<String> {
     let home = config::OPENCLAW_HOME;
+    let token = js_string(bot_token)?;
+    let reset = if reset { "true" } else { "false" };
 
-    println!("Configuring Telegram bot on {ip}...");
+    let mut cmd = r#"export HOME="__OPENCLAW_HOME__" && \
+         node <<'NODE'
+const fs = require('fs');
+const path = require('path');
 
-    // Build command list — all steps share one SSH session.
-    // Each step verifies its own outcome and pre-validates the previous step's
-    // expected state before proceeding. A non-zero exit aborts the sequence.
-    let mut cmds: Vec<String> = Vec::new();
-    let mut step = 0;
-    let total_steps = if reset { 4 } else { 3 };
+const home = process.env.HOME || '__OPENCLAW_HOME__';
+const token = __TOKEN_JSON__;
+const reset = __RESET_BOOL__;
+const openclawDir = path.join(home, '.openclaw');
+const configPath = path.join(openclawDir, 'openclaw.json');
+const envFiles = [
+  path.join(openclawDir, '.env'),
+  path.join(openclawDir, 'gateway.env')
+];
 
-    if reset {
-        // Wipe all pairing state (including allowFrom so the bot forces a fresh pairing flow)
-        // and update offsets from any previous bot so the new bot starts with a clean slate.
-        // Verifies the credential files are actually gone before reporting success.
-        step += 1;
-        println!("[{step}/{total_steps}] Resetting pairing state...");
-        cmds.push(format!(
-            "rm -f {home}/.openclaw/credentials/telegram-pairing.json \
-             {home}/.openclaw/credentials/telegram-default-allowFrom.json \
-             {home}/.openclaw/telegram/update-offset-*.json; \
-             if [ ! -f \"{home}/.openclaw/credentials/telegram-pairing.json\" ] && \
-                [ ! -f \"{home}/.openclaw/credentials/telegram-default-allowFrom.json\" ]; then \
-               echo 'reset: ok'; \
-             else \
-               echo 'reset: FAILED - credential files still present'; exit 1; \
-             fi",
-        ));
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function object(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function updateEnv(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let lines = [];
+  try {
+    lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  } catch (_) {}
+
+  let seen = false;
+  lines = lines
+    .map((line) => {
+      if (line.startsWith('TELEGRAM_BOT_TOKEN=')) {
+        seen = true;
+        return `TELEGRAM_BOT_TOKEN=${token}`;
+      }
+      return line;
+    });
+  if (!seen) lines.push(`TELEGRAM_BOT_TOKEN=${token}`);
+  fs.writeFileSync(file, lines.join('\n') + '\n', { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+function enableTelegramConfig() {
+  const cfg = readJson(configPath);
+  cfg.channels = object(cfg.channels);
+  cfg.channels.telegram = object(cfg.channels.telegram);
+  cfg.channels.telegram.enabled = true;
+  cfg.channels.telegram.botToken = token;
+  cfg.channels.telegram.dmPolicy = cfg.channels.telegram.dmPolicy || 'pairing';
+  cfg.channels.telegram.groupPolicy = cfg.channels.telegram.groupPolicy || 'allowlist';
+  cfg.channels.telegram.streaming = cfg.channels.telegram.streaming || 'partial';
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  if (fs.existsSync(configPath)) {
+    fs.copyFileSync(configPath, configPath + '.clawmacdo-telegram.bak');
+  }
+  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(configPath, 0o600);
+}
+
+if (reset) {
+  for (const file of [
+    path.join(openclawDir, 'credentials', 'telegram-pairing.json'),
+    path.join(openclawDir, 'credentials', 'telegram-default-allowFrom.json')
+  ]) {
+    fs.rmSync(file, { force: true });
+  }
+  const telegramDir = path.join(openclawDir, 'telegram');
+  try {
+    for (const name of fs.readdirSync(telegramDir)) {
+      if (/^update-offset-.*\.json$/.test(name)) {
+        fs.rmSync(path.join(telegramDir, name), { force: true });
+      }
+    }
+  } catch (_) {}
+  console.log('reset: ok');
+}
+
+for (const file of envFiles) updateEnv(file);
+enableTelegramConfig();
+console.log('token: ok');
+console.log('channel: telegram enabled');
+NODE"#
+        .to_string();
+
+    for (needle, value) in [
+        ("__OPENCLAW_HOME__", home.to_string()),
+        ("__TOKEN_JSON__", token),
+        ("__RESET_BOOL__", reset.to_string()),
+    ] {
+        cmd = cmd.replace(needle, &value);
     }
 
-    // Update BOTH .env and gateway.env — the systemd service loads gateway.env via
-    // EnvironmentFile, so only updating .env would leave the running service with the old token.
-    // Verifies the token was actually written to gateway.env before reporting success.
-    step += 1;
-    println!("[{step}/{total_steps}] Setting TELEGRAM_BOT_TOKEN in .env and gateway.env...");
-    cmds.push(format!(
-        "for f in {home}/.openclaw/.env {home}/.openclaw/gateway.env; do \
-           if [ -f \"$f\" ]; then \
-             if grep -q '^TELEGRAM_BOT_TOKEN=' \"$f\" 2>/dev/null; then \
-               sed -i 's|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN={bot_token}|' \"$f\"; \
-             else \
-               echo 'TELEGRAM_BOT_TOKEN={bot_token}' >> \"$f\"; \
-             fi && chmod 600 \"$f\"; \
-           fi; \
-         done; \
-         if grep -q '^TELEGRAM_BOT_TOKEN=' {home}/.openclaw/gateway.env 2>/dev/null; then \
-           echo 'token: ok'; \
-         else \
-           echo 'token: FAILED - not written to gateway.env'; exit 1; \
-         fi",
-    ));
+    Ok(cmd)
+}
 
-    // Telegram is a stock bundled plugin — just enable it directly, no install needed.
-    // Pre-validates that the token is present in gateway.env (step 2 outcome) before enabling.
-    step += 1;
-    println!("[{step}/{total_steps}] Enabling Telegram plugin...");
-    cmds.push(format!(
+fn restart_gateway_cmd() -> String {
+    format!(
         "grep -q '^TELEGRAM_BOT_TOKEN=' {home}/.openclaw/gateway.env 2>/dev/null || \
-         {{ echo 'plugin: FAILED - token not in gateway.env (step 2 incomplete)'; exit 1; }}; \
-         export PATH=\"{home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin\" && \
-         export HOME=\"{home}\" && \
-         (openclaw plugins enable telegram 2>&1 || true) && \
-         echo 'plugin: ok'",
-    ));
-
-    // Restart the gateway so it picks up the new token from gateway.env.
-    // Pre-validates token is present, then polls until the gateway reports healthy
-    // instead of using a blind sleep.
-    step += 1;
-    println!("[{step}/{total_steps}] Restarting gateway service...");
-    cmds.push(format!(
-        "grep -q '^TELEGRAM_BOT_TOKEN=' {home}/.openclaw/gateway.env 2>/dev/null || \
-         {{ echo 'restart: FAILED - token not in gateway.env (step 2 incomplete)'; exit 1; }}; \
+         {{ echo 'restart: FAILED - token not in gateway.env'; exit 1; }}; \
          export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus && \
          (systemctl --user daemon-reload 2>/dev/null || true) && \
          (systemctl --user restart openclaw-gateway.service 2>/dev/null || \
           systemctl --user start openclaw-gateway.service 2>/dev/null || true) && \
-         for i in $(seq 1 20); do \
+         for i in $(seq 1 12); do \
+           if curl -fsS --max-time 1 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo 'gateway: healthy'; exit 0; fi; \
            STATE=$(systemctl --user is-active openclaw-gateway.service 2>/dev/null || true); \
-           if [ \"$STATE\" = \"active\" ] || curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then echo 'gateway: ok'; exit 0; fi; \
-           sleep $(( i < 6 ? 1 : 2 )); \
+           if [ \"$STATE\" = \"active\" ] && [ \"$i\" -ge 2 ]; then echo 'gateway: active'; exit 0; fi; \
+           sleep 1; \
          done; \
          echo 'gateway: FAILED - service not healthy after restart'; exit 1",
-    ));
+        home = config::OPENCLAW_HOME
+    )
+}
 
-    let outputs = ssh_as_openclaw_with_user_multi_async(&ip, &key, cmds, ssh_user).await?;
+/// Configure the Telegram bot token on a deployed instance.
+/// SSHs in, resets pairing state, updates .env + gateway.env, updates channel config,
+/// and restarts the gateway. The gateway reads the token from gateway.env automatically —
+/// no interactive `channels login` step is needed.
+pub async fn configure_bot(query: &str, bot_token: &str, reset: bool) -> Result<()> {
+    let bot_token = bot_token.trim();
+    if bot_token.is_empty() || bot_token.chars().any(char::is_control) {
+        bail!("Telegram bot token cannot be empty or contain control characters.");
+    }
+
+    let (ip, key, provider) = find_deploy_record(query)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+
+    println!("Configuring Telegram bot on {ip}...");
+
+    println!("[1/2] Updating token, Telegram channel config, and pairing state...");
+    println!("[2/2] Restarting gateway service...");
+
+    let outputs = ssh_as_openclaw_with_user_multi_async(
+        &ip,
+        &key,
+        vec![
+            build_configure_cmd(bot_token, reset)?,
+            restart_gateway_cmd(),
+        ],
+        ssh_user,
+    )
+    .await?;
 
     for out in &outputs {
         let trimmed = out.trim();
