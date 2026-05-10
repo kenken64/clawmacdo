@@ -19,8 +19,12 @@ pub mod ls_restore;
 #[cfg(feature = "lightsail")]
 pub mod ls_snapshot;
 pub mod memory_download;
+pub mod openclaw_gateway_token;
+pub mod openclaw_identity;
+pub mod openclaw_md_download;
 pub mod openclaw_version;
 pub mod plugin_install;
+pub mod remotion_avatar;
 pub mod scan_security;
 #[cfg(feature = "web-ui")]
 pub mod serve;
