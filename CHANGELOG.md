@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.73.0
+
+### Added
+- **`openclaw-llm-wiki` subcommand** - create an attachable `llm_wiki.md` in the active OpenClaw workspace, seed a `llm_wiki/` project tree, and optionally launch Claude Code to refine it.
+- **LLM wiki Markdown upload** - `openclaw-llm-wiki --llm-wiki-md <path>` uploads any local Markdown file into the target workspace as `llm_wiki.md`; `--skip-claude` supports upload-only flows.
+- **Dashboard LLM wiki upload action** - deployments now expose an `Upload LLM Wiki` action that sends a `.md` file through the local web UI to the selected OpenClaw instance.
+
+### Changed
+- **Markdown context exports** - `openclaw-md-download` now includes `llm_wiki.md` when present.
+
 ## v0.72.0
 
 ### Added
@@ -389,7 +399,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 

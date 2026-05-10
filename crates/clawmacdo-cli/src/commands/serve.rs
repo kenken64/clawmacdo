@@ -1,6 +1,6 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
-use crate::commands::{whatsapp, whatsapp_setup};
+use crate::commands::{openclaw_llm_wiki, whatsapp, whatsapp_setup};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, Method, Request, StatusCode};
@@ -224,6 +224,24 @@ struct DockerFixResponse {
     ok: bool,
     message: String,
     fix_output: String,
+}
+
+#[derive(Deserialize)]
+struct LlmWikiUploadRequest {
+    file_name: String,
+    content: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    run_claude: bool,
+}
+
+#[derive(Serialize)]
+struct LlmWikiUploadResponse {
+    ok: bool,
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -718,6 +736,10 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route(
             "/api/deployments/{id}/devices/approve",
             post(device_approve_handler),
+        )
+        .route(
+            "/api/deployments/{id}/llm-wiki",
+            post(upload_llm_wiki_handler),
         )
         .route("/api/snapshots/restore", post(restore_snapshot_handler))
         .route("/api/snapshots", get(list_snapshots_handler))
@@ -2290,6 +2312,102 @@ fn resolve_deploy_connection(id: &str) -> Result<(String, PathBuf, Option<String
         }
     }
     Err(format!("No deploy record found for '{id}'."))
+}
+
+async fn upload_llm_wiki_handler(
+    Path(id): Path<String>,
+    Json(req): Json<LlmWikiUploadRequest>,
+) -> impl IntoResponse {
+    if let Err(msg) = resolve_deploy_connection(&id).map(|_| ()) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: msg,
+            }),
+        );
+    }
+
+    let file_name = req.file_name.trim();
+    if file_name.is_empty() || !file_name.to_ascii_lowercase().ends_with(".md") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: "Upload a Markdown .md file.".into(),
+            }),
+        );
+    }
+
+    if req.content.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: "llm_wiki.md cannot be empty.".into(),
+            }),
+        );
+    }
+    if req.content.len() > 5 * 1024 * 1024 {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: "llm_wiki.md must be 5 MiB or smaller.".into(),
+            }),
+        );
+    }
+
+    let temp_path =
+        std::env::temp_dir().join(format!("clawmacdo-llm-wiki-{}.md", uuid::Uuid::new_v4()));
+    if let Err(e) = std::fs::write(&temp_path, req.content.as_bytes()) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: format!("Failed to stage upload: {e}"),
+            }),
+        );
+    }
+
+    let title = if req.title.trim().is_empty() {
+        "LLM Wiki".to_string()
+    } else {
+        req.title.trim().to_string()
+    };
+    let prompt = if req.prompt.trim().is_empty() {
+        None
+    } else {
+        Some(req.prompt.trim().to_string())
+    };
+    let run_result = openclaw_llm_wiki::run(openclaw_llm_wiki::OpenclawLlmWikiParams {
+        instance: id.clone(),
+        agent: "main".into(),
+        title,
+        prompt,
+        timeout: 600,
+        llm_wiki_md: Some(temp_path.clone()),
+        skip_claude: !req.run_claude,
+    })
+    .await;
+    let _ = std::fs::remove_file(&temp_path);
+
+    match run_result {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(LlmWikiUploadResponse {
+                ok: true,
+                message: "llm_wiki.md uploaded to the OpenClaw workspace.".into(),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(LlmWikiUploadResponse {
+                ok: false,
+                message: e.to_string(),
+            }),
+        ),
+    }
 }
 
 /// WhatsApp repair handler for deployments tab — resolves connection from deploy ID.
@@ -4858,6 +4976,7 @@ function deploymentActionsMenu(d) {
       deploymentActionButton('WhatsApp QR', 'text-blue-400 hover:text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/20', 'Fetch WhatsApp QR Code', 'closeDeploymentActionMenu(this); depFetchWhatsAppQr(\'' + id + '\',this)') +
       deploymentActionButton('Snapshot', 'text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/20', 'Create snapshot', 'closeDeploymentActionMenu(this); depSnapshot(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\')') +
       deploymentActionButton('Refresh IP', 'text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20', 'Refresh IP from cloud provider', 'closeDeploymentActionMenu(this); refreshIp(\'' + id + '\',this)') +
+      deploymentActionButton('Upload LLM Wiki', 'text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20', 'Upload llm_wiki.md to the OpenClaw workspace', 'closeDeploymentActionMenu(this); showLlmWikiModal(\'' + id + '\')') +
       deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')') +
     '</div>' +
   '</div>';
@@ -5067,6 +5186,114 @@ function deploymentsPage(delta) {
   depCurrentPage += delta;
   if (depCurrentPage < 1) depCurrentPage = 1;
   loadDeployments();
+}
+
+function showLlmWikiModal(id) {
+  const existing = document.getElementById('llm-wiki-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'llm-wiki-modal';
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+  modal.innerHTML = `
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-md w-full mx-4 p-6">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <h3 class="text-lg font-semibold text-cyan-300">Upload LLM Wiki</h3>
+        <button type="button" onclick="closeLlmWikiModal()" class="text-slate-500 hover:text-slate-300 transition-colors" title="Close">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Markdown File</label>
+          <input type="file" id="llm-wiki-file" accept=".md,text/markdown,text/plain" class="block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-500/20 file:px-3 file:py-2 file:text-sm file:font-medium file:text-cyan-200 hover:file:bg-cyan-500/30" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Title</label>
+          <input type="text" id="llm-wiki-title" value="LLM Wiki" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Claude Prompt</label>
+          <textarea id="llm-wiki-prompt" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></textarea>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-slate-300">
+          <input type="checkbox" id="llm-wiki-run-claude" class="rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500" />
+          Run Claude after upload
+        </label>
+      </div>
+      <div id="llm-wiki-status" class="hidden text-sm mt-4"></div>
+      <div class="mt-5 flex justify-end gap-3">
+        <button type="button" onclick="closeLlmWikiModal()" class="px-4 py-2 text-sm font-medium text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg transition-colors">Cancel</button>
+        <button type="button" id="llm-wiki-upload-btn" onclick="confirmLlmWikiUpload('${esc(id)}')" class="px-4 py-2 text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors">Upload</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeLlmWikiModal(); });
+}
+
+function closeLlmWikiModal() {
+  const modal = document.getElementById('llm-wiki-modal');
+  if (modal) modal.remove();
+}
+
+async function confirmLlmWikiUpload(id) {
+  const input = document.getElementById('llm-wiki-file');
+  const title = document.getElementById('llm-wiki-title');
+  const prompt = document.getElementById('llm-wiki-prompt');
+  const runClaude = document.getElementById('llm-wiki-run-claude');
+  const status = document.getElementById('llm-wiki-status');
+  const btn = document.getElementById('llm-wiki-upload-btn');
+  const file = input && input.files && input.files[0];
+  if (!file) {
+    alert('Choose a Markdown file first.');
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith('.md')) {
+    alert('Choose a .md file.');
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    alert('File must be 5 MiB or smaller.');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  status.className = 'text-sm mt-4 text-yellow-400';
+  status.textContent = 'Uploading llm_wiki.md...';
+  status.classList.remove('hidden');
+
+  try {
+    const content = await file.text();
+    const res = await fetch('/api/deployments/' + encodeURIComponent(id) + '/llm-wiki', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file_name: file.name,
+        content,
+        title: title ? title.value : 'LLM Wiki',
+        prompt: prompt ? prompt.value : '',
+        run_claude: !!(runClaude && runClaude.checked),
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.className = 'text-sm mt-4 text-green-400';
+      status.textContent = data.message || 'llm_wiki.md uploaded.';
+      setTimeout(() => closeLlmWikiModal(), 1200);
+    } else {
+      status.className = 'text-sm mt-4 text-red-400';
+      status.textContent = data.message || 'Upload failed.';
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+    }
+  } catch (e) {
+    status.className = 'text-sm mt-4 text-red-400';
+    status.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
 }
 
 function showDestroyModal(id, provider, hostname, ip) {

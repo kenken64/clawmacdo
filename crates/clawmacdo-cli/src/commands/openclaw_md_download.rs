@@ -16,6 +16,7 @@ const BOOTSTRAP_FILES: &[&str] = &[
     "TOOLS.md",
     "HEARTBEAT.md",
     "BOOTSTRAP.md",
+    "llm_wiki.md",
 ];
 
 pub struct OpenclawMdDownloadParams {

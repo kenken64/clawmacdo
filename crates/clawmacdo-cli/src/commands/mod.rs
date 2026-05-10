@@ -21,6 +21,7 @@ pub mod ls_snapshot;
 pub mod memory_download;
 pub mod openclaw_gateway_token;
 pub mod openclaw_identity;
+pub mod openclaw_llm_wiki;
 pub mod openclaw_md_download;
 pub mod openclaw_version;
 pub mod plugin_install;

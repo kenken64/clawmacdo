@@ -575,7 +575,22 @@ This command sets the target agent's OpenClaw identity and writes managed owner 
 clawmacdo openclaw-md-download --instance my-server --output ~/backups/
 ```
 
-Downloads the active OpenClaw workspace Markdown context files as a ZIP: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` when present, plus daily memory logs under `memory/*.md`.
+Downloads the active OpenClaw workspace Markdown context files as a ZIP: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`, `llm_wiki.md` when present, plus daily memory logs under `memory/*.md`.
+
+### OpenClaw LLM Wiki
+
+```bash
+clawmacdo openclaw-llm-wiki --instance my-server \
+  --title "Project LLM Wiki" \
+  --prompt "Include architecture, runbooks, and open questions."
+
+# Upload an existing Markdown file from a web backend or local path
+clawmacdo openclaw-llm-wiki --instance my-server \
+  --llm-wiki-md ./llm_wiki.md \
+  --skip-claude
+```
+
+SSHes into the instance as the OpenClaw user, resolves the target agent workspace, creates or uploads an attachable `llm_wiki.md` at the workspace root, seeds the `llm_wiki/` project tree, then optionally launches Claude Code on the instance to refine the wiki structure. `--llm-wiki-md` uploads any local Markdown file as `llm_wiki.md`; `--skip-claude` makes the command upload/seed only.
 
 ### Gateway Token Rotation
 
@@ -1008,8 +1023,5 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.72.0
-
-
-
+**Current version:** 0.73.0
 
