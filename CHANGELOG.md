@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.74.0
+
+### Fixed
+- **Lightsail snapshot parsing** - accept both numeric and string `createdAt` values from AWS CLI snapshot responses, including timezone-aware timestamps such as `2026-05-10T11:57:50.432000+08:00`.
+- **Lightsail snapshot list timestamps** - show parsed Lightsail snapshot creation time in the dashboard snapshot table instead of dropping the field.
+
 ## v0.73.0
 
 ### Added
@@ -399,7 +405,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 
