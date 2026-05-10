@@ -262,6 +262,9 @@ mod tests {
 
     #[test]
     fn resolve_key_path_rejects_files_outside_keys_dir() {
+        let keys_dir = keys_dir().unwrap();
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
         let outside_path = std::env::temp_dir().join(unique_name("outside-key"));
         std::fs::write(&outside_path, "ssh-private-key").unwrap();
 
