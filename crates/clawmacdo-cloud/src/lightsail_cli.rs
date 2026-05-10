@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use clawmacdo_core::error::AppError;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::process::Command;
 use tokio::time::{sleep, Duration, Instant};
 
@@ -206,8 +206,29 @@ pub struct LightsailSnapshot {
     pub from_bundle_id: Option<String>,
     #[serde(rename = "sizeInGb")]
     pub size_in_gb: Option<u64>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Option<f64>,
+    #[serde(
+        rename = "createdAt",
+        default,
+        deserialize_with = "deserialize_optional_string_or_number"
+    )]
+    pub created_at: Option<String>,
+}
+
+fn deserialize_optional_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value)),
+        Some(serde_json::Value::Number(value)) => Ok(Some(value.to_string())),
+        Some(value) => Err(serde::de::Error::custom(format!(
+            "expected string, number, or null for createdAt, got {value}"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -603,5 +624,51 @@ impl CloudProvider for LightsailCliProvider {
             .collect();
 
         Ok(instances)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_snapshot_created_at_string() {
+        let json = r#"{
+            "instanceSnapshot": {
+                "name": "openclaw-claude-avatar",
+                "state": "available",
+                "fromInstanceName": "openclaw",
+                "fromBundleId": "nano_3_0",
+                "sizeInGb": 20,
+                "createdAt": "2026-05-10T11:57:50.432000+08:00"
+            }
+        }"#;
+
+        let response: LightsailSnapshotResponse = serde_json::from_str(json).unwrap();
+        let snapshot = response.instance_snapshot.unwrap();
+
+        assert_eq!(
+            snapshot.created_at.as_deref(),
+            Some("2026-05-10T11:57:50.432000+08:00")
+        );
+    }
+
+    #[test]
+    fn parses_snapshot_created_at_epoch_number() {
+        let json = r#"{
+            "instanceSnapshot": {
+                "name": "openclaw-claude-avatar",
+                "state": "available",
+                "fromInstanceName": "openclaw",
+                "fromBundleId": "nano_3_0",
+                "sizeInGb": 20,
+                "createdAt": 1778385470.432
+            }
+        }"#;
+
+        let response: LightsailSnapshotResponse = serde_json::from_str(json).unwrap();
+        let snapshot = response.instance_snapshot.unwrap();
+
+        assert_eq!(snapshot.created_at.as_deref(), Some("1778385470.432"));
     }
 }

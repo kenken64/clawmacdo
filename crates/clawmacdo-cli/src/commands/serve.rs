@@ -2672,7 +2672,7 @@ async fn list_snapshots_handler(
                             "source": s.from_instance_name.unwrap_or_default(),
                             "size_gb": s.size_in_gb,
                             "status": s.state.unwrap_or_else(|| "available".to_string()),
-                            "created_at": "",
+                            "created_at": s.created_at.unwrap_or_default(),
                         })
                     })
                     .collect(),
