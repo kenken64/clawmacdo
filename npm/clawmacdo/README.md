@@ -147,13 +147,21 @@ clawmacdo openclaw-identity --instance <deploy-id> \
 # Download OpenClaw Markdown context files and memory logs as a ZIP
 clawmacdo openclaw-md-download --instance <deploy-id> --output ~/backups/
 
+# Project wiki read/write/export for web apps
+clawmacdo wiki-tree --instance <deploy-id> --project llm_wiki --json
+clawmacdo wiki-read --instance <deploy-id> --path llm_wiki/INDEX.md --json
+clawmacdo wiki-write --instance <deploy-id> --path llm_wiki/INDEX.md \
+  --content-file /tmp/INDEX.md --base-sha <sha-from-read> --json
+clawmacdo wiki-export --instance <deploy-id> --project llm_wiki --json
+
 # Regenerate the OpenClaw gateway token
 clawmacdo openclaw-gateway-token --instance <deploy-id>
+clawmacdo openclaw-gateway-url --instance <deploy-id> --json
 
 # Configure Remotion avatar app and return a Cloudflare Quick Tunnel URL
 clawmacdo remotion-avatar-setup --instance <deploy-id> --name "Kenny" \
   --openai-api-key "$OPENAI_API_KEY" --voice-gender female \
-  --avatar-glb ./kenny_avatar.glb
+  --avatar-glb ./kenny_avatar.glb --json
 
 # Install a plugin
 clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltguard"
@@ -592,13 +600,44 @@ clawmacdo openclaw-llm-wiki --instance my-server \
 
 SSHes into the instance as the OpenClaw user, resolves the target agent workspace, creates or uploads an attachable `llm_wiki.md` at the workspace root, seeds the `llm_wiki/` project tree, then optionally launches Claude Code on the instance to refine the wiki structure. `--llm-wiki-md` uploads any local Markdown file as `llm_wiki.md`; `--skip-claude` makes the command upload/seed only.
 
+### OpenClaw Wiki Files
+
+```bash
+clawmacdo wiki-tree --instance my-server --project llm_wiki --json
+clawmacdo wiki-index --instance my-server --project llm_wiki --json
+clawmacdo wiki-read --instance my-server --path llm_wiki/INDEX.md --json
+clawmacdo wiki-write --instance my-server --path llm_wiki/INDEX.md \
+  --content-file /tmp/INDEX.md \
+  --base-sha <sha-from-wiki-read> \
+  --json
+clawmacdo wiki-write --instance my-server --path llm_wiki/new-page.md \
+  --content-file /tmp/new-page.md \
+  --base-sha NEW \
+  --json
+clawmacdo wiki-export --instance my-server --project llm_wiki --output ~/backups/ --json
+```
+
+These commands resolve the configured OpenClaw agent workspace on the instance and only operate on safe relative Markdown paths under that workspace. `wiki-read` returns `content`, `sha256`, `mtime`, and `size`; `wiki-write` requires `--base-sha` so a web app cannot overwrite a file that changed after it was opened. Use `--base-sha NEW` only when creating a new file. `wiki-index` returns per-page hashes plus headings, tags, and Markdown/wiki links for graph or navigation UIs.
+
 ### Gateway Token Rotation
 
 ```bash
 clawmacdo openclaw-gateway-token --instance my-server
+clawmacdo openclaw-gateway-url --instance my-server --json
 ```
 
 Regenerates `gateway.auth.token` in `/home/openclaw/.openclaw/openclaw.json`, keeps password auth in sync when configured, backs up the old config to `openclaw.json.bak`, and restarts the gateway.
+
+`openclaw-gateway-url --json` returns the current public Tailscale Funnel Gateway URL when available:
+
+```json
+{
+  "ok": true,
+  "public_url": "https://example.ts.net",
+  "gateway_url": "https://example.ts.net/auth.html#...",
+  "gateway_token_present": true
+}
+```
 
 ### Remotion Avatar Setup
 
@@ -606,10 +645,22 @@ Regenerates `gateway.auth.token` in `/home/openclaw/.openclaw/openclaw.json`, ke
 clawmacdo remotion-avatar-setup --instance my-server --name "Kenny" \
   --openai-api-key "$OPENAI_API_KEY" \
   --voice-gender female \
-  --avatar-glb ./kenny_avatar.glb
+  --avatar-glb ./kenny_avatar.glb \
+  --json
 ```
 
 Configures `/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar/.env` with `CHAT_BASE_URL=http://127.0.0.1:18789/v1`, `CHAT_API_KEY` from the OpenClaw gateway token, `CHAT_MODEL=openclaw`, `VITE_AVATAR_NAME` from `--name`, `OPENAI_API_KEY` from `--openai-api-key`/`OPENAI_API_KEY`, and voice settings (`VOICE_GENDER`, `TTS_VOICE`; male maps to `onyx`, female maps to `nova`); optionally uploads `avatar.glb` or `<userid>_avatar.glb` to the app as `public/avatar.glb`; replaces `kenken64` with the provided name; starts the app; starts a free Cloudflare Quick Tunnel to the frontend port; and prints the public `trycloudflare.com` URL.
+
+With `--json`, the command returns a stable object for web apps:
+
+```json
+{
+  "ok": true,
+  "remotion_url": "https://example.trycloudflare.com",
+  "remotion_service": "active",
+  "tunnel_service": "active"
+}
+```
 
 ### Scheduled Cron Jobs
 
@@ -1023,5 +1074,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.74.0
-
+**Current version:** 0.75.0

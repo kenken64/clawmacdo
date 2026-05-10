@@ -16,6 +16,7 @@ pub struct RemotionAvatarParams {
     pub openai_api_key: Option<String>,
     pub voice_gender: String,
     pub avatar_glb: Option<PathBuf>,
+    pub json: bool,
 }
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -424,16 +425,19 @@ pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
         openai_api_key: clean_optional_secret("openai-api-key", params.openai_api_key, 4096)?,
         voice_gender: clean_voice_gender(&params.voice_gender)?,
         avatar_glb: None,
+        json: params.json,
     };
 
     let (ip, key, provider) = find_deploy_record(&params.instance)?;
     let ssh_user = ssh_user_for_provider(&provider);
     let total_steps = if avatar_glb.is_some() { 3 } else { 2 };
 
-    println!("Setting up Remotion avatar app on {ip}...");
-    println!("[1/{total_steps}] Installing cloudflared if needed...");
+    if !params.json {
+        println!("Setting up Remotion avatar app on {ip}...");
+        println!("[1/{total_steps}] Installing cloudflared if needed...");
+    }
     let install_out = ssh_root_as_async(&ip, &key, &install_cloudflared_cmd(), ssh_user).await?;
-    if !install_out.trim().is_empty() {
+    if !params.json && !install_out.trim().is_empty() {
         println!("  {}", install_out.trim());
     }
 
@@ -442,7 +446,9 @@ pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
             "/tmp/clawmacdo-remotion-avatar-{}.glb",
             uuid::Uuid::new_v4()
         );
-        println!("[2/{total_steps}] Uploading avatar GLB...");
+        if !params.json {
+            println!("[2/{total_steps}] Uploading avatar GLB...");
+        }
         let scp_ip = ip.clone();
         let scp_key = key.clone();
         let scp_user = ssh_user.to_string();
@@ -469,13 +475,17 @@ pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
             ssh_user,
         )
         .await?;
-        println!("  uploaded as public/avatar.glb");
+        if !params.json {
+            println!("  uploaded as public/avatar.glb");
+        }
         Some(remote_tmp)
     } else {
         None
     };
 
-    println!("[{total_steps}/{total_steps}] Configuring app, services, and Quick Tunnel...");
+    if !params.json {
+        println!("[{total_steps}/{total_steps}] Configuring app, services, and Quick Tunnel...");
+    }
     let outputs = ssh_as_openclaw_with_user_multi_async(
         &ip,
         &key,
@@ -489,6 +499,41 @@ pub async fn setup(params: RemotionAvatarParams) -> Result<()> {
         .lines()
         .find_map(|line| line.strip_prefix("CLOUDFLARED_URL="))
         .unwrap_or("");
+
+    let remotion_service = out
+        .lines()
+        .find_map(|line| line.strip_prefix("remotion_service="))
+        .unwrap_or("");
+    let tunnel_service = out
+        .lines()
+        .find_map(|line| line.strip_prefix("tunnel_service="))
+        .unwrap_or("");
+
+    if params.json {
+        if tunnel_url.is_empty() {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": false,
+                    "error": "Cloudflared URL was not returned. Check remotion-avatar-tunnel.service logs.",
+                    "remotion_url": null,
+                    "remotion_service": remotion_service,
+                    "tunnel_service": tunnel_service
+                }))?
+            );
+            bail!("Cloudflared URL was not returned. Check remotion-avatar-tunnel.service logs.");
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true,
+                "remotion_url": tunnel_url,
+                "remotion_service": remotion_service,
+                "tunnel_service": tunnel_service
+            }))?
+        );
+        return Ok(());
+    }
 
     for line in out.lines() {
         if line.starts_with("env:")
