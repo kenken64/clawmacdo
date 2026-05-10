@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.71.0
+
+### Added
+- **`openclaw-identity` subcommand** - assign an OpenClaw display name and owner context, write `IDENTITY.md`/`USER.md`, and restart the gateway.
+- **`openclaw-md-download` subcommand** - download OpenClaw operating markdown files plus `memory/**/*.md` into a local zip archive.
+- **`openclaw-gateway-token` subcommand** - regenerate `gateway.auth.token`, keep password auth in sync when configured, back up `openclaw.json`, and restart the gateway.
+- **`remotion-avatar-setup` subcommand** - configure the Remotion 3D AI avatar app with OpenClaw chat credentials, set `VITE_AVATAR_NAME`, replace `kenken64`, install `cloudflared`, start systemd user services, and return the Quick Tunnel URL.
+
+### Fixed
+- **Node.js/Claude Code provisioning** - install AI CLIs with optional dependencies and repair the Claude native binary when postinstall did not run.
+- **Remotion avatar setup reliability** - prevent Claude from consuming the remote setup script, write OpenAI-compatible environment aliases for existing app code, tunnel the Vite frontend port, and capture the Cloudflare URL from a service log file.
+
 ## v0.70.0
 
 ### Added
@@ -367,7 +379,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 

@@ -524,6 +524,69 @@ enum Commands {
         #[arg(long)]
         version: String,
     },
+    /// Regenerate the OpenClaw gateway auth token
+    OpenclawGatewayToken {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
+    /// Configure and expose the Remotion 3D AI avatar app via Cloudflare Quick Tunnel
+    RemotionAvatarSetup {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Name to replace kenken64 with in the Remotion app
+        #[arg(long)]
+        name: String,
+        /// Remote app directory
+        #[arg(
+            long,
+            default_value = "/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar"
+        )]
+        app_dir: String,
+        /// Local frontend port for the Remotion app
+        #[arg(long, default_value = "3002")]
+        port: u16,
+        /// Chat model value to write into .env
+        #[arg(long, default_value = "openclaw")]
+        chat_model: String,
+    },
+    /// Set an OpenClaw agent display name and owner context
+    OpenclawIdentity {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// OpenClaw agent display name
+        #[arg(long)]
+        openclaw_name: String,
+        /// Owner's display name for USER.md context
+        #[arg(long)]
+        owner_name: String,
+        /// Agent id to update
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Optional identity theme/personality hint
+        #[arg(long)]
+        theme: Option<String>,
+        /// Optional identity emoji
+        #[arg(long)]
+        emoji: Option<String>,
+        /// Optional avatar path/URL/data URI
+        #[arg(long)]
+        avatar: Option<String>,
+    },
+    /// Download OpenClaw workspace Markdown context files as a ZIP
+    OpenclawMdDownload {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be downloaded
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Output .zip file or directory
+        #[arg(long, default_value = ".")]
+        output: std::path::PathBuf,
+    },
     /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
     SkillDeploy {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1086,6 +1149,59 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::OpenclawVersions { json } => commands::openclaw_version::run_list(json).await,
         Commands::OpenclawInstall { instance, version } => {
             commands::openclaw_version::run_install(&instance, &version).await
+        }
+        Commands::OpenclawGatewayToken { instance } => {
+            commands::openclaw_gateway_token::run(&instance).await
+        }
+        Commands::RemotionAvatarSetup {
+            instance,
+            name,
+            app_dir,
+            port,
+            chat_model,
+        } => {
+            commands::remotion_avatar::setup(commands::remotion_avatar::RemotionAvatarParams {
+                instance,
+                name,
+                app_dir,
+                port,
+                chat_model,
+            })
+            .await
+        }
+        Commands::OpenclawIdentity {
+            instance,
+            openclaw_name,
+            owner_name,
+            agent,
+            theme,
+            emoji,
+            avatar,
+        } => {
+            commands::openclaw_identity::run(commands::openclaw_identity::OpenclawIdentityParams {
+                instance,
+                openclaw_name,
+                owner_name,
+                agent,
+                theme,
+                emoji,
+                avatar,
+            })
+            .await
+        }
+        Commands::OpenclawMdDownload {
+            instance,
+            agent,
+            output,
+        } => {
+            commands::openclaw_md_download::run(
+                commands::openclaw_md_download::OpenclawMdDownloadParams {
+                    instance,
+                    agent,
+                    output,
+                },
+            )
+            .await
         }
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await

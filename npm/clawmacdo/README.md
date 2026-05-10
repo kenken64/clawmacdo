@@ -140,6 +140,19 @@ clawmacdo deploy --provider digitalocean --openclaw-version 2026.3.22 ...  # dep
 clawmacdo update-model --instance <deploy-id> \
   --primary-model openai --openai-key "$OPENAI_API_KEY"
 
+# Set OpenClaw display name and owner context
+clawmacdo openclaw-identity --instance <deploy-id> \
+  --openclaw-name "Clawdia" --owner-name "Kenneth"
+
+# Download OpenClaw Markdown context files and memory logs as a ZIP
+clawmacdo openclaw-md-download --instance <deploy-id> --output ~/backups/
+
+# Regenerate the OpenClaw gateway token
+clawmacdo openclaw-gateway-token --instance <deploy-id>
+
+# Configure Remotion avatar app and return a Cloudflare Quick Tunnel URL
+clawmacdo remotion-avatar-setup --instance <deploy-id> --name "Kenny"
+
 # Install a plugin
 clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltguard"
 
@@ -543,6 +556,40 @@ clawmacdo memory-download --instance 1.2.3.4 --output ~/backups/memory.tar.gz
 ```
 
 The command SSHes into the instance, creates a tar.gz of all files under `/home/openclaw/.openclaw/memory/`, downloads it locally, and cleans up the temporary archive on the remote host.
+
+### OpenClaw Identity
+
+```bash
+clawmacdo openclaw-identity --instance my-server \
+  --openclaw-name "Clawdia" \
+  --owner-name "Kenneth"
+```
+
+This command sets the target agent's OpenClaw identity and writes managed owner context into the remote workspace `USER.md`, then restarts the gateway.
+
+### OpenClaw Markdown Download
+
+```bash
+clawmacdo openclaw-md-download --instance my-server --output ~/backups/
+```
+
+Downloads the active OpenClaw workspace Markdown context files as a ZIP: `AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `BOOTSTRAP.md` when present, plus daily memory logs under `memory/*.md`.
+
+### Gateway Token Rotation
+
+```bash
+clawmacdo openclaw-gateway-token --instance my-server
+```
+
+Regenerates `gateway.auth.token` in `/home/openclaw/.openclaw/openclaw.json`, keeps password auth in sync when configured, backs up the old config to `openclaw.json.bak`, and restarts the gateway.
+
+### Remotion Avatar Setup
+
+```bash
+clawmacdo remotion-avatar-setup --instance my-server --name "Kenny"
+```
+
+Configures `/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar/.env` with `CHAT_BASE_URL=http://127.0.0.1:18789/v1`, `CHAT_API_KEY` from the OpenClaw gateway token, `CHAT_MODEL=openclaw`, and `VITE_AVATAR_NAME` from `--name`; writes OpenAI-compatible aliases for apps that still expect them; replaces `kenken64` with the provided name; starts the app; starts a free Cloudflare Quick Tunnel to the frontend port; and prints the public `trycloudflare.com` URL.
 
 ### Scheduled Cron Jobs
 
@@ -956,14 +1003,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.70.0
-
-
-
-
-
-
-
+**Current version:** 0.71.0
 
 
 

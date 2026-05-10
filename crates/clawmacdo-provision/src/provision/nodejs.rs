@@ -30,12 +30,18 @@ pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppEr
             message: e.to_string(),
         })?;
 
-    // Install global AI CLIs for the openclaw user (latest versions)
+    // Install global AI CLIs for the openclaw user (latest versions).
+    // Claude Code ships its native binary through optional npm dependencies and
+    // postinstall hooks; npm's user-scoped global install is the documented path
+    // and avoids pnpm's build-script approval flow for global packages.
     let cli_install = format!(
-        "PNPM_HOME={home}/.local/share/pnpm \
+        "export PNPM_HOME={home}/.local/share/pnpm \
          PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
-         HOME={home} \
-         pnpm install -g @anthropic-ai/claude-code@latest @openai/codex@latest @google/gemini-cli@latest",
+         HOME={home} && \
+         npm config set prefix {home}/.local && \
+         rm -f {home}/.local/bin/claude {home}/.local/bin/codex {home}/.local/bin/gemini && \
+         npm install -g --include=optional --ignore-scripts=false \
+           @anthropic-ai/claude-code@latest @openai/codex@latest @google/gemini-cli@latest",
     );
     ssh_as_openclaw_with_user_async(ip, key, &cli_install, ssh_user)
         .await
@@ -44,10 +50,30 @@ pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppEr
             message: e.to_string(),
         })?;
 
+    // If a host-level npm policy still prevented Claude's postinstall from
+    // linking the native binary, run the package repair hook before verify.
+    let claude_repair = format!(
+        "export PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
+         HOME={home} && \
+         if ! claude --version >/dev/null 2>&1; then \
+           CLAUDE_INSTALL_CJS=$(find {home}/.local/lib/node_modules {home}/.local/share/pnpm \
+             -path '*/@anthropic-ai/claude-code/install.cjs' -type f 2>/dev/null | head -1); \
+           if [ -n \"$CLAUDE_INSTALL_CJS\" ]; then \
+             node \"$CLAUDE_INSTALL_CJS\"; \
+           fi; \
+         fi",
+    );
+    ssh_as_openclaw_with_user_async(ip, key, &claude_repair, ssh_user)
+        .await
+        .map_err(|e| AppError::Provision {
+            phase: "claude native repair".into(),
+            message: e.to_string(),
+        })?;
+
     // Enhanced CLI verification with better error reporting
     let cli_verify = format!(
-        "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
-         HOME={home} \
+        "export PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
+         HOME={home} && \
          echo '=== AI CLI Verification ===' && \
          echo 'Checking Claude Code...' && claude --version && \
          echo 'Claude Code: ✅ Installed' && \
@@ -82,8 +108,8 @@ pub async fn provision(ip: &str, key: &Path, ssh_user: &str) -> Result<(), AppEr
 
     // Post-installation configuration check for Claude Code
     let claude_config_check = format!(
-        "PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
-         HOME={home} \
+        "export PATH={home}/.local/bin:{home}/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin \
+         HOME={home} && \
          echo '=== Claude Code Configuration Check ===' && \
          if [ -f '{home}/.claude/settings.json' ]; then \
            echo 'Claude settings: ✅ Found at {home}/.claude/settings.json'; \
