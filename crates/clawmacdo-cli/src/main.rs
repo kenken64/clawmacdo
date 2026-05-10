@@ -530,6 +530,15 @@ enum Commands {
         #[arg(long)]
         instance: String,
     },
+    /// Return the public OpenClaw Gateway UI URL when Tailscale Funnel is enabled
+    OpenclawGatewayUrl {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Configure and expose the Remotion 3D AI avatar app via Cloudflare Quick Tunnel
     RemotionAvatarSetup {
         /// Deploy ID, hostname, or IP address of the instance
@@ -563,6 +572,9 @@ enum Commands {
         /// Local avatar GLB to upload as public/avatar.glb; accepts avatar.glb or *_avatar.glb
         #[arg(long, value_name = "PATH")]
         avatar_glb: Option<std::path::PathBuf>,
+        /// Output structured JSON including remotion_url
+        #[arg(long)]
+        json: bool,
     },
     /// Set an OpenClaw agent display name and owner context
     OpenclawIdentity {
@@ -623,6 +635,90 @@ enum Commands {
         /// Upload/seed the wiki files without launching Claude Code
         #[arg(long)]
         skip_claude: bool,
+    },
+    /// List Markdown files in an OpenClaw project wiki
+    WikiTree {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be scanned
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Project/wiki slug under the workspace, e.g. llm_wiki
+        #[arg(long)]
+        project: String,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Return Markdown page metadata, headings, links, tags, and hashes
+    WikiIndex {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be scanned
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Project/wiki slug under the workspace, e.g. llm_wiki
+        #[arg(long)]
+        project: String,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one Markdown file from the OpenClaw workspace by safe relative path
+    WikiRead {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be read
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Safe relative Markdown path, e.g. llm_wiki/INDEX.md
+        #[arg(long)]
+        path: String,
+        /// Output structured JSON including content and sha256
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write one Markdown file with sha256 revision checking
+    WikiWrite {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be written
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Safe relative Markdown path, e.g. llm_wiki/INDEX.md
+        #[arg(long)]
+        path: String,
+        /// Local Markdown content file to upload
+        #[arg(long, value_name = "PATH")]
+        content_file: std::path::PathBuf,
+        /// Current sha256 from wiki-read, or NEW to create a new file
+        #[arg(long)]
+        base_sha: String,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export an OpenClaw project wiki as a local ZIP
+    WikiExport {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be exported
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Project/wiki slug under the workspace, e.g. llm_wiki
+        #[arg(long)]
+        project: String,
+        /// Output .zip file or directory
+        #[arg(long, default_value = ".")]
+        output: std::path::PathBuf,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
     SkillDeploy {
@@ -1190,6 +1286,12 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::OpenclawGatewayToken { instance } => {
             commands::openclaw_gateway_token::run(&instance).await
         }
+        Commands::OpenclawGatewayUrl { instance, json } => {
+            commands::openclaw_gateway_url::run(
+                commands::openclaw_gateway_url::OpenclawGatewayUrlParams { instance, json },
+            )
+            .await
+        }
         Commands::RemotionAvatarSetup {
             instance,
             name,
@@ -1199,6 +1301,7 @@ async fn async_main() -> anyhow::Result<()> {
             openai_api_key,
             voice_gender,
             avatar_glb,
+            json,
         } => {
             commands::remotion_avatar::setup(commands::remotion_avatar::RemotionAvatarParams {
                 instance,
@@ -1209,6 +1312,7 @@ async fn async_main() -> anyhow::Result<()> {
                 openai_api_key,
                 voice_gender,
                 avatar_glb,
+                json,
             })
             .await
         }
@@ -1263,6 +1367,82 @@ async fn async_main() -> anyhow::Result<()> {
                 timeout,
                 llm_wiki_md,
                 skip_claude,
+            })
+            .await
+        }
+        Commands::WikiTree {
+            instance,
+            agent,
+            project,
+            json,
+        } => {
+            commands::wiki::tree(commands::wiki::WikiTreeParams {
+                instance,
+                agent,
+                project,
+                json,
+            })
+            .await
+        }
+        Commands::WikiIndex {
+            instance,
+            agent,
+            project,
+            json,
+        } => {
+            commands::wiki::index(commands::wiki::WikiIndexParams {
+                instance,
+                agent,
+                project,
+                json,
+            })
+            .await
+        }
+        Commands::WikiRead {
+            instance,
+            agent,
+            path,
+            json,
+        } => {
+            commands::wiki::read(commands::wiki::WikiReadParams {
+                instance,
+                agent,
+                path,
+                json,
+            })
+            .await
+        }
+        Commands::WikiWrite {
+            instance,
+            agent,
+            path,
+            content_file,
+            base_sha,
+            json,
+        } => {
+            commands::wiki::write(commands::wiki::WikiWriteParams {
+                instance,
+                agent,
+                path,
+                content_file,
+                base_sha,
+                json,
+            })
+            .await
+        }
+        Commands::WikiExport {
+            instance,
+            agent,
+            project,
+            output,
+            json,
+        } => {
+            commands::wiki::export(commands::wiki::WikiExportParams {
+                instance,
+                agent,
+                project,
+                output,
+                json,
             })
             .await
         }

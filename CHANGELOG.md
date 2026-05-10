@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.75.0
+
+### Added
+- **Project wiki file commands** - `wiki-tree`, `wiki-index`, `wiki-read`, `wiki-write`, and `wiki-export` let web apps safely list, index, read, edit, and export Markdown wiki files from an OpenClaw workspace.
+- **Gateway URL JSON command** - `openclaw-gateway-url --json` returns the current public Gateway URL when Tailscale Funnel is available.
+- **Remotion avatar JSON output** - `remotion-avatar-setup --json` returns a stable `remotion_url` object for app integrations.
+
+### Security
+- **Wiki path allowlisting and revision checks** - wiki commands reject absolute/escaping paths, only operate on `.md` files under the resolved OpenClaw workspace, return SHA-256 hashes, and require `--base-sha` for writes.
+
 ## v0.74.0
 
 ### Fixed
@@ -405,8 +415,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 
