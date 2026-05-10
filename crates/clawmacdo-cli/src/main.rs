@@ -600,6 +600,30 @@ enum Commands {
         #[arg(long, default_value = ".")]
         output: std::path::PathBuf,
     },
+    /// Create an LLM wiki in the OpenClaw workspace and ask Claude Code to refine it
+    OpenclawLlmWiki {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should receive the wiki
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Wiki title for llm_wiki.md and starter pages
+        #[arg(long, default_value = "LLM Wiki")]
+        title: String,
+        /// Extra instructions to pass to Claude Code
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Maximum seconds to let Claude Code run
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+        /// Local Markdown file to upload into the workspace as llm_wiki.md
+        #[arg(long = "llm-wiki-md", visible_alias = "file", value_name = "PATH")]
+        llm_wiki_md: Option<std::path::PathBuf>,
+        /// Upload/seed the wiki files without launching Claude Code
+        #[arg(long)]
+        skip_claude: bool,
+    },
     /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
     SkillDeploy {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1220,6 +1244,26 @@ async fn async_main() -> anyhow::Result<()> {
                     output,
                 },
             )
+            .await
+        }
+        Commands::OpenclawLlmWiki {
+            instance,
+            agent,
+            title,
+            prompt,
+            timeout,
+            llm_wiki_md,
+            skip_claude,
+        } => {
+            commands::openclaw_llm_wiki::run(commands::openclaw_llm_wiki::OpenclawLlmWikiParams {
+                instance,
+                agent,
+                title,
+                prompt,
+                timeout,
+                llm_wiki_md,
+                skip_claude,
+            })
             .await
         }
         Commands::PluginInstall { instance, plugin } => {
