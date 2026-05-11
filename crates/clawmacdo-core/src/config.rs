@@ -46,10 +46,59 @@ pub const DROPLET_TAG: &str = "openclaw";
 pub const CLOUD_INIT_SENTINEL: &str = "/root/.clawmacdo_cloud_init_done";
 pub const OPENCLAW_USER: &str = "openclaw";
 pub const OPENCLAW_HOME: &str = "/home/openclaw";
+pub const STATE_DIR_ENV: &str = "CLAWMACDO_STATE_DIR";
+pub const RAILWAY_VOLUME_MOUNT_PATH_ENV: &str = "RAILWAY_VOLUME_MOUNT_PATH";
 
-/// Resolve the app data directory: ~/.clawmacdo/
-/// AApp dir.
+fn explicit_state_dir(value: Option<&str>, label: &str) -> Result<Option<PathBuf>, AppError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let path = if trimmed == "~" {
+        dirs::home_dir().ok_or(AppError::HomeDirNotFound)?
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        dirs::home_dir()
+            .ok_or(AppError::HomeDirNotFound)?
+            .join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    if !path.is_absolute() {
+        return Err(AppError::Generic(format!(
+            "{label} must be an absolute path"
+        )));
+    }
+
+    Ok(Some(path))
+}
+
+/// Resolve the app data directory.
+///
+/// Resolution order:
+/// 1. `CLAWMACDO_STATE_DIR`
+/// 2. Railway's mounted volume path, when mounted as `.clawmacdo`
+/// 3. `~/.clawmacdo`
 pub fn app_dir() -> Result<PathBuf, AppError> {
+    let state_dir = std::env::var(STATE_DIR_ENV).ok();
+    if let Some(path) = explicit_state_dir(state_dir.as_deref(), STATE_DIR_ENV)? {
+        return Ok(path);
+    }
+
+    let railway_volume_mount = std::env::var(RAILWAY_VOLUME_MOUNT_PATH_ENV).ok();
+    if let Some(path) = explicit_state_dir(
+        railway_volume_mount.as_deref(),
+        RAILWAY_VOLUME_MOUNT_PATH_ENV,
+    )? {
+        if path.file_name().and_then(|name| name.to_str()) == Some(".clawmacdo") {
+            return Ok(path);
+        }
+    }
+
     let home = dirs::home_dir().ok_or(AppError::HomeDirNotFound)?;
     Ok(home.join(".clawmacdo"))
 }
@@ -209,7 +258,10 @@ impl DeployRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_name(prefix: &str) -> String {
         let nanos = SystemTime::now()
@@ -217,6 +269,31 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         format!("{prefix}-{}-{nanos}", std::process::id())
+    }
+
+    struct TempStateDir {
+        previous: Option<std::ffi::OsString>,
+        path: PathBuf,
+    }
+
+    impl Drop for TempStateDir {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(STATE_DIR_ENV, previous);
+            } else {
+                std::env::remove_var(STATE_DIR_ENV);
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn with_temp_state_dir(test: impl FnOnce()) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join(unique_name("clawmacdo-state"));
+        let previous = std::env::var_os(STATE_DIR_ENV);
+        std::env::set_var(STATE_DIR_ENV, &path);
+        let _temp_state_dir = TempStateDir { previous, path };
+        test();
     }
 
     #[test]
@@ -246,31 +323,58 @@ mod tests {
     }
 
     #[test]
+    fn explicit_state_dir_accepts_absolute_paths_and_tilde() {
+        let absolute = if cfg!(windows) {
+            r"C:\clawmacdo-state"
+        } else {
+            "/app/.clawmacdo"
+        };
+        assert_eq!(
+            explicit_state_dir(Some(absolute), STATE_DIR_ENV).unwrap(),
+            Some(PathBuf::from(absolute))
+        );
+        assert!(explicit_state_dir(Some("~/state"), STATE_DIR_ENV)
+            .unwrap()
+            .is_some());
+        assert_eq!(explicit_state_dir(Some("  "), STATE_DIR_ENV).unwrap(), None);
+    }
+
+    #[test]
+    fn explicit_state_dir_rejects_relative_paths() {
+        let err = explicit_state_dir(Some("relative/.clawmacdo"), STATE_DIR_ENV).unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
     fn resolve_key_path_accepts_files_within_keys_dir() {
-        let keys_dir = keys_dir().unwrap();
-        std::fs::create_dir_all(&keys_dir).unwrap();
+        with_temp_state_dir(|| {
+            let keys_dir = keys_dir().unwrap();
+            std::fs::create_dir_all(&keys_dir).unwrap();
 
-        let file_path = keys_dir.join(unique_name("key"));
-        std::fs::write(&file_path, "ssh-private-key").unwrap();
+            let file_path = keys_dir.join(unique_name("key"));
+            std::fs::write(&file_path, "ssh-private-key").unwrap();
 
-        let resolved = resolve_key_path(file_path.to_str().unwrap()).unwrap();
-        let expected = std::fs::canonicalize(&file_path).unwrap();
-        assert_eq!(resolved, expected);
+            let resolved = resolve_key_path(file_path.to_str().unwrap()).unwrap();
+            let expected = std::fs::canonicalize(&file_path).unwrap();
+            assert_eq!(resolved, expected);
 
-        let _ = std::fs::remove_file(file_path);
+            let _ = std::fs::remove_file(file_path);
+        });
     }
 
     #[test]
     fn resolve_key_path_rejects_files_outside_keys_dir() {
-        let keys_dir = keys_dir().unwrap();
-        std::fs::create_dir_all(&keys_dir).unwrap();
+        with_temp_state_dir(|| {
+            let keys_dir = keys_dir().unwrap();
+            std::fs::create_dir_all(&keys_dir).unwrap();
 
-        let outside_path = std::env::temp_dir().join(unique_name("outside-key"));
-        std::fs::write(&outside_path, "ssh-private-key").unwrap();
+            let outside_path = std::env::temp_dir().join(unique_name("outside-key"));
+            std::fs::write(&outside_path, "ssh-private-key").unwrap();
 
-        let err = resolve_key_path(outside_path.to_str().unwrap()).unwrap_err();
-        assert!(err.to_string().contains("must stay within"));
+            let err = resolve_key_path(outside_path.to_str().unwrap()).unwrap_err();
+            assert!(err.to_string().contains("must stay within"));
 
-        let _ = std::fs::remove_file(outside_path);
+            let _ = std::fs::remove_file(outside_path);
+        });
     }
 }

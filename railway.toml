@@ -1,0 +1,9 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "sh -c 'mkdir -p \"${CLAWMACDO_STATE_DIR:-/app/.clawmacdo}\" && exec clawmacdo serve --port \"${PORT:-3456}\"'"
+healthcheckPath = "/login"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
