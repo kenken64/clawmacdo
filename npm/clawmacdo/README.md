@@ -454,6 +454,22 @@ clawmacdo ls-restore \
   --size s-4vcpu-8gb
 ```
 
+### Fast Lightsail Restore + OpenClaw Readiness
+
+Restore a Lightsail snapshot and immediately configure Telegram pairing, OpenClaw identity, and the Remotion avatar `.env` once SSH is ready. The command batches remote edits into one SSH session and checks the Tailscale public URL and Remotion cloudflared tunnel in parallel.
+
+```bash
+clawmacdo ls-restore-fast \
+  --snapshot-name "my-openclaw-backup" \
+  --telegram-bot-token "$TELEGRAM_TOKEN" \
+  --owner-name "Kenny" \
+  --openclaw-name "John" \
+  --avatar-name "John" \
+  --json
+```
+
+Use `--telegram-pair-code <CODE>` when you already have an 8-character Telegram pairing code to approve in the same run. The default fast budgets are `--active-timeout-secs 120` and `--ssh-timeout-secs 30`; actual restore time still depends on Lightsail making the instance runnable.
+
 ### Destroy an Instance
 
 Delete an instance by name across any supported provider. Removes cloud SSH key, local key, and (for BytePlus) EIP and VPC resources.
@@ -891,8 +907,39 @@ execSync(`${bin} deploy --provider lightsail ...`, { stdio: "inherit" });
 | `CLAWMACDO_API_KEY` | API key protecting `/api/*` endpoints | Optional (Web UI) |
 | `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
 | `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
+| `CLAWMACDO_STATE_DIR` | Directory for deploy records, SSH keys, backups, and `deployments.db` (default: `~/.clawmacdo`) | Optional |
 | `SKILLS_API_URL` | Railway skills API base URL | For skill commands |
 | `USER_SKILLS_API_KEY` | API key for user-skills endpoints | For skill commands |
+
+## Railway Persistence
+
+When running `clawmacdo serve` on Railway, attach a Railway Volume at:
+
+```text
+/app/.clawmacdo
+```
+
+This repository includes a root `Dockerfile` and `railway.toml` for the web UI. Railway should build the Rust binary and start:
+
+```sh
+clawmacdo serve --port "$PORT"
+```
+
+If Railway still starts `node /app/server.js`, remove the service-level start command override in Railway and redeploy from this repository config.
+
+Set `CLAWMACDO_STATE_DIR=/app/.clawmacdo` so deploy records, SSH keys, backups, and `deployments.db` survive redeploys. The Docker image sets this by default. If Railway provides `RAILWAY_VOLUME_MOUNT_PATH=/app/.clawmacdo`, clawmacdo also auto-detects that mount path.
+
+Railway Volumes are mounted as root by default. For non-root container images, either set `RAILWAY_RUN_UID=0` as a quick operational fix, or chown the mounted directory in the hosting app image before starting the server:
+
+```sh
+mkdir -p /app/.clawmacdo
+chown -R nextjs:nodejs /app/.clawmacdo
+exec "$@"
+```
+
+Without a persistent volume, Railway redeploys can remove `deploys/`, `keys/`, and `deployments.db`. Existing cloud instances may then be unreachable from clawmacdo unless the old deploy record and SSH private key can be recovered; after attaching the volume, destroy/recreate those orphaned instances and provision again.
+
+Railway references: [Volumes](https://docs.railway.com/volumes), [Volume permissions](https://docs.railway.com/reference/volumes).
 
 ## Skills Data API
 
@@ -1078,4 +1125,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.79.0
+**Current version:** 0.80.0

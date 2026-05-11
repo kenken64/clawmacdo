@@ -2091,6 +2091,53 @@ clawmacdo ls-restore --snapshot-name "my-openclaw-backup" --size s-4vcpu-8gb
 
 ---
 
+## ls-restore-fast
+
+High-performance Lightsail snapshot restore that waits for SSH, then configures Telegram pairing, OpenClaw identity, and the Remotion avatar `.env` in one remote session. Post checks for the Tailscale public URL and Remotion cloudflared tunnel run concurrently.
+
+### Syntax
+
+```
+clawmacdo ls-restore-fast --snapshot-name <NAME> --telegram-bot-token <TOKEN> --owner-name <NAME> --openclaw-name <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--snapshot-name` | Lightsail snapshot name | *(required)* |
+| `--telegram-bot-token` | Telegram bot token; also reads `TELEGRAM_TOKEN` | *(required)* |
+| `--owner-name` | Human owner name for `USER.md` | *(required)* |
+| `--openclaw-name` | OpenClaw agent display name | *(required)* |
+| `--avatar-name` | Remotion `VITE_AVATAR_NAME` value | `--openclaw-name` |
+| `--agent` | Agent id to update | `main` |
+| `--region` | AWS region | `ap-southeast-1` |
+| `--size` | Instance size override | `s-2vcpu-4gb` |
+| `--remotion-app-dir` | Remote Remotion app directory | `/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar` |
+| `--chat-model` | Remotion `CHAT_MODEL` | `openclaw` |
+| `--openai-api-key` | Optional Remotion OpenAI key; also reads `OPENAI_API_KEY` | preserve existing or gateway token |
+| `--voice-gender` | `male` or `female` | `male` |
+| `--telegram-pair-code` | Optional 8-character code to approve after restart | *(none)* |
+| `--active-timeout-secs` | Lightsail running-state wait budget | `120` |
+| `--ssh-timeout-secs` | SSH readiness wait budget | `30` |
+| `--json` | Output structured JSON | `false` |
+
+### Example
+
+```bash
+clawmacdo ls-restore-fast \
+  --snapshot-name "openclaw-claude-avatar" \
+  --telegram-bot-token "$TELEGRAM_TOKEN" \
+  --owner-name "Kenny" \
+  --openclaw-name "John" \
+  --avatar-name "John" \
+  --json
+```
+
+The command is optimized for under-three-minute restores when Lightsail makes the restored instance runnable quickly. If AWS takes longer to boot the instance, increase the timeout budgets.
+
+---
+
 ## update-model
 
 Update the primary AI model or failover chain on a deployed OpenClaw instance without redeploying.

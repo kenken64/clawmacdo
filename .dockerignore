@@ -1,0 +1,12 @@
+.git
+.github
+target
+node_modules
+skills-data-api/node_modules
+e2e/node_modules
+*.tar.gz
+*.zip
+.DS_Store
+.env
+.env.*
+!.env.example

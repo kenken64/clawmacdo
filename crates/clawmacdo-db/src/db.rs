@@ -1,13 +1,18 @@
 use anyhow::{Context, Result};
+use clawmacdo_core::config;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// Return the path to the SQLite database: ~/.clawmacdo/deployments.db
+/// Return the SQLite database path under the configured clawmacdo state dir.
 fn db_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Cannot determine home directory")?;
-    let dir = home.join(".clawmacdo");
-    std::fs::create_dir_all(&dir)?;
+    let dir = config::app_dir().context("Failed to resolve clawmacdo state directory")?;
+    std::fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "Failed to create clawmacdo state directory at {}",
+            dir.display()
+        )
+    })?;
     Ok(dir.join("deployments.db"))
 }
 

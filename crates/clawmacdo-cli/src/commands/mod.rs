@@ -17,6 +17,8 @@ pub mod hooks;
 #[cfg(feature = "lightsail")]
 pub mod ls_restore;
 #[cfg(feature = "lightsail")]
+pub mod ls_restore_fast;
+#[cfg(feature = "lightsail")]
 pub mod ls_snapshot;
 pub mod memory_download;
 pub mod openclaw_gateway_token;

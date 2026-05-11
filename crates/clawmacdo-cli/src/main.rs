@@ -399,6 +399,68 @@ enum Commands {
         #[arg(long)]
         size: Option<String>,
     },
+    /// High-performance Lightsail snapshot restore with Telegram, identity, Remotion env, and async URL checks
+    #[cfg(feature = "lightsail")]
+    LsRestoreFast {
+        /// Name of the snapshot to restore from
+        #[arg(long)]
+        snapshot_name: String,
+        /// AWS region (default: ap-southeast-1)
+        #[arg(long, default_value = "ap-southeast-1")]
+        region: String,
+        /// Instance size override
+        #[arg(long)]
+        size: Option<String>,
+        /// Telegram bot token (from @BotFather)
+        #[arg(long, env = "TELEGRAM_TOKEN")]
+        telegram_bot_token: String,
+        /// OpenClaw agent display name
+        #[arg(long)]
+        openclaw_name: String,
+        /// Owner's display name for USER.md context
+        #[arg(long)]
+        owner_name: String,
+        /// Remotion avatar display name; defaults to --openclaw-name
+        #[arg(long)]
+        avatar_name: Option<String>,
+        /// Agent id to update
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Remote Remotion app directory
+        #[arg(
+            long,
+            default_value = "/home/openclaw/.openclaw/workspace/remotion-3d-AI-avatar"
+        )]
+        remotion_app_dir: String,
+        /// Local frontend port for the Remotion app
+        #[arg(long, default_value = "3002")]
+        remotion_port: u16,
+        /// Chat model value to write into the Remotion .env
+        #[arg(long, default_value = "openclaw")]
+        chat_model: String,
+        /// OpenAI API key for Remotion features
+        #[arg(
+            long = "openai-api-key",
+            visible_alias = "open-api-key",
+            env = "OPENAI_API_KEY"
+        )]
+        openai_api_key: Option<String>,
+        /// Avatar voice gender; maps male to onyx and female to nova
+        #[arg(long, default_value = "male")]
+        voice_gender: String,
+        /// Optional 8-character Telegram pairing code to approve after gateway restart
+        #[arg(long)]
+        telegram_pair_code: Option<String>,
+        /// Lightsail running-state wait budget
+        #[arg(long, default_value = "120")]
+        active_timeout_secs: u64,
+        /// SSH readiness wait budget after Lightsail reports running
+        #[arg(long, default_value = "30")]
+        ssh_timeout_secs: u64,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Create a snapshot of a BytePlus ECS instance's system disk
     #[cfg(feature = "byteplus")]
     BpSnapshot {
@@ -1224,6 +1286,47 @@ async fn async_main() -> anyhow::Result<()> {
         })
         .await
         .map(|_| ()),
+        #[cfg(feature = "lightsail")]
+        Commands::LsRestoreFast {
+            snapshot_name,
+            region,
+            size,
+            telegram_bot_token,
+            openclaw_name,
+            owner_name,
+            avatar_name,
+            agent,
+            remotion_app_dir,
+            remotion_port,
+            chat_model,
+            openai_api_key,
+            voice_gender,
+            telegram_pair_code,
+            active_timeout_secs,
+            ssh_timeout_secs,
+            json,
+        } => {
+            commands::ls_restore_fast::run(commands::ls_restore_fast::LsRestoreFastParams {
+                snapshot_name,
+                region,
+                size,
+                telegram_bot_token,
+                openclaw_name,
+                owner_name,
+                avatar_name,
+                agent,
+                remotion_app_dir,
+                remotion_port,
+                chat_model,
+                openai_api_key,
+                voice_gender,
+                telegram_pair_code,
+                active_timeout_secs,
+                ssh_timeout_secs,
+                json,
+            })
+            .await
+        }
         #[cfg(feature = "byteplus")]
         Commands::BpSnapshot {
             access_key,

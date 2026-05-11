@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.80.0
+
+### Added
+- **Persistent state directory override** - `CLAWMACDO_STATE_DIR` controls where deploy records, SSH keys, backups, and the web UI database are stored; Railway `.clawmacdo` volumes are auto-detected via `RAILWAY_VOLUME_MOUNT_PATH`.
+- **Railway web UI container config** - root `Dockerfile` and `railway.toml` build the Rust CLI image and start `clawmacdo serve` on Railway's `$PORT` instead of a missing `/app/server.js`.
+- **Fast Lightsail restore workflow** - `ls-restore-fast` restores a Lightsail snapshot, waits for SSH, batches Telegram/identity/Remotion `.env` updates into one remote session, restarts the gateway once, and checks Tailscale plus cloudflared in parallel.
+
 ## v0.79.0
 
 ### Fixed
@@ -437,9 +444,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
-
 
 
 
