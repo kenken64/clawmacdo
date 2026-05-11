@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.78.0
+
+### Added
+- **Safe wiki project deletion** - `wiki-delete` removes only direct `workspace/wiki-*` project folders and rejects absolute paths, traversal, symlinks, files, empty names, and non-`wiki-*` slugs.
+
 ## v0.77.0
 
 ### Added
@@ -425,8 +430,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 

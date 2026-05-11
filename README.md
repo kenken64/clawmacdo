@@ -618,9 +618,10 @@ clawmacdo wiki-write --instance my-server --path llm_wiki/new-page.md \
   --base-sha NEW \
   --json
 clawmacdo wiki-export --instance my-server --project llm_wiki --output ~/backups/ --json
+clawmacdo wiki-delete --instance my-server --project wiki-163327 --json
 ```
 
-These commands resolve the configured OpenClaw agent workspace on the instance and only operate on safe relative Markdown paths under that workspace. `wiki-read` returns `content`, `sha256`, `mtime`, and `size`; `wiki-write` requires `--base-sha` so a web app cannot overwrite a file that changed after it was opened. Use `--base-sha NEW` only when creating a new file. `wiki-index` returns per-page hashes plus headings, tags, and Markdown/wiki links for graph or navigation UIs.
+These commands resolve the configured OpenClaw agent workspace on the instance and only operate on safe relative Markdown paths under that workspace. `wiki-read` returns `content`, `sha256`, `mtime`, and `size`; `wiki-write` requires `--base-sha` so a web app cannot overwrite a file that changed after it was opened. Use `--base-sha NEW` only when creating a new file. `wiki-index` returns per-page hashes plus headings, tags, and Markdown/wiki links for graph or navigation UIs. `wiki-delete` is intentionally narrower: it only deletes a direct `workspace/wiki-*` project folder and rejects empty names, absolute paths, traversal, symlinks, files, and non-`wiki-*` slugs.
 
 ### Gateway Token Rotation
 
@@ -1077,4 +1078,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.77.0
+**Current version:** 0.78.0

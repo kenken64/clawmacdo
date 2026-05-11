@@ -49,6 +49,13 @@ pub struct WikiExportParams {
     pub json: bool,
 }
 
+pub struct WikiDeleteParams {
+    pub instance: String,
+    pub agent: String,
+    pub project: String,
+    pub json: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct RemoteManifest {
     workspace: String,
@@ -167,6 +174,20 @@ fn clean_project_slug(value: &str) -> Result<String> {
         bail!("--project may only contain letters, numbers, dots, underscores, and hyphens.");
     }
     Ok(project.to_string())
+}
+
+fn clean_deletable_wiki_project_slug(value: &str) -> Result<String> {
+    let project = clean_project_slug(value)?;
+    let Some(suffix) = project.strip_prefix("wiki-") else {
+        bail!("--project must start with 'wiki-' for wiki-delete.");
+    };
+    if suffix.is_empty() {
+        bail!("--project must include a suffix after 'wiki-'.");
+    }
+    if suffix.starts_with('.') || project.contains("..") {
+        bail!("--project cannot contain hidden or parent-directory segments.");
+    }
+    Ok(project)
 }
 
 fn clean_relative_markdown_path(value: &str) -> Result<String> {
@@ -691,6 +712,127 @@ NODE
     Ok(template)
 }
 
+fn build_delete_cmd(agent: &str, project: &str) -> Result<String> {
+    let home = config::OPENCLAW_HOME;
+    let mut template = r#"set -e
+export HOME="__HOME__"
+export PATH="__HOME__/.local/bin:__HOME__/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const home = process.env.HOME || '__HOME__';
+const configPath = path.join(home, '.openclaw', 'openclaw.json');
+const agentId = __AGENT_JSON__;
+const project = __PROJECT_JSON__;
+
+function fail(code, message, extra = {}) {
+  console.log(JSON.stringify({ ok: false, error: { code, message }, ...extra }));
+  process.exit(0);
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function expandWorkspace(raw) {
+  let value = typeof raw === 'string' && raw.trim()
+    ? raw.trim()
+    : path.join(home, '.openclaw', 'workspace');
+  if (value === '~') value = home;
+  if (value.startsWith('~/')) value = path.join(home, value.slice(2));
+  if (value.startsWith('$HOME/')) value = path.join(home, value.slice(6));
+  if (value.startsWith('${HOME}/')) value = path.join(home, value.slice(8));
+  if (!path.isAbsolute(value)) value = path.join(home, value);
+  return path.normalize(value);
+}
+
+function isWithin(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+if (!/^wiki-[A-Za-z0-9][A-Za-z0-9._-]{0,114}$/.test(project) || project.includes('..')) {
+  fail('invalid_project', "wiki-delete only accepts direct project slugs beginning with 'wiki-'.", { project });
+}
+
+const cfg = readJson(configPath);
+const agents = cfg.agents || {};
+const list = Array.isArray(agents.list) ? agents.list : [];
+const agent = list.find((item) => item && item.id === agentId);
+const workspace = expandWorkspace(
+  agent && agent.workspace
+    ? agent.workspace
+    : agents.defaults && agents.defaults.workspace
+);
+
+if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+  fail('workspace_not_found', `OpenClaw workspace not found: ${workspace}`);
+}
+
+const workspaceReal = fs.realpathSync(workspace);
+const target = path.resolve(workspaceReal, project);
+if (target === workspaceReal || path.dirname(target) !== workspaceReal || !isWithin(workspaceReal, target)) {
+  fail('path_escape', 'Resolved project directory is not a direct child of the OpenClaw workspace.', {
+    workspace: workspaceReal,
+    project,
+    path: target
+  });
+}
+
+let deleted = false;
+let existed = false;
+try {
+  const stat = fs.lstatSync(target);
+  existed = true;
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail('invalid_path', 'wiki-delete can only remove a regular project directory.', {
+      workspace: workspaceReal,
+      project,
+      path: target
+    });
+  }
+  const targetReal = fs.realpathSync(target);
+  if (targetReal === workspaceReal || path.dirname(targetReal) !== workspaceReal || !isWithin(workspaceReal, targetReal)) {
+    fail('path_escape', 'Resolved project directory escapes the OpenClaw workspace allowlist.', {
+      workspace: workspaceReal,
+      project,
+      path: targetReal
+    });
+  }
+  fs.rmSync(targetReal, { recursive: true, force: false });
+  deleted = true;
+} catch (error) {
+  if (error && error.code === 'ENOENT') {
+    existed = false;
+  } else {
+    throw error;
+  }
+}
+
+console.log(JSON.stringify({
+  ok: true,
+  workspace: workspaceReal,
+  project,
+  path: target,
+  existed,
+  deleted
+}));
+NODE
+"#
+    .to_string();
+
+    template = template.replace("__HOME__", home);
+    template = template.replace("__AGENT_JSON__", &js_string(agent)?);
+    template = template.replace("__PROJECT_JSON__", &js_string(project)?);
+    Ok(template)
+}
+
 fn manifest_from_value(value: Value) -> Result<RemoteManifest> {
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         bail!("remote wiki command did not return ok=true");
@@ -1050,6 +1192,34 @@ pub async fn export(params: WikiExportParams) -> Result<()> {
     Ok(())
 }
 
+pub async fn delete(params: WikiDeleteParams) -> Result<()> {
+    let instance = clean_instance(&params.instance)?;
+    let agent = clean_agent_id(&params.agent)?;
+    let project = clean_deletable_wiki_project_slug(&params.project)?;
+    let (ip, key, provider) = find_deploy_record(&instance)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let cmd = build_delete_cmd(&agent, &project)?;
+    let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
+    let value = remote_json_value(&output, "wiki delete")?;
+    handle_remote_status(&value, params.json)?;
+
+    if params.json {
+        return print_json(&value);
+    }
+
+    let path = value.get("path").and_then(Value::as_str).unwrap_or("");
+    let deleted = value
+        .get("deleted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if deleted {
+        println!("Deleted wiki project '{}': {}", project, path);
+    } else {
+        println!("Wiki project '{}' did not exist: {}", project, path);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,5 +1261,28 @@ mod tests {
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
         assert!(clean_base_sha("abc").is_err());
+    }
+
+    #[test]
+    fn clean_deletable_wiki_project_slug_requires_wiki_prefix() {
+        assert_eq!(
+            clean_deletable_wiki_project_slug("wiki-163327").unwrap(),
+            "wiki-163327"
+        );
+        for project in ["", "llm_wiki", "wiki-", "wiki-..", "../wiki-1", "/"] {
+            assert!(
+                clean_deletable_wiki_project_slug(project).is_err(),
+                "{project}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_delete_cmd_targets_only_project_directory() {
+        let cmd = build_delete_cmd("main", "wiki-163327").unwrap();
+        assert!(cmd.contains("fs.rmSync(targetReal"));
+        assert!(cmd.contains("path.dirname(target) !== workspaceReal"));
+        assert!(cmd.contains("wiki-delete only accepts direct project slugs"));
+        assert!(cmd.contains("wiki-163327"));
     }
 }
