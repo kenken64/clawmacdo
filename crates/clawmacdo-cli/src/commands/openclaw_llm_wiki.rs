@@ -1,16 +1,33 @@
 use anyhow::{bail, Context, Result};
 use clawmacdo_core::config;
 use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub struct OpenclawLlmWikiParams {
     pub instance: String,
     pub agent: String,
+    pub project: String,
     pub title: String,
     pub prompt: Option<String>,
     pub timeout: u64,
     pub llm_wiki_md: Option<PathBuf>,
     pub skip_claude: bool,
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenclawLlmWikiOutput {
+    pub ok: bool,
+    pub project: String,
+    pub workspace: String,
+    pub project_dir: String,
+    pub llm_wiki_md: String,
+    pub files: Vec<String>,
+    pub uploaded_llm_wiki_md: bool,
+    pub claude_status: String,
+    pub claude_log: Option<String>,
+    pub error: Option<String>,
 }
 
 /// Look up a deploy record by hostname, IP, or deploy ID.
@@ -94,6 +111,20 @@ fn clean_agent_id(value: &str) -> Result<String> {
     Ok(agent)
 }
 
+fn clean_project_slug(value: &str) -> Result<String> {
+    let project = clean_required("project", value, 80)?;
+    if project.starts_with('.') || project.contains("..") {
+        bail!("--project must be a single safe folder name, not a path.");
+    }
+    if !project
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        bail!("--project may only contain letters, numbers, dots, underscores, and hyphens.");
+    }
+    Ok(project)
+}
+
 fn clean_timeout(value: u64) -> Result<u64> {
     if !(30..=1800).contains(&value) {
         bail!("--timeout must be between 30 and 1800 seconds.");
@@ -138,22 +169,28 @@ fn js_string(value: &str) -> Result<String> {
 fn build_llm_wiki_cmd(
     params: &OpenclawLlmWikiParams,
     uploaded_llm_wiki_tmp: Option<&str>,
+    json_output: bool,
 ) -> Result<String> {
     let home = config::OPENCLAW_HOME;
     let agent = js_string(&params.agent)?;
+    let project = js_string(&params.project)?;
     let title = js_string(&params.title)?;
     let prompt = js_string(params.prompt.as_deref().unwrap_or(""))?;
     let timeout = params.timeout.to_string();
     let uploaded_llm_wiki_tmp = js_string(uploaded_llm_wiki_tmp.unwrap_or(""))?;
     let skip_claude = if params.skip_claude { "true" } else { "false" };
+    let json_output = if json_output { "true" } else { "false" };
 
     let template = r#"set -e
 export HOME="__HOME__"
 export PATH="__HOME__/.local/bin:__HOME__/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin:$PATH"
 export PROMPT_FILE="/tmp/clawmacdo-llm-wiki-prompt.txt"
 export WORKSPACE_FILE="/tmp/clawmacdo-llm-wiki-workspace"
+export PROJECT_DIR_FILE="/tmp/clawmacdo-llm-wiki-project-dir"
 export LOG_FILE="/tmp/clawmacdo-llm-wiki-claude.log"
+export SUMMARY_FILE="/tmp/clawmacdo-llm-wiki-summary.json"
 export SKIP_CLAUDE="__SKIP_CLAUDE__"
+export JSON_OUTPUT="__JSON_OUTPUT__"
 
 node <<'NODE'
 const fs = require('fs');
@@ -162,11 +199,15 @@ const path = require('path');
 const home = process.env.HOME || '__HOME__';
 const configPath = path.join(home, '.openclaw', 'openclaw.json');
 const agentId = __AGENT_JSON__;
+const project = __PROJECT_JSON__;
 const title = __TITLE_JSON__;
 const extraPrompt = __PROMPT_JSON__;
 const uploadedLlmWikiTmp = __UPLOADED_LLM_WIKI_TMP_JSON__;
 const promptFile = process.env.PROMPT_FILE;
 const workspaceFile = process.env.WORKSPACE_FILE;
+const projectDirFile = process.env.PROJECT_DIR_FILE;
+const summaryFile = process.env.SUMMARY_FILE;
+const jsonOutput = process.env.JSON_OUTPUT === 'true';
 
 function readJson(file) {
   try {
@@ -217,6 +258,12 @@ function ensureFile(file, body) {
   return true;
 }
 
+function validateProjectSlug(value) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(value) || value.includes('..')) {
+    throw new Error(`Invalid project slug: ${value}`);
+  }
+}
+
 const cfg = readJson(configPath);
 const agents = cfg.agents || {};
 const list = Array.isArray(agents.list) ? agents.list : [];
@@ -227,11 +274,17 @@ const workspace = expandWorkspace(
     : agents.defaults && agents.defaults.workspace
 );
 
-const wikiDir = path.join(workspace, 'llm_wiki');
-fs.mkdirSync(workspace, { recursive: true });
-fs.mkdirSync(wikiDir, { recursive: true });
+validateProjectSlug(project);
+const projectDir = path.normalize(path.join(workspace, project));
+const relProject = path.relative(workspace, projectDir);
+if (!relProject || relProject.startsWith('..') || path.isAbsolute(relProject)) {
+  throw new Error(`Resolved project directory escapes workspace: ${projectDir}`);
+}
 
-const rootFile = path.join(workspace, 'llm_wiki.md');
+fs.mkdirSync(workspace, { recursive: true });
+fs.mkdirSync(projectDir, { recursive: true });
+
+const rootFile = path.join(projectDir, 'llm_wiki.md');
 if (uploadedLlmWikiTmp) {
   if (!fs.existsSync(uploadedLlmWikiTmp)) {
     throw new Error(`Uploaded llm_wiki.md was not found at ${uploadedLlmWikiTmp}`);
@@ -246,29 +299,29 @@ if (uploadedLlmWikiTmp) {
     [
       `# ${title}`,
       '',
-      'This file is the attachable OpenClaw web-app entry point for the local LLM wiki.',
+      'This file is the attachable OpenClaw web-app entry point for this project LLM wiki.',
       '',
-      '- Project index: [llm_wiki/INDEX.md](llm_wiki/INDEX.md)',
-      '- Topics: [llm_wiki/topics/](llm_wiki/topics/)',
-      '- Sources: [llm_wiki/sources/](llm_wiki/sources/)',
-      '- Prompts: [llm_wiki/prompts/](llm_wiki/prompts/)',
-      '- Runs: [llm_wiki/runs/](llm_wiki/runs/)',
-      '- Decisions: [llm_wiki/decisions/](llm_wiki/decisions/)',
+      '- Project index: [INDEX.md](INDEX.md)',
+      '- Topics: [topics/](topics/)',
+      '- Sources: [sources/](sources/)',
+      '- Prompts: [prompts/](prompts/)',
+      '- Runs: [runs/](runs/)',
+      '- Decisions: [decisions/](decisions/)',
       '',
-      'Keep durable project knowledge in this file or under `llm_wiki/` so it can be attached as chat context.'
+      'Keep durable project knowledge in this file or under this project folder so it can be attached as chat context.'
     ].join('\n')
   );
 }
 
 const seeded = [];
 function seed(relativePath, body) {
-  if (ensureFile(path.join(wikiDir, relativePath), body)) seeded.push(relativePath);
+  if (ensureFile(path.join(projectDir, relativePath), body)) seeded.push(relativePath);
 }
 
 seed('README.md', `
 # ${title}
 
-This directory holds the durable LLM wiki. Keep the root \`../llm_wiki.md\` as the web-app attachment summary and use this folder for detailed notes.
+This directory holds the durable LLM wiki. Keep \`llm_wiki.md\` as the web-app attachment summary and use the rest of this folder for detailed notes.
 
 ## Layout
 
@@ -340,44 +393,121 @@ seed('open_questions.md', `
 `);
 
 const claudePrompt = [
-  `You are Claude Code running on an OpenClaw instance inside this workspace: ${workspace}`,
+  `You are Claude Code running on an OpenClaw instance inside this project directory: ${projectDir}`,
   '',
-  `Create or refine the LLM wiki project structure for "${title}".`,
+  `Create or refine the LLM wiki project structure for "${title}" in project "${project}".`,
   '',
   'Requirements:',
-  '- Keep `llm_wiki.md` at the workspace root. It is the attachable web-app summary and entry point.',
-  '- Keep detailed wiki files under `llm_wiki/`.',
-  '- Preserve existing content outside `llm_wiki.md` and `llm_wiki/`.',
+  '- Work inside this project directory only.',
+  '- Keep `llm_wiki.md` in the project root. It is the attachable web-app summary and entry point.',
+  '- Keep detailed wiki files in this project folder and its subdirectories.',
+  '- Preserve existing content outside this project directory.',
   '- Do not delete or rename unrelated workspace files.',
   '- Use concise Markdown, relative links, and clear headings.',
-  '- Update `llm_wiki/INDEX.md` so a reader can navigate the wiki.',
+  '- Update `INDEX.md` so a reader can navigate the wiki.',
   '- Add useful starter pages only when they clarify the structure.',
   extraPrompt ? `Additional instructions:\n${extraPrompt}` : ''
 ].filter(Boolean).join('\n');
 
 fs.writeFileSync(promptFile, claudePrompt, { mode: 0o600 });
 fs.writeFileSync(workspaceFile, workspace, { mode: 0o600 });
+fs.writeFileSync(projectDirFile, projectDir, { mode: 0o600 });
 
-console.log(`workspace=${workspace}`);
-console.log(`llm_wiki_md=${rootFile}`);
-console.log(`wiki_dir=${wikiDir}`);
-console.log(`uploaded_llm_wiki_md=${uploadedLlmWikiTmp ? 'yes' : 'no'}`);
-console.log(`seeded_files=${seeded.length ? seeded.join(',') : 'none'}`);
+const files = [
+  'llm_wiki.md',
+  'README.md',
+  'INDEX.md',
+  'topics/overview.md',
+  'sources/README.md',
+  'prompts/README.md',
+  'runs/README.md',
+  'decisions/README.md',
+  'glossary.md',
+  'open_questions.md'
+];
+const summary = {
+  ok: true,
+  project,
+  workspace,
+  project_dir: projectDir,
+  llm_wiki_md: rootFile,
+  files,
+  uploaded_llm_wiki_md: Boolean(uploadedLlmWikiTmp),
+  claude_status: process.env.SKIP_CLAUDE === 'true' ? 'skipped' : 'pending',
+  claude_log: null,
+  error: null
+};
+fs.writeFileSync(summaryFile, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
+
+if (!jsonOutput) {
+  console.log(`workspace=${workspace}`);
+  console.log(`project=${project}`);
+  console.log(`project_dir=${projectDir}`);
+  console.log(`llm_wiki_md=${rootFile}`);
+  console.log(`uploaded_llm_wiki_md=${uploadedLlmWikiTmp ? 'yes' : 'no'}`);
+  console.log(`seeded_files=${seeded.length ? seeded.join(',') : 'none'}`);
+}
 NODE
 
 WORKSPACE="$(cat "$WORKSPACE_FILE")"
-if [ "$SKIP_CLAUDE" = "true" ]; then
-  test -f "$WORKSPACE/llm_wiki.md"
-  test -d "$WORKSPACE/llm_wiki"
-  echo "claude=skipped"
-  echo "ready=$WORKSPACE/llm_wiki.md"
+PROJECT_DIR="$(cat "$PROJECT_DIR_FILE")"
+
+update_summary() {
+  OK_VALUE="$1" CLAUDE_STATUS_VALUE="$2" ERROR_VALUE="${3:-}" CLAUDE_LOG_VALUE="${4:-}" node <<'NODE'
+const fs = require('fs');
+const file = process.env.SUMMARY_FILE;
+const summary = JSON.parse(fs.readFileSync(file, 'utf8'));
+summary.ok = process.env.OK_VALUE === 'true';
+summary.claude_status = process.env.CLAUDE_STATUS_VALUE || summary.claude_status;
+summary.error = process.env.ERROR_VALUE || null;
+summary.claude_log = process.env.CLAUDE_LOG_VALUE || null;
+fs.writeFileSync(file, JSON.stringify(summary, null, 2) + '\n', { mode: 0o600 });
+NODE
+}
+
+emit_summary() {
+  cat "$SUMMARY_FILE"
+}
+
+finish_success() {
+  update_summary true "$1" "" "${2:-}"
+  if [ "$JSON_OUTPUT" = "true" ]; then
+    emit_summary
+  fi
   exit 0
+}
+
+finish_failure() {
+  EXIT_STATUS="$1"
+  CLAUDE_STATUS="$2"
+  ERROR_TEXT="$3"
+  LOG_PATH="${4:-}"
+  update_summary false "$CLAUDE_STATUS" "$ERROR_TEXT" "$LOG_PATH"
+  if [ "$JSON_OUTPUT" = "true" ]; then
+    emit_summary
+    exit 0
+  fi
+  echo "claude=$CLAUDE_STATUS"
+  echo "claude_status=$EXIT_STATUS"
+  [ -n "$LOG_PATH" ] && echo "claude_log=$LOG_PATH"
+  echo "error:"
+  printf '%s\n' "$ERROR_TEXT"
+  exit "$EXIT_STATUS"
+}
+
+if [ "$SKIP_CLAUDE" = "true" ]; then
+  if [ ! -f "$PROJECT_DIR/llm_wiki.md" ]; then
+    finish_failure 1 failed "Seeded project is missing $PROJECT_DIR/llm_wiki.md." ""
+  fi
+  if [ "$JSON_OUTPUT" != "true" ]; then
+    echo "claude=skipped"
+    echo "ready=$PROJECT_DIR/llm_wiki.md"
+  fi
+  finish_success skipped ""
 fi
 
 if ! command -v claude >/dev/null 2>&1; then
-  echo "claude=missing"
-  echo "Install or repair Claude Code on the instance before rerunning this command."
-  exit 127
+  finish_failure 127 missing "Claude Code binary not found in PATH. Install or repair Claude Code on the instance before rerunning this command." ""
 fi
 
 set +e
@@ -396,15 +526,16 @@ CLAUDE_VERSION_RAW="$(claude --version 2>&1)"
 CLAUDE_VERSION_STATUS=$?
 set -e
 if [ "$CLAUDE_VERSION_STATUS" -ne 0 ]; then
-  echo "claude=unavailable"
-  echo "$CLAUDE_VERSION_RAW"
-  echo "claude_repair_log=/tmp/clawmacdo-llm-wiki-claude-repair.log"
-  exit 127
+  REPAIR_TAIL="$(tail -40 /tmp/clawmacdo-llm-wiki-claude-repair.log 2>/dev/null || true)"
+  ERROR_TEXT="$(printf 'Claude Code is installed but unavailable after repair attempt.\n\nclaude --version output:\n%s\n\nrepair log:\n%s' "$CLAUDE_VERSION_RAW" "$REPAIR_TAIL")"
+  finish_failure 127 unavailable "$ERROR_TEXT" "/tmp/clawmacdo-llm-wiki-claude-repair.log"
 fi
 CLAUDE_VERSION="$(printf '%s\n' "$CLAUDE_VERSION_RAW" | head -1)"
 
-cd "$WORKSPACE"
-echo "claude=$CLAUDE_VERSION"
+cd "$PROJECT_DIR"
+if [ "$JSON_OUTPUT" != "true" ]; then
+  echo "claude=$CLAUDE_VERSION"
+fi
 set +e
 if command -v timeout >/dev/null 2>&1; then
   timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
@@ -414,58 +545,68 @@ fi
 STATUS=$?
 set -e
 
-echo "claude_status=$STATUS"
-echo "claude_log=$LOG_FILE"
+if [ "$JSON_OUTPUT" != "true" ]; then
+  echo "claude_status=$STATUS"
+  echo "claude_log=$LOG_FILE"
+fi
 if [ "$STATUS" -ne 0 ]; then
-  tail -40 "$LOG_FILE" 2>/dev/null || true
-  exit "$STATUS"
+  LOG_TAIL="$(tail -40 "$LOG_FILE" 2>/dev/null || true)"
+  if [ "$STATUS" -eq 124 ]; then
+    ERROR_TEXT="$(printf 'Claude Code timed out after __TIMEOUT__ seconds.\n\n%s' "$LOG_TAIL")"
+  else
+    ERROR_TEXT="$(printf 'Claude Code exited with status %s.\n\n%s' "$STATUS" "$LOG_TAIL")"
+  fi
+  finish_failure "$STATUS" failed "$ERROR_TEXT" "$LOG_FILE"
 fi
 
-test -f "$WORKSPACE/llm_wiki.md"
-test -d "$WORKSPACE/llm_wiki"
-echo "ready=$WORKSPACE/llm_wiki.md"
+if [ ! -f "$PROJECT_DIR/llm_wiki.md" ]; then
+  finish_failure 1 failed "Claude Code completed but $PROJECT_DIR/llm_wiki.md is missing." "$LOG_FILE"
+fi
+
+if [ "$JSON_OUTPUT" != "true" ]; then
+  echo "ready=$PROJECT_DIR/llm_wiki.md"
+fi
+finish_success success "$LOG_FILE"
 "#;
 
     Ok(template
         .replace("__HOME__", home)
         .replace("__AGENT_JSON__", &agent)
+        .replace("__PROJECT_JSON__", &project)
         .replace("__TITLE_JSON__", &title)
         .replace("__PROMPT_JSON__", &prompt)
         .replace("__UPLOADED_LLM_WIKI_TMP_JSON__", &uploaded_llm_wiki_tmp)
         .replace("__SKIP_CLAUDE__", skip_claude)
+        .replace("__JSON_OUTPUT__", json_output)
         .replace("__TIMEOUT__", &timeout))
 }
 
-pub async fn run(params: OpenclawLlmWikiParams) -> Result<()> {
-    let params = OpenclawLlmWikiParams {
+fn clean_params(params: OpenclawLlmWikiParams) -> Result<OpenclawLlmWikiParams> {
+    Ok(OpenclawLlmWikiParams {
         instance: clean_required("instance", &params.instance, 255)?,
         agent: clean_agent_id(&params.agent)?,
+        project: clean_project_slug(&params.project)?,
         title: clean_required("title", &params.title, 160)?,
         prompt: clean_optional_prompt(params.prompt)?,
         timeout: clean_timeout(params.timeout)?,
         llm_wiki_md: clean_llm_wiki_md(params.llm_wiki_md)?,
         skip_claude: params.skip_claude,
-    };
+        json: params.json,
+    })
+}
 
+async fn execute_remote(
+    params: &OpenclawLlmWikiParams,
+    json_output: bool,
+) -> Result<(String, String)> {
     let (ip, key, provider) = find_deploy_record(&params.instance)?;
     let ssh_user = ssh_user_for_provider(&provider);
     let uploaded_llm_wiki = params.llm_wiki_md.clone();
 
-    println!("Creating OpenClaw LLM wiki on {ip}...");
-    if let Some(path) = &uploaded_llm_wiki {
-        println!("[1/3] Uploading {} as llm_wiki.md...", path.display());
-    }
-    println!("[2/3] Seeding llm_wiki.md and llm_wiki/ in the active workspace...");
-    if params.skip_claude {
-        println!("[3/3] Skipping Claude Code as requested...");
-    } else {
-        println!("[3/3] Launching Claude Code to refine the wiki structure...");
-    }
-
     let remote_tmp = uploaded_llm_wiki
         .as_ref()
         .map(|_| format!("/tmp/clawmacdo-llm-wiki-{}.md", uuid::Uuid::new_v4()));
-    let cmd = build_llm_wiki_cmd(&params, remote_tmp.as_deref())?;
+    let cmd = build_llm_wiki_cmd(params, remote_tmp.as_deref(), json_output)?;
 
     let output = if let (Some(path), Some(remote_tmp)) = (uploaded_llm_wiki, remote_tmp.as_deref())
     {
@@ -493,6 +634,58 @@ pub async fn run(params: OpenclawLlmWikiParams) -> Result<()> {
         ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?
     };
 
+    Ok((ip, output))
+}
+
+fn parse_json_output(output: &str) -> Result<OpenclawLlmWikiOutput> {
+    let trimmed = output.trim();
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("No JSON object found in openclaw-llm-wiki output."))?;
+    let end = trimmed
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("Incomplete JSON object in openclaw-llm-wiki output."))?;
+    serde_json::from_str(&trimmed[start..=end])
+        .with_context(|| format!("Failed to parse openclaw-llm-wiki JSON output: {}", trimmed))
+}
+
+pub async fn run_for_result(params: OpenclawLlmWikiParams) -> Result<OpenclawLlmWikiOutput> {
+    let params = clean_params(params)?;
+    let (_, output) = execute_remote(&params, true).await?;
+    parse_json_output(&output)
+}
+
+pub async fn run(params: OpenclawLlmWikiParams) -> Result<()> {
+    let params = clean_params(params)?;
+
+    if !params.json {
+        println!("Creating OpenClaw LLM wiki on {}...", params.instance);
+        if let Some(path) = &params.llm_wiki_md {
+            println!(
+                "[1/3] Uploading {} as {}/llm_wiki.md...",
+                path.display(),
+                params.project
+            );
+        }
+        println!(
+            "[2/3] Seeding {}/llm_wiki.md and project wiki files...",
+            params.project
+        );
+        if params.skip_claude {
+            println!("[3/3] Skipping Claude Code as requested...");
+        } else {
+            println!("[3/3] Launching Claude Code to refine the project wiki...");
+        }
+    }
+
+    let (ip, output) = execute_remote(&params, params.json).await?;
+
+    if params.json {
+        let parsed = parse_json_output(&output)?;
+        println!("{}", serde_json::to_string_pretty(&parsed)?);
+        return Ok(());
+    }
+
     for line in output.trim().lines() {
         println!("  {line}");
     }
@@ -500,8 +693,9 @@ pub async fn run(params: OpenclawLlmWikiParams) -> Result<()> {
     println!();
     println!("OpenClaw LLM wiki initialized on {ip}:");
     println!("  Agent: {}", params.agent);
-    println!("  Attach: llm_wiki.md");
-    println!("  Details: llm_wiki/");
+    println!("  Project: {}", params.project);
+    println!("  Attach: {}/llm_wiki.md", params.project);
+    println!("  Details: {}/", params.project);
     if params.skip_claude {
         println!("  Claude: skipped");
     }
@@ -520,6 +714,17 @@ mod tests {
     }
 
     #[test]
+    fn clean_project_slug_rejects_paths() {
+        assert!(clean_project_slug("../wiki").is_err());
+        assert!(clean_project_slug(".hidden").is_err());
+        assert!(clean_project_slug("wiki/name").is_err());
+        assert_eq!(
+            clean_project_slug("project-wiki_1").unwrap(),
+            "project-wiki_1"
+        );
+    }
+
+    #[test]
     fn clean_timeout_enforces_bounds() {
         assert!(clean_timeout(29).is_err());
         assert!(clean_timeout(1801).is_err());
@@ -532,18 +737,22 @@ mod tests {
             &OpenclawLlmWikiParams {
                 instance: "example".to_string(),
                 agent: "main".to_string(),
+                project: "my-project".to_string(),
                 title: "LLM Wiki".to_string(),
                 prompt: Some("Add project constraints.".to_string()),
                 timeout: 600,
                 llm_wiki_md: None,
                 skip_claude: false,
+                json: false,
             },
             None,
+            false,
         )
         .unwrap();
 
         assert!(cmd.contains("llm_wiki.md"));
-        assert!(cmd.contains("llm_wiki/INDEX.md"));
+        assert!(cmd.contains("my-project"));
+        assert!(cmd.contains("INDEX.md"));
         assert!(cmd.contains("claude -p"));
         assert!(cmd.contains("Add project constraints."));
     }
@@ -554,13 +763,16 @@ mod tests {
             &OpenclawLlmWikiParams {
                 instance: "example".to_string(),
                 agent: "main".to_string(),
+                project: "llm_wiki".to_string(),
                 title: "LLM Wiki".to_string(),
                 prompt: None,
                 timeout: 600,
                 llm_wiki_md: None,
                 skip_claude: true,
+                json: false,
             },
             Some("/tmp/uploaded-llm-wiki.md"),
+            false,
         )
         .unwrap();
 
@@ -568,5 +780,30 @@ mod tests {
         assert!(cmd.contains("uploaded_llm_wiki_md="));
         assert!(cmd.contains("claude=skipped"));
         assert!(cmd.contains("/tmp/uploaded-llm-wiki.md"));
+    }
+
+    #[test]
+    fn build_command_json_mode_has_summary_contract() {
+        let cmd = build_llm_wiki_cmd(
+            &OpenclawLlmWikiParams {
+                instance: "example".to_string(),
+                agent: "main".to_string(),
+                project: "docs".to_string(),
+                title: "Docs".to_string(),
+                prompt: None,
+                timeout: 600,
+                llm_wiki_md: None,
+                skip_claude: false,
+                json: true,
+            },
+            None,
+            true,
+        )
+        .unwrap();
+
+        assert!(cmd.contains("project,"));
+        assert!(cmd.contains("files,"));
+        assert!(cmd.contains("claude_status:"));
+        assert!(cmd.contains("emit_summary"));
     }
 }

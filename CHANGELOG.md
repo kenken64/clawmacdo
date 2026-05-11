@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.77.0
+
+### Added
+- **Project-scoped LLM wiki setup** - `openclaw-llm-wiki` now accepts `--project <slug>` and `--json`, creates/refines `workspace/<project>/`, and returns structured Claude status/error details for web apps.
+
 ## v0.76.0
 
 ### Changed
@@ -420,8 +425,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 

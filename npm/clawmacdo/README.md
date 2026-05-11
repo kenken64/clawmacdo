@@ -589,16 +589,19 @@ Downloads the active OpenClaw workspace Markdown context files as a ZIP: `AGENTS
 
 ```bash
 clawmacdo openclaw-llm-wiki --instance my-server \
+  --project remotion-avatar \
   --title "Project LLM Wiki" \
   --prompt "Include architecture, runbooks, and open questions."
 
 # Upload an existing Markdown file from a web backend or local path
 clawmacdo openclaw-llm-wiki --instance my-server \
+  --project remotion-avatar \
   --llm-wiki-md ./llm_wiki.md \
-  --skip-claude
+  --skip-claude \
+  --json
 ```
 
-SSHes into the instance as the OpenClaw user, resolves the target agent workspace, creates or uploads an attachable `llm_wiki.md` at the workspace root, seeds the `llm_wiki/` project tree, then optionally launches Claude Code on the instance to refine the wiki structure. `--llm-wiki-md` uploads any local Markdown file as `llm_wiki.md`; `--skip-claude` makes the command upload/seed only.
+SSHes into the instance as the OpenClaw user, resolves the target agent workspace, creates or uploads an attachable `llm_wiki.md` under `workspace/<project>/`, seeds that project wiki folder, then optionally launches Claude Code inside the project directory to refine the wiki structure. `--project` defaults to `llm_wiki`; `--llm-wiki-md` uploads any local Markdown file as `<project>/llm_wiki.md`; `--skip-claude` makes the command upload/seed only. `--json` returns `{ ok, project, files, claude_status, error }` plus paths so web apps can display Claude failure details.
 
 ### OpenClaw Wiki Files
 
@@ -1074,4 +1077,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.76.0
+**Current version:** 0.77.0
