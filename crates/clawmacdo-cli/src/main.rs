@@ -620,6 +620,9 @@ enum Commands {
         /// Agent id whose workspace should receive the wiki
         #[arg(long, default_value = "main")]
         agent: String,
+        /// Project folder slug under the workspace
+        #[arg(long, default_value = "llm_wiki")]
+        project: String,
         /// Wiki title for llm_wiki.md and starter pages
         #[arg(long, default_value = "LLM Wiki")]
         title: String,
@@ -635,6 +638,9 @@ enum Commands {
         /// Upload/seed the wiki files without launching Claude Code
         #[arg(long)]
         skip_claude: bool,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
     },
     /// List Markdown files in an OpenClaw project wiki
     WikiTree {
@@ -1353,20 +1359,24 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::OpenclawLlmWiki {
             instance,
             agent,
+            project,
             title,
             prompt,
             timeout,
             llm_wiki_md,
             skip_claude,
+            json,
         } => {
             commands::openclaw_llm_wiki::run(commands::openclaw_llm_wiki::OpenclawLlmWikiParams {
                 instance,
                 agent,
+                project,
                 title,
                 prompt,
                 timeout,
                 llm_wiki_md,
                 skip_claude,
+                json,
             })
             .await
         }

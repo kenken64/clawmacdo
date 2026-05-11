@@ -231,6 +231,8 @@ struct LlmWikiUploadRequest {
     file_name: String,
     content: String,
     #[serde(default)]
+    project: String,
+    #[serde(default)]
     title: String,
     #[serde(default)]
     prompt: String,
@@ -242,6 +244,28 @@ struct LlmWikiUploadRequest {
 struct LlmWikiUploadResponse {
     ok: bool,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<openclaw_llm_wiki::OpenclawLlmWikiOutput>,
+}
+
+fn llm_wiki_response(ok: bool, message: impl Into<String>) -> LlmWikiUploadResponse {
+    LlmWikiUploadResponse {
+        ok,
+        message: message.into(),
+        details: None,
+    }
+}
+
+fn llm_wiki_response_with_details(
+    ok: bool,
+    message: impl Into<String>,
+    details: openclaw_llm_wiki::OpenclawLlmWikiOutput,
+) -> LlmWikiUploadResponse {
+    LlmWikiUploadResponse {
+        ok,
+        message: message.into(),
+        details: Some(details),
+    }
 }
 
 #[derive(Deserialize)]
@@ -2319,42 +2343,30 @@ async fn upload_llm_wiki_handler(
     Json(req): Json<LlmWikiUploadRequest>,
 ) -> impl IntoResponse {
     if let Err(msg) = resolve_deploy_connection(&id).map(|_| ()) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: msg,
-            }),
-        );
+        return (StatusCode::NOT_FOUND, Json(llm_wiki_response(false, msg)));
     }
 
     let file_name = req.file_name.trim();
     if file_name.is_empty() || !file_name.to_ascii_lowercase().ends_with(".md") {
         return (
             StatusCode::BAD_REQUEST,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: "Upload a Markdown .md file.".into(),
-            }),
+            Json(llm_wiki_response(false, "Upload a Markdown .md file.")),
         );
     }
 
     if req.content.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: "llm_wiki.md cannot be empty.".into(),
-            }),
+            Json(llm_wiki_response(false, "llm_wiki.md cannot be empty.")),
         );
     }
     if req.content.len() > 5 * 1024 * 1024 {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: "llm_wiki.md must be 5 MiB or smaller.".into(),
-            }),
+            Json(llm_wiki_response(
+                false,
+                "llm_wiki.md must be 5 MiB or smaller.",
+            )),
         );
     }
 
@@ -2363,13 +2375,18 @@ async fn upload_llm_wiki_handler(
     if let Err(e) = std::fs::write(&temp_path, req.content.as_bytes()) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: format!("Failed to stage upload: {e}"),
-            }),
+            Json(llm_wiki_response(
+                false,
+                format!("Failed to stage upload: {e}"),
+            )),
         );
     }
 
+    let project = if req.project.trim().is_empty() {
+        "llm_wiki".to_string()
+    } else {
+        req.project.trim().to_string()
+    };
     let title = if req.title.trim().is_empty() {
         "LLM Wiki".to_string()
     } else {
@@ -2380,32 +2397,43 @@ async fn upload_llm_wiki_handler(
     } else {
         Some(req.prompt.trim().to_string())
     };
-    let run_result = openclaw_llm_wiki::run(openclaw_llm_wiki::OpenclawLlmWikiParams {
+    let run_result = openclaw_llm_wiki::run_for_result(openclaw_llm_wiki::OpenclawLlmWikiParams {
         instance: id.clone(),
         agent: "main".into(),
+        project,
         title,
         prompt,
         timeout: 600,
         llm_wiki_md: Some(temp_path.clone()),
         skip_claude: !req.run_claude,
+        json: true,
     })
     .await;
     let _ = std::fs::remove_file(&temp_path);
 
     match run_result {
-        Ok(()) => (
+        Ok(details) if details.ok => (
             StatusCode::OK,
-            Json(LlmWikiUploadResponse {
-                ok: true,
-                message: "llm_wiki.md uploaded to the OpenClaw workspace.".into(),
-            }),
+            Json(llm_wiki_response_with_details(
+                true,
+                format!("llm_wiki.md uploaded to project '{}'.", details.project),
+                details,
+            )),
+        ),
+        Ok(details) => (
+            StatusCode::BAD_REQUEST,
+            Json(llm_wiki_response_with_details(
+                false,
+                details
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| format!("Claude failed: {}", details.claude_status)),
+                details,
+            )),
         ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(LlmWikiUploadResponse {
-                ok: false,
-                message: e.to_string(),
-            }),
+            Json(llm_wiki_response(false, e.to_string())),
         ),
     }
 }
@@ -5213,6 +5241,10 @@ function showLlmWikiModal(id) {
           <input type="text" id="llm-wiki-title" value="LLM Wiki" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent" />
         </div>
         <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Project Slug</label>
+          <input type="text" id="llm-wiki-project" value="llm_wiki" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent" />
+        </div>
+        <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Claude Prompt</label>
           <textarea id="llm-wiki-prompt" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"></textarea>
         </div>
@@ -5240,6 +5272,7 @@ function closeLlmWikiModal() {
 async function confirmLlmWikiUpload(id) {
   const input = document.getElementById('llm-wiki-file');
   const title = document.getElementById('llm-wiki-title');
+  const project = document.getElementById('llm-wiki-project');
   const prompt = document.getElementById('llm-wiki-prompt');
   const runClaude = document.getElementById('llm-wiki-run-claude');
   const status = document.getElementById('llm-wiki-status');
@@ -5257,6 +5290,11 @@ async function confirmLlmWikiUpload(id) {
     alert('File must be 5 MiB or smaller.');
     return;
   }
+  const projectSlug = project && project.value ? project.value.trim() : 'llm_wiki';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(projectSlug) || projectSlug.includes('..')) {
+    alert('Project slug must be a single folder name with letters, numbers, dots, underscores, or hyphens.');
+    return;
+  }
 
   btn.disabled = true;
   btn.textContent = 'Uploading...';
@@ -5272,6 +5310,7 @@ async function confirmLlmWikiUpload(id) {
       body: JSON.stringify({
         file_name: file.name,
         content,
+        project: projectSlug,
         title: title ? title.value : 'LLM Wiki',
         prompt: prompt ? prompt.value : '',
         run_claude: !!(runClaude && runClaude.checked),
