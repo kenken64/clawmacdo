@@ -111,7 +111,10 @@ function enableTelegramConfig() {
   cfg.channels.telegram.botToken = token;
   cfg.channels.telegram.dmPolicy = cfg.channels.telegram.dmPolicy || 'pairing';
   cfg.channels.telegram.groupPolicy = cfg.channels.telegram.groupPolicy || 'allowlist';
-  cfg.channels.telegram.streaming = cfg.channels.telegram.streaming || 'partial';
+  const streaming = cfg.channels.telegram.streaming;
+  if (streaming !== undefined && (!streaming || typeof streaming !== 'object' || Array.isArray(streaming))) {
+    delete cfg.channels.telegram.streaming;
+  }
 
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   if (fs.existsSync(configPath)) {
@@ -216,6 +219,18 @@ pub async fn configure_bot(query: &str, bot_token: &str, reset: bool) -> Result<
     println!("Then run: clawmacdo telegram-pair --instance {query} --code <PAIRING_CODE>");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configure_cmd_removes_legacy_telegram_streaming_string() {
+        let cmd = build_configure_cmd("123456:abcdef", false).unwrap();
+        assert!(cmd.contains("delete cfg.channels.telegram.streaming"));
+        assert!(!cmd.contains("streaming || 'partial'"));
+    }
 }
 
 /// Retrieve the Telegram chat ID from a deployed instance.

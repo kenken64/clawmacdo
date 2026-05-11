@@ -3810,11 +3810,11 @@ function deployFingerprint(ip, keyPath, hostname) {
   return `${ip}|${keyPath}|${hostname}`;
 }
 
-function persistCompletedDeployment(ip, keyPath, hostname) {
+function persistCompletedDeployment(ip, keyPath, hostname, provider) {
   const list = loadSavedDeployments();
   const fp = deployFingerprint(ip, keyPath, hostname);
   const next = list.filter(d => deployFingerprint(d.ip, d.keyPath, d.hostname) !== fp);
-  next.push({ ip, keyPath, hostname, savedAt: Date.now() });
+  next.push({ ip, keyPath, hostname, provider: provider || '', savedAt: Date.now() });
   saveSavedDeployments(next);
 }
 
@@ -3837,7 +3837,7 @@ function resetSavedDeployments() {
 function restoreSavedDeployments() {
   const saved = loadSavedDeployments();
   for (const d of saved) {
-    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, restored: true });
+    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, provider: d.provider || '', restored: true });
   }
 }
 
@@ -4036,7 +4036,7 @@ function addDeployCard(initialState) {
     progressDiv.classList.remove('hidden');
     panelSetStatus(card, 'completed');
     panelUpdateProgress(card, TOTAL_STEPS);
-    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname);
+    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '');
     if (initialState.restored) {
       panelAppendLog(card, 'Recovered completed deployment from local storage.', 'text-slate-400');
     }
@@ -4481,11 +4481,12 @@ async function appendStepTimingTable(panel, deployId) {
   } catch (_) {}
 }
 
-function panelShowSummary(panel, ip, keyPath, hostname) {
+function panelShowSummary(panel, ip, keyPath, hostname, provider) {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
   panel.dataset.deployIp = ip;
   panel.dataset.deployKeyPath = keyPath;
+  panel.dataset.deployProvider = provider || '';
   panel.dataset.deployFingerprint = deployFingerprint(ip, keyPath, hostname);
   card.classList.remove('hidden');
   content.innerHTML = `
@@ -4521,7 +4522,7 @@ function panelShowSummary(panel, ip, keyPath, hostname) {
       <pre class="whatsapp-qr-output mt-2 bg-slate-900 border border-slate-700 rounded-lg p-2 font-mono text-[10px] leading-3 whitespace-pre text-slate-300 min-h-[26rem] max-h-[70vh] overflow-auto"></pre>
     </div>
   `;
-  persistCompletedDeployment(ip, keyPath, hostname);
+  persistCompletedDeployment(ip, keyPath, hostname, provider || '');
 }
 
 async function approveTelegramPairing(btn) {
@@ -4533,6 +4534,7 @@ async function approveTelegramPairing(btn) {
   const code = (codeInput.value || '').trim();
   const ip = panel.dataset.deployIp || '';
   const keyPath = panel.dataset.deployKeyPath || '';
+  const provider = panel.dataset.deployProvider || '';
 
   if (!code) {
     result.className = 'telegram-pairing-result text-xs mt-2 text-red-400';
@@ -4558,7 +4560,8 @@ async function approveTelegramPairing(btn) {
       body: JSON.stringify({
         ip: ip,
         ssh_key_path: keyPath,
-        pairing_code: code
+        pairing_code: code,
+        provider: provider
       })
     });
     const data = await res.json();
@@ -4779,6 +4782,7 @@ async function startDeploy(e, cardNum) {
   card.querySelector('.deploy-summary-content').innerHTML = '';
   delete card.dataset.deployIp;
   delete card.dataset.deployKeyPath;
+  delete card.dataset.deployProvider;
   btn.disabled = true;
   btn.textContent = 'Deploying...';
   btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-slate-700 cursor-not-allowed');
@@ -4830,7 +4834,7 @@ async function startDeploy(e, cardNum) {
         if (_ds1) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds1), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
-        panelShowSummary(card, ip, keyPath, hostname);
+        panelShowSummary(card, ip, keyPath, hostname, body.provider);
         appendStepTimingTable(card, deployId);
         return;
       }
@@ -4846,7 +4850,7 @@ async function startDeploy(e, cardNum) {
         if (_ds2) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds2), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
-        panelShowSummary(card, ip, keyPath, hostname);
+        panelShowSummary(card, ip, keyPath, hostname, body.provider);
         appendStepTimingTable(card, deployId);
         return;
       }
