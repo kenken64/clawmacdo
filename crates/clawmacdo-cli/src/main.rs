@@ -726,6 +726,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Safely delete a wiki-* project folder from the OpenClaw workspace
+    WikiDelete {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be modified
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Deletable wiki project slug under the workspace, e.g. wiki-163327
+        #[arg(long)]
+        project: String,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Deploy a ZIP of OpenClaw skills to an instance workspace and restart the gateway
     SkillDeploy {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1452,6 +1467,20 @@ async fn async_main() -> anyhow::Result<()> {
                 agent,
                 project,
                 output,
+                json,
+            })
+            .await
+        }
+        Commands::WikiDelete {
+            instance,
+            agent,
+            project,
+            json,
+        } => {
+            commands::wiki::delete(commands::wiki::WikiDeleteParams {
+                instance,
+                agent,
+                project,
                 json,
             })
             .await
