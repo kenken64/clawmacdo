@@ -4,9 +4,11 @@ use clawmacdo_cloud::lightsail_cli::LightsailCliProvider;
 use clawmacdo_cloud::CloudProvider;
 use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_db as db;
+use clawmacdo_provision::provision::commands::ssh_as_openclaw_with_user_async;
 use clawmacdo_ssh as ssh;
 use clawmacdo_ui::progress;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub struct LsRestoreParams {
@@ -26,6 +28,61 @@ pub struct RestoreResult {
     pub ssh_key_path: String,
 }
 
+fn build_post_restore_repair_cmd() -> String {
+    let home = config::OPENCLAW_HOME;
+    let mut cmd = r#"export HOME="__HOME__"
+export PATH="__HOME__/.local/bin:__HOME__/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin:$PATH"
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus
+if [ ! -S "$XDG_RUNTIME_DIR/bus" ]; then
+  dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork >/dev/null 2>&1 || true
+fi
+
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const home = process.env.HOME || '__HOME__';
+const configPath = path.join(home, '.openclaw', 'openclaw.json');
+
+let changed = false;
+try {
+  const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const telegram = cfg.channels && cfg.channels.telegram;
+  if (telegram && telegram.streaming !== undefined) {
+    const streaming = telegram.streaming;
+    if (!streaming || typeof streaming !== 'object' || Array.isArray(streaming)) {
+      delete telegram.streaming;
+      changed = true;
+    }
+  }
+  if (changed) {
+    fs.copyFileSync(configPath, configPath + '.clawmacdo-restore.bak');
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(configPath, 0o600);
+  }
+} catch (_) {}
+console.log(changed ? 'telegram config: normalized legacy streaming value' : 'telegram config: ok');
+NODE
+
+(openclaw doctor --fix >/dev/null 2>&1 || true)
+(systemctl --user daemon-reload 2>/dev/null || true)
+(systemctl --user restart openclaw-gateway.service >/dev/null 2>&1 || \
+ systemctl --user start openclaw-gateway.service >/dev/null 2>&1 || true)
+for i in $(seq 1 45); do
+  if curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
+    echo 'gateway: healthy'
+    exit 0
+  fi
+  sleep $(( i < 10 ? 2 : 4 ))
+done
+echo 'gateway: FAILED - not healthy after restore repair'
+exit 1
+"#
+    .to_string();
+    cmd = cmd.replace("__HOME__", home);
+    cmd
+}
+
 pub async fn run(params: LsRestoreParams) -> Result<RestoreResult> {
     config::ensure_dirs()?;
 
@@ -40,7 +97,7 @@ pub async fn run(params: LsRestoreParams) -> Result<RestoreResult> {
         .unwrap_or_else(|| config::DEFAULT_SIZE.to_string());
     let tx = &params.progress_tx;
     let pdb = &params.db;
-    let total: i32 = 5;
+    let total: i32 = 6;
 
     let provider = LightsailCliProvider::new(region.clone());
     let bundle_id = provider.get_bundle_id(&size);
@@ -109,7 +166,7 @@ pub async fn run(params: LsRestoreParams) -> Result<RestoreResult> {
     progress::emit(tx, &format!("  Instance creation started: {hostname}"));
     db::record_step_complete(pdb, &deploy_id, 4);
 
-    // Step 5/5: Wait for instance to become active
+    // Step 5/6: Wait for instance to become active
     progress::emit(
         tx,
         &format!("\n[Step 5/{total}] Waiting for instance to become active..."),
@@ -129,6 +186,54 @@ pub async fn run(params: LsRestoreParams) -> Result<RestoreResult> {
     let ip = instance.public_ip.unwrap_or_else(|| "unknown".into());
     progress::emit(tx, &format!("  Instance active: {ip}"));
     db::record_step_complete(pdb, &deploy_id, 5);
+
+    // Step 6/6: Repair restored config and restart gateway.
+    progress::emit(
+        tx,
+        &format!("\n[Step 6/{total}] Repairing restored OpenClaw gateway..."),
+    );
+    db::record_step_start(
+        pdb,
+        &deploy_id,
+        6,
+        total,
+        "Repairing restored OpenClaw gateway",
+    );
+    let repair_result: Result<String> = async {
+        ssh::wait_for_ssh(
+            &ip,
+            &keypair.private_key_path,
+            Duration::from_secs(300),
+            Some("ubuntu"),
+        )
+        .await
+        .context("SSH did not become ready for post-restore repair")?;
+        ssh_as_openclaw_with_user_async(
+            &ip,
+            &keypair.private_key_path,
+            &build_post_restore_repair_cmd(),
+            "ubuntu",
+        )
+        .await
+        .context("Post-restore gateway repair failed")
+    }
+    .await;
+    match repair_result {
+        Ok(output) => {
+            let trimmed = output.trim();
+            if !trimmed.is_empty() {
+                for line in trimmed.lines() {
+                    progress::emit(tx, &format!("  {line}"));
+                }
+            }
+            db::record_step_complete(pdb, &deploy_id, 6);
+        }
+        Err(err) => {
+            let msg = format!("Post-restore gateway repair warning: {err:#}");
+            progress::emit(tx, &format!("  {msg}"));
+            db::record_step_failed(pdb, &deploy_id, 6, &msg);
+        }
+    }
 
     // Save to SQLite
     let conn = db::init_db().context("Failed to open deployments database")?;
@@ -182,4 +287,17 @@ pub async fn run(params: LsRestoreParams) -> Result<RestoreResult> {
         ip_address: ip,
         ssh_key_path: keypair.private_key_path.display().to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_restore_repair_normalizes_legacy_telegram_streaming_and_waits_for_health() {
+        let cmd = build_post_restore_repair_cmd();
+        assert!(cmd.contains("delete telegram.streaming"));
+        assert!(cmd.contains("openclaw doctor --fix"));
+        assert!(cmd.contains("http://127.0.0.1:18789/health"));
+    }
 }

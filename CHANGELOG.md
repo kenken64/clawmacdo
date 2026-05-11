@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.79.0
+
+### Fixed
+- **Lightsail restore Telegram recovery** - `ls-restore` now normalizes legacy Telegram streaming config, runs `openclaw doctor --fix`, restarts the restored gateway, and waits for health so Telegram pairing codes can be generated after snapshot restore.
+- **Telegram setup config compatibility** - `telegram-setup` no longer writes the legacy `channels.telegram.streaming` string value that newer OpenClaw gateways reject.
+- **Web pairing approval on Lightsail** - deployment summary pairing approval now carries the cloud provider so Lightsail approvals use the `ubuntu` SSH path.
+
 ## v0.78.0
 
 ### Added
@@ -430,8 +437,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 
