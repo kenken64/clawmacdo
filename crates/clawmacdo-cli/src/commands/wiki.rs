@@ -56,6 +56,16 @@ pub struct WikiDeleteParams {
     pub json: bool,
 }
 
+pub struct WikiIngestParams {
+    pub instance: String,
+    pub agent: String,
+    pub project: String,
+    pub source: PathBuf,
+    pub prompt: String,
+    pub timeout: u64,
+    pub json: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct RemoteManifest {
     workspace: String,
@@ -244,6 +254,45 @@ fn clean_content_file(path: PathBuf) -> Result<PathBuf> {
     }
     path.canonicalize()
         .with_context(|| format!("Failed to resolve --content-file path {}", path.display()))
+}
+
+fn clean_source_file(path: PathBuf) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("--source does not exist: {}", path.display());
+    }
+    if !path.is_file() {
+        bail!("--source must point to a file: {}", path.display());
+    }
+    let metadata = std::fs::metadata(&path)?;
+    if metadata.len() > MAX_MARKDOWN_BYTES {
+        bail!("--source must be 5 MiB or smaller.");
+    }
+    if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        bail!("--source must point to a Markdown .md file.");
+    }
+    path.canonicalize()
+        .with_context(|| format!("Failed to resolve --source path {}", path.display()))
+}
+
+fn clean_ingest_prompt(value: &str) -> Result<String> {
+    let prompt = value.trim();
+    if prompt.is_empty() {
+        bail!("--prompt cannot be empty.");
+    }
+    if prompt.len() > 12_000 {
+        bail!("--prompt must be 12000 bytes or fewer.");
+    }
+    if prompt.chars().any(|ch| ch == '\0') {
+        bail!("--prompt cannot contain NUL bytes.");
+    }
+    Ok(prompt.to_string())
+}
+
+fn clean_timeout_secs(value: u64) -> Result<u64> {
+    if !(30..=1800).contains(&value) {
+        bail!("--timeout must be between 30 and 1800 seconds.");
+    }
+    Ok(value)
 }
 
 fn js_string(value: &str) -> Result<String> {
@@ -712,6 +761,340 @@ NODE
     Ok(template)
 }
 
+fn build_ingest_cmd(
+    agent: &str,
+    project: &str,
+    upload_tmp: &str,
+    source_name: &str,
+    prompt: &str,
+    timeout: u64,
+) -> Result<String> {
+    let home = config::OPENCLAW_HOME;
+    let mut template = r#"set -e
+export HOME="__HOME__"
+export PATH="__HOME__/.local/bin:__HOME__/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin:$PATH"
+export UPLOAD_TMP=__UPLOAD_TMP_JSON__
+export META_FILE="${UPLOAD_TMP}.meta.json"
+export PROMPT_FILE="${UPLOAD_TMP}.prompt.txt"
+export BEFORE_FILE="${UPLOAD_TMP}.before.json"
+export LOG_FILE="${UPLOAD_TMP}.claude.log"
+export SUMMARY_FILE="${UPLOAD_TMP}.summary.md"
+
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const home = process.env.HOME || '__HOME__';
+const configPath = path.join(home, '.openclaw', 'openclaw.json');
+const agentId = __AGENT_JSON__;
+const project = __PROJECT_JSON__;
+const uploadTmp = process.env.UPLOAD_TMP;
+const metaFile = process.env.META_FILE;
+const promptFile = process.env.PROMPT_FILE;
+const beforeFile = process.env.BEFORE_FILE;
+const summaryFile = process.env.SUMMARY_FILE;
+const sourceNameRaw = __SOURCE_NAME_JSON__;
+const userPrompt = __PROMPT_JSON__;
+
+function writeMeta(value) {
+  fs.writeFileSync(metaFile, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+}
+
+function fail(code, message, extra = {}) {
+  writeMeta({ ok: false, error: { code, message }, project, ...extra });
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function expandWorkspace(raw) {
+  let value = typeof raw === 'string' && raw.trim()
+    ? raw.trim()
+    : path.join(home, '.openclaw', 'workspace');
+  if (value === '~') value = home;
+  if (value.startsWith('~/')) value = path.join(home, value.slice(2));
+  if (value.startsWith('$HOME/')) value = path.join(home, value.slice(6));
+  if (value.startsWith('${HOME}/')) value = path.join(home, value.slice(8));
+  if (!path.isAbsolute(value)) value = path.join(home, value);
+  return path.normalize(value);
+}
+
+function isWithin(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function normalizeRel(value) {
+  return value.split(path.sep).join('/');
+}
+
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function sanitizeSourceName(value) {
+  let name = path.basename(value || 'uploaded-doc.md')
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!name) name = 'uploaded-doc.md';
+  if (!name.toLowerCase().endsWith('.md')) name += '.md';
+  return name;
+}
+
+function walkMarkdown(root, dir, result) {
+  if (!fs.existsSync(dir)) return;
+  const dirStat = fs.lstatSync(dir);
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return;
+  const dirReal = fs.realpathSync(dir);
+  if (!isWithin(root, dirReal)) return;
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      walkMarkdown(root, entryPath, result);
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+    const rel = normalizeRel(path.relative(root, fs.realpathSync(entryPath)));
+    if (!rel || rel.startsWith('../')) continue;
+    result[rel] = sha256(entryPath);
+  }
+}
+
+try {
+  if (!fs.existsSync(uploadTmp) || !fs.lstatSync(uploadTmp).isFile()) {
+    fail('upload_not_found', 'Uploaded Markdown source was not found on the instance.');
+    process.exit(0);
+  }
+
+  const cfg = readJson(configPath);
+  const agents = cfg.agents || {};
+  const list = Array.isArray(agents.list) ? agents.list : [];
+  const agent = list.find((item) => item && item.id === agentId);
+  const workspace = expandWorkspace(
+    agent && agent.workspace
+      ? agent.workspace
+      : agents.defaults && agents.defaults.workspace
+  );
+
+  if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+    fail('workspace_not_found', `OpenClaw workspace not found: ${workspace}`);
+    process.exit(0);
+  }
+
+  const workspaceReal = fs.realpathSync(workspace);
+  const projectDir = path.resolve(workspaceReal, project);
+  if (path.dirname(projectDir) !== workspaceReal || !isWithin(workspaceReal, projectDir)) {
+    fail('path_escape', 'Resolved project directory is not a direct child of the OpenClaw workspace.', {
+      workspace: workspaceReal,
+      path: projectDir
+    });
+    process.exit(0);
+  }
+  fs.mkdirSync(projectDir, { recursive: true });
+  const projectReal = fs.realpathSync(projectDir);
+  if (path.dirname(projectReal) !== workspaceReal || !isWithin(workspaceReal, projectReal)) {
+    fail('path_escape', 'Project directory escapes the OpenClaw workspace allowlist.', {
+      workspace: workspaceReal,
+      path: projectReal
+    });
+    process.exit(0);
+  }
+
+  const before = {};
+  walkMarkdown(projectReal, projectReal, before);
+  fs.writeFileSync(beforeFile, JSON.stringify(before, null, 2) + '\n', { mode: 0o600 });
+
+  const rawDir = path.join(projectReal, 'raw', 'sources');
+  fs.mkdirSync(rawDir, { recursive: true });
+  let sourceName = sanitizeSourceName(sourceNameRaw);
+  let sourcePath = path.join(rawDir, sourceName);
+  if (fs.existsSync(sourcePath)) {
+    const ext = path.extname(sourceName);
+    const stem = sourceName.slice(0, sourceName.length - ext.length);
+    sourceName = `${stem}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}${ext}`;
+    sourcePath = path.join(rawDir, sourceName);
+  }
+  fs.copyFileSync(uploadTmp, sourcePath);
+  fs.chmodSync(sourcePath, 0o644);
+  try { fs.unlinkSync(uploadTmp); } catch (_) {}
+
+  const sourceRel = normalizeRel(path.relative(projectReal, sourcePath));
+  const instructions = [
+    `You are Claude Code running inside this OpenClaw wiki project directory: ${projectReal}`,
+    `The newly uploaded source document is: ${sourceRel}`,
+    '',
+    'Goal:',
+    '- Decide where this document belongs in the project wiki.',
+    '- Update existing pages when the document augments known entities, topics, decisions, or workflows.',
+    '- Create new pages only when the content introduces a distinct topic that does not fit existing pages.',
+    '- Update index.md and log.md when useful so the wiki remains navigable and auditable.',
+    '- Preserve the raw source under raw/sources/ and do not delete it.',
+    '- Only read or write files inside this project directory.',
+    '- Keep Markdown concise, link related pages, and avoid duplicating the entire source verbatim unless it is necessary.',
+    '- When finished, write a one-paragraph summary to .clawmacdo-ingest-summary.md.',
+    '',
+    'User instructions:',
+    userPrompt,
+    ''
+  ].join('\n');
+  fs.writeFileSync(promptFile, instructions, { mode: 0o600 });
+
+  writeMeta({
+    ok: true,
+    workspace: workspaceReal,
+    project,
+    project_dir: projectReal,
+    source_rel: sourceRel,
+    source_files: [sourceRel],
+    prompt_file: promptFile,
+    before_file: beforeFile,
+    summary_file: summaryFile,
+    log_file: process.env.LOG_FILE
+  });
+} catch (error) {
+  fail('prepare_failed', error && error.message ? error.message : String(error));
+}
+NODE
+
+if [ "$(node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(m.ok===true?'true':'false')")" != "true" ]; then
+  cat "$META_FILE"
+  exit 0
+fi
+
+PROJECT_DIR="$(node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(m.project_dir)")"
+PROMPT_FILE="$(node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.env.META_FILE,'utf8'));process.stdout.write(m.prompt_file)")"
+
+if ! command -v claude >/dev/null 2>&1; then
+  INSTALL_CJS="$(find "$HOME/.local/share/pnpm" "$HOME/.npm" -path '*/@anthropic-ai/claude-code/install.cjs' -type f 2>/dev/null | head -1 || true)"
+  if [ -n "$INSTALL_CJS" ]; then
+    node "$INSTALL_CJS" >/tmp/clawmacdo-wiki-ingest-claude-repair.log 2>&1 || true
+  fi
+fi
+
+cd "$PROJECT_DIR"
+set +e
+if ! command -v claude >/dev/null 2>&1; then
+  echo "Claude Code binary not found in PATH." >"$LOG_FILE"
+  STATUS=127
+elif command -v timeout >/dev/null 2>&1; then
+  timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  STATUS=$?
+else
+  claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  STATUS=$?
+fi
+set -e
+
+CLAUDE_STATUS="$STATUS" node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const meta = JSON.parse(fs.readFileSync(process.env.META_FILE, 'utf8'));
+const before = JSON.parse(fs.readFileSync(meta.before_file, 'utf8'));
+const status = Number(process.env.CLAUDE_STATUS || '1');
+const projectDir = meta.project_dir;
+
+function isWithin(root, target) {
+  const rel = path.relative(root, target);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function normalizeRel(value) {
+  return value.split(path.sep).join('/');
+}
+
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function walkMarkdown(root, dir, result) {
+  if (!fs.existsSync(dir)) return;
+  const dirStat = fs.lstatSync(dir);
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) return;
+  const dirReal = fs.realpathSync(dir);
+  if (!isWithin(root, dirReal)) return;
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      walkMarkdown(root, entryPath, result);
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+    const rel = normalizeRel(path.relative(root, fs.realpathSync(entryPath)));
+    if (!rel || rel.startsWith('../')) continue;
+    if (rel.startsWith('.clawmacdo-ingest-')) continue;
+    result[rel] = sha256(entryPath);
+  }
+}
+
+const after = {};
+walkMarkdown(projectDir, projectDir, after);
+const sourceSet = new Set(meta.source_files || []);
+const changed = Object.keys(after)
+  .filter((rel) => !sourceSet.has(rel) && before[rel] !== after[rel])
+  .sort((a, b) => a.localeCompare(b));
+
+let summary = '';
+try {
+  summary = fs.readFileSync(meta.summary_file, 'utf8').trim();
+} catch (_) {}
+if (!summary) {
+  summary = changed.length
+    ? `Ingested document and updated ${changed.length} wiki file${changed.length === 1 ? '' : 's'}.`
+    : 'Ingested document; no existing wiki pages were changed.';
+}
+
+const result = {
+  project: meta.project,
+  source_files: meta.source_files || [],
+  changed_files: changed,
+  summary
+};
+
+if (status !== 0) {
+  let tail = '';
+  try {
+    tail = fs.readFileSync(meta.log_file, 'utf8').split(/\r?\n/).slice(-40).join('\n').trim();
+  } catch (_) {}
+  result.ok = false;
+  result.claude_status = status === 124 ? 'timeout' : 'failed';
+  result.claude_log = meta.log_file;
+  result.error = {
+    code: status === 124 ? 'claude_timeout' : 'claude_failed',
+    message: status === 124
+      ? 'Claude Code timed out during wiki ingestion.'
+      : 'Claude Code failed during wiki ingestion.',
+    status,
+    log_tail: tail
+  };
+}
+
+console.log(JSON.stringify(result));
+NODE
+"#
+    .to_string();
+
+    template = template.replace("__HOME__", home);
+    template = template.replace("__AGENT_JSON__", &js_string(agent)?);
+    template = template.replace("__PROJECT_JSON__", &js_string(project)?);
+    template = template.replace("__UPLOAD_TMP_JSON__", &js_string(upload_tmp)?);
+    template = template.replace("__SOURCE_NAME_JSON__", &js_string(source_name)?);
+    template = template.replace("__PROMPT_JSON__", &js_string(prompt)?);
+    template = template.replace("__TIMEOUT__", &timeout.to_string());
+    Ok(template)
+}
+
 fn build_delete_cmd(agent: &str, project: &str) -> Result<String> {
     let home = config::OPENCLAW_HOME;
     let mut template = r#"set -e
@@ -1126,6 +1509,89 @@ pub async fn write(params: WikiWriteParams) -> Result<()> {
     Ok(())
 }
 
+pub async fn ingest(params: WikiIngestParams) -> Result<()> {
+    let instance = clean_instance(&params.instance)?;
+    let agent = clean_agent_id(&params.agent)?;
+    let project = clean_project_slug(&params.project)?;
+    let source = clean_source_file(params.source)?;
+    let prompt = clean_ingest_prompt(&params.prompt)?;
+    let timeout = clean_timeout_secs(params.timeout)?;
+
+    let content = std::fs::read(&source)?;
+    let source_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("uploaded-doc.md")
+        .to_string();
+    let remote_tmp = format!("/tmp/clawmacdo-wiki-ingest-{}.md", uuid::Uuid::new_v4());
+    let (ip, key, provider) = find_deploy_record(&instance)?;
+    let ssh_user = ssh_user_for_provider(&provider);
+    let cmd = build_ingest_cmd(
+        &agent,
+        &project,
+        &remote_tmp,
+        &source_name,
+        &prompt,
+        timeout,
+    )?;
+
+    let scp_ip = ip.clone();
+    let scp_key = key.clone();
+    let scp_user = ssh_user.to_string();
+    let cmd_owned = cmd;
+    let remote_tmp_owned = remote_tmp.clone();
+    let outputs = tokio::task::spawn_blocking(move || {
+        let cmds: Vec<&str> = vec![&cmd_owned];
+        clawmacdo_ssh::scp_upload_bytes_and_exec_as(
+            &scp_ip,
+            &scp_key,
+            &content,
+            &remote_tmp_owned,
+            0o644,
+            &cmds,
+            &scp_user,
+        )
+    })
+    .await
+    .context("wiki source upload and ingest task failed")??;
+
+    let output = outputs.first().cloned().unwrap_or_default();
+    let value = remote_json_value(&output, "wiki ingest")?;
+    handle_remote_status(&value, params.json)?;
+
+    if params.json {
+        return print_json(&value);
+    }
+
+    println!(
+        "Ingested into project {}",
+        value
+            .get("project")
+            .and_then(Value::as_str)
+            .unwrap_or(&project)
+    );
+    if let Some(summary) = value.get("summary").and_then(Value::as_str) {
+        println!("Summary: {summary}");
+    }
+    if let Some(files) = value.get("source_files").and_then(Value::as_array) {
+        println!("Source files:");
+        for file in files {
+            if let Some(file) = file.as_str() {
+                println!("  {file}");
+            }
+        }
+    }
+    if let Some(files) = value.get("changed_files").and_then(Value::as_array) {
+        println!("Changed files:");
+        for file in files {
+            if let Some(file) = file.as_str() {
+                println!("  {file}");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn export(params: WikiExportParams) -> Result<()> {
     let instance = clean_instance(&params.instance)?;
     let agent = clean_agent_id(&params.agent)?;
@@ -1284,5 +1750,32 @@ mod tests {
         assert!(cmd.contains("path.dirname(target) !== workspaceReal"));
         assert!(cmd.contains("wiki-delete only accepts direct project slugs"));
         assert!(cmd.contains("wiki-163327"));
+    }
+
+    #[test]
+    fn clean_ingest_prompt_rejects_empty_values() {
+        assert!(clean_ingest_prompt("   ").is_err());
+        assert_eq!(
+            clean_ingest_prompt("Decide where this belongs").unwrap(),
+            "Decide where this belongs"
+        );
+    }
+
+    #[test]
+    fn build_ingest_cmd_runs_claude_and_reports_contract() {
+        let cmd = build_ingest_cmd(
+            "main",
+            "wiki-163327",
+            "/tmp/source.md",
+            "uploaded-doc.md",
+            "Decide where this belongs",
+            600,
+        )
+        .unwrap();
+        assert!(cmd.contains("raw', 'sources"));
+        assert!(cmd.contains("claude -p"));
+        assert!(cmd.contains("changed_files"));
+        assert!(cmd.contains("source_files"));
+        assert!(cmd.contains(".clawmacdo-ingest-summary.md"));
     }
 }
