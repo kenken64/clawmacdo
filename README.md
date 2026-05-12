@@ -152,6 +152,9 @@ clawmacdo wiki-tree --instance <deploy-id> --project llm_wiki --json
 clawmacdo wiki-read --instance <deploy-id> --path llm_wiki/INDEX.md --json
 clawmacdo wiki-write --instance <deploy-id> --path llm_wiki/INDEX.md \
   --content-file /tmp/INDEX.md --base-sha <sha-from-read> --json
+clawmacdo wiki-ingest --instance <deploy-id> --project wiki-163327 \
+  --source /tmp/uploaded-doc.md \
+  --prompt "Decide where this belongs and update related pages." --json
 clawmacdo wiki-export --instance <deploy-id> --project llm_wiki --json
 
 # Regenerate the OpenClaw gateway token
@@ -633,11 +636,15 @@ clawmacdo wiki-write --instance my-server --path llm_wiki/new-page.md \
   --content-file /tmp/new-page.md \
   --base-sha NEW \
   --json
+clawmacdo wiki-ingest --instance my-server --project wiki-163327 \
+  --source /tmp/uploaded-doc.md \
+  --prompt "Decide where this belongs, update existing pages if needed, create new pages if needed, update index/log." \
+  --json
 clawmacdo wiki-export --instance my-server --project llm_wiki --output ~/backups/ --json
 clawmacdo wiki-delete --instance my-server --project wiki-163327 --json
 ```
 
-These commands resolve the configured OpenClaw agent workspace on the instance and only operate on safe relative Markdown paths under that workspace. `wiki-read` returns `content`, `sha256`, `mtime`, and `size`; `wiki-write` requires `--base-sha` so a web app cannot overwrite a file that changed after it was opened. Use `--base-sha NEW` only when creating a new file. `wiki-index` returns per-page hashes plus headings, tags, and Markdown/wiki links for graph or navigation UIs. `wiki-delete` is intentionally narrower: it only deletes a direct `workspace/wiki-*` project folder and rejects empty names, absolute paths, traversal, symlinks, files, and non-`wiki-*` slugs.
+These commands resolve the configured OpenClaw agent workspace on the instance and only operate on safe relative Markdown paths under that workspace. `wiki-read` returns `content`, `sha256`, `mtime`, and `size`; `wiki-write` requires `--base-sha` so a web app cannot overwrite a file that changed after it was opened. Use `--base-sha NEW` only when creating a new file. `wiki-index` returns per-page hashes plus headings, tags, and Markdown/wiki links for graph or navigation UIs. `wiki-ingest` uploads a converted Markdown source into `<project>/raw/sources/`, launches Claude Code inside that project to decide where the content belongs, and returns `{ project, source_files, changed_files, summary }` JSON for app integrations. `wiki-delete` is intentionally narrower: it only deletes a direct `workspace/wiki-*` project folder and rejects empty names, absolute paths, traversal, symlinks, files, and non-`wiki-*` slugs.
 
 ### Gateway Token Rotation
 
@@ -1125,4 +1132,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.80.0
+**Current version:** 0.81.0

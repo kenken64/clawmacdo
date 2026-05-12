@@ -770,6 +770,30 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// AI-ingest a converted Markdown source into the right project wiki pages
+    WikiIngest {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace should be modified
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Project/wiki slug under the workspace, e.g. wiki-163327
+        #[arg(long)]
+        project: String,
+        /// Local converted Markdown file to ingest
+        #[arg(long, value_name = "PATH")]
+        source: std::path::PathBuf,
+        /// AI instructions for deciding where the document belongs
+        #[arg(long)]
+        prompt: String,
+        /// Maximum seconds to let Claude Code run
+        #[arg(long, default_value = "600")]
+        timeout: u64,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Export an OpenClaw project wiki as a local ZIP
     WikiExport {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1554,6 +1578,26 @@ async fn async_main() -> anyhow::Result<()> {
                 path,
                 content_file,
                 base_sha,
+                json,
+            })
+            .await
+        }
+        Commands::WikiIngest {
+            instance,
+            agent,
+            project,
+            source,
+            prompt,
+            timeout,
+            json,
+        } => {
+            commands::wiki::ingest(commands::wiki::WikiIngestParams {
+                instance,
+                agent,
+                project,
+                source,
+                prompt,
+                timeout,
                 json,
             })
             .await

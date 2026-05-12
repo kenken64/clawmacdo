@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.81.0
+
+### Added
+- **AI wiki ingestion** - `wiki-ingest` uploads converted Markdown into a project wiki, runs Claude Code on the OpenClaw instance to decide where the content belongs, updates related pages/index/log, and returns structured JSON with source and changed files.
+
 ## v0.80.0
 
 ### Added
@@ -444,8 +449,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
 
 
 
