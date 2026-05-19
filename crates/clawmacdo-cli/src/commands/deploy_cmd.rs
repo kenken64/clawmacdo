@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clawmacdo_db as db;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::commands::deploy::{self, DeployParams};
 
@@ -46,6 +48,64 @@ pub struct DeployCmdArgs {
     pub json: bool,
     /// Pre-assigned deploy ID (from detach re-exec)
     pub deploy_id: Option<String>,
+}
+
+fn parse_env_usize(name: &str, default: usize) -> Result<usize> {
+    match std::env::var(name) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(default);
+            }
+            let parsed = trimmed.parse::<usize>().map_err(|_| {
+                anyhow::anyhow!("{name} must be a non-negative integer, got {raw:?}")
+            })?;
+            Ok(parsed)
+        }
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{name} must be valid UTF-8"),
+    }
+}
+
+fn parse_env_u64(name: &str, default: u64) -> Result<u64> {
+    match std::env::var(name) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(default);
+            }
+            let parsed = trimmed.parse::<u64>().map_err(|_| {
+                anyhow::anyhow!("{name} must be a non-negative integer, got {raw:?}")
+            })?;
+            Ok(parsed)
+        }
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{name} must be valid UTF-8"),
+    }
+}
+
+fn spawn_with_configured_retries(cmd: &mut Command) -> Result<()> {
+    let retries = parse_env_usize("CLAWMACDO_SPAWN_RETRIES", 0)?;
+    let delay_ms = parse_env_u64("CLAWMACDO_SPAWN_RETRY_DELAY_MS", 1_000)?;
+
+    for attempt in 0..=retries {
+        match cmd.spawn() {
+            Ok(_) => return Ok(()),
+            Err(err) if attempt < retries => {
+                eprintln!(
+                    "clawmacdo: failed to spawn detached deploy child (attempt {}/{}): {}; retrying in {}ms",
+                    attempt + 1,
+                    retries + 1,
+                    err,
+                    delay_ms
+                );
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn run(args: DeployCmdArgs) -> Result<()> {
@@ -111,7 +171,7 @@ pub async fn run(args: DeployCmdArgs) -> Result<()> {
             None => (std::process::Stdio::null(), std::process::Stdio::null()),
         };
 
-        let mut cmd = std::process::Command::new(exe);
+        let mut cmd = Command::new(exe);
         cmd.args(&child_args)
             .stdin(std::process::Stdio::null())
             .stdout(stdout_cfg)
@@ -129,7 +189,7 @@ pub async fn run(args: DeployCmdArgs) -> Result<()> {
             }
         }
 
-        cmd.spawn()?;
+        spawn_with_configured_retries(&mut cmd)?;
 
         return Ok(());
     }

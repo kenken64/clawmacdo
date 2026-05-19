@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.82.0
+
+### Added
+- **Runtime thread controls** - clawmacdo now honors `CLAWMACDO_TOKIO_WORKER_THREADS`, `CLAWMACDO_MAX_CONCURRENCY`, `CLAWMACDO_RAYON_NUM_THREADS`, `CLAWMACDO_SPAWN_RETRIES`, and `CLAWMACDO_SPAWN_RETRY_DELAY_MS` so hosted apps can cap internal Rust thread creation and retry detached child process spawns.
+
 ## v0.81.0
 
 ### Added
@@ -449,9 +454,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
-
-
 
 
 

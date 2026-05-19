@@ -1,7 +1,11 @@
 mod commands;
 
 use clap::{Parser, Subcommand};
+use std::env;
 use std::path::PathBuf;
+
+const DEFAULT_TOKIO_WORKER_THREADS: usize = 2;
+const DEFAULT_MAX_BLOCKING_THREADS: usize = 8;
 
 #[derive(Parser)]
 #[command(
@@ -1009,13 +1013,65 @@ enum Commands {
     },
 }
 
+struct RuntimeSettings {
+    worker_threads: usize,
+    max_blocking_threads: usize,
+}
+
+fn parse_positive_env_usize(name: &str) -> anyhow::Result<Option<usize>> {
+    match env::var(name) {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            let parsed = trimmed
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("{name} must be a positive integer, got {raw:?}"))?;
+            if parsed == 0 {
+                anyhow::bail!("{name} must be greater than 0");
+            }
+            Ok(Some(parsed))
+        }
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => anyhow::bail!("{name} must be valid UTF-8"),
+    }
+}
+
+fn runtime_settings() -> anyhow::Result<RuntimeSettings> {
+    let configured_max_concurrency = parse_positive_env_usize("CLAWMACDO_MAX_CONCURRENCY")?;
+    let default_worker_threads = std::thread::available_parallelism()
+        .map(|count| count.get().min(DEFAULT_TOKIO_WORKER_THREADS))
+        .unwrap_or(DEFAULT_TOKIO_WORKER_THREADS)
+        .max(1);
+    let worker_threads = parse_positive_env_usize("CLAWMACDO_TOKIO_WORKER_THREADS")?
+        .or(configured_max_concurrency)
+        .unwrap_or(default_worker_threads);
+    let max_blocking_threads = configured_max_concurrency.unwrap_or(DEFAULT_MAX_BLOCKING_THREADS);
+
+    if let Some(rayon_threads) = parse_positive_env_usize("CLAWMACDO_RAYON_NUM_THREADS")? {
+        env::set_var("RAYON_NUM_THREADS", rayon_threads.to_string());
+    } else if configured_max_concurrency.is_some() && env::var_os("RAYON_NUM_THREADS").is_none() {
+        env::set_var("RAYON_NUM_THREADS", max_blocking_threads.to_string());
+    }
+
+    Ok(RuntimeSettings {
+        worker_threads,
+        max_blocking_threads,
+    })
+}
+
 fn main() -> anyhow::Result<()> {
+    let runtime_settings = runtime_settings()?;
+
     // Windows default stack (1 MB) is too small for complex async futures and Axum's
     // large router type.  Spawn on a thread with 8 MB to match Linux behaviour.
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(runtime_settings.worker_threads)
+                .max_blocking_threads(runtime_settings.max_blocking_threads)
                 .enable_all()
                 .build()
                 .expect("Failed to build Tokio runtime")

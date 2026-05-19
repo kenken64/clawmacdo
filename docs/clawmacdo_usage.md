@@ -2588,6 +2588,11 @@ All credentials can be set via environment variables instead of CLI flags.
 | `CLAWMACDO_API_KEY` | serve | API key for `/api/*` endpoint authentication |
 | `CLAWMACDO_PIN` | serve | 6-digit PIN for web UI login |
 | `CLAWMACDO_BIND` | serve | Bind address (default: `127.0.0.1`) |
+| `CLAWMACDO_TOKIO_WORKER_THREADS` | all commands | Tokio async runtime worker threads (default capped at `2`) |
+| `CLAWMACDO_MAX_CONCURRENCY` | all commands | Caps Tokio blocking threads for SSH/SCP-heavy work (default `8`) |
+| `CLAWMACDO_RAYON_NUM_THREADS` | all commands | Mirrors to `RAYON_NUM_THREADS` before runtime startup |
+| `CLAWMACDO_SPAWN_RETRIES` | deploy --detach | Retries detached deploy child process spawn failures |
+| `CLAWMACDO_SPAWN_RETRY_DELAY_MS` | deploy --detach | Delay between detached deploy spawn retries in milliseconds |
 
 ---
 

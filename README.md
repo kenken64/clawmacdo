@@ -915,6 +915,11 @@ execSync(`${bin} deploy --provider lightsail ...`, { stdio: "inherit" });
 | `CLAWMACDO_PIN` | 6-digit PIN for web UI login page | Optional (Web UI) |
 | `CLAWMACDO_BIND` | Server bind address (default: `127.0.0.1`) | Optional (Web UI) |
 | `CLAWMACDO_STATE_DIR` | Directory for deploy records, SSH keys, backups, and `deployments.db` (default: `~/.clawmacdo`) | Optional |
+| `CLAWMACDO_TOKIO_WORKER_THREADS` | Tokio async runtime worker threads (default capped at `2`) | Optional |
+| `CLAWMACDO_MAX_CONCURRENCY` | Caps Tokio blocking threads for SSH/SCP-heavy work (default `8`) | Optional |
+| `CLAWMACDO_RAYON_NUM_THREADS` | Mirrors to `RAYON_NUM_THREADS` before runtime startup | Optional |
+| `CLAWMACDO_SPAWN_RETRIES` | Retries detached deploy child process spawn failures | Optional |
+| `CLAWMACDO_SPAWN_RETRY_DELAY_MS` | Delay between detached deploy spawn retries in milliseconds | Optional |
 | `SKILLS_API_URL` | Railway skills API base URL | For skill commands |
 | `USER_SKILLS_API_KEY` | API key for user-skills endpoints | For skill commands |
 
@@ -1132,4 +1137,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.81.0
+**Current version:** 0.82.0
