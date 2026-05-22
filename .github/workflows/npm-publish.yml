@@ -102,6 +102,29 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Validate npm token
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is not set. Add an npm automation token with publish access to clawmacdo and @clawmacdo/*."
+            exit 1
+          fi
+
+          if ! npm whoami >/tmp/npm-whoami.txt 2>/tmp/npm-whoami.err; then
+            cat /tmp/npm-whoami.err
+            echo "::error::NPM_TOKEN is invalid or expired. Regenerate it in npm and update the GitHub Actions secret."
+            exit 1
+          fi
+          echo "npm user: $(cat /tmp/npm-whoami.txt)"
+
+          for package in clawmacdo @clawmacdo/darwin-arm64 @clawmacdo/linux-x64 @clawmacdo/win32-x64; do
+            if ! npm view "$package" version >/dev/null 2>&1; then
+              echo "::error::Cannot read $package from npm. Check registry access before publishing."
+              exit 1
+            fi
+          done
+
       - name: Download all platform artifacts
         uses: actions/download-artifact@v4
         with:
@@ -138,13 +161,35 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          publish_package() {
+            local package_dir="$1"
+            local package_name
+            local package_version
+            package_name="$(node -p "require('./${package_dir}/package.json').name")"
+            package_version="$(node -p "require('./${package_dir}/package.json').version")"
+
+            if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+              echo "Skipping ${package_name}@${package_version}; already published."
+              return 0
+            fi
+
+            echo "Publishing ${package_name}@${package_version}..."
+            cd "$package_dir"
+            if ! output="$(npm publish --access public 2>&1)"; then
+              echo "$output"
+              if echo "$output" | grep -q 'E404'; then
+                echo "::error::npm returned E404 while publishing ${package_name}. If the package already exists on npm, this usually means NPM_TOKEN does not have publish access to the package or @clawmacdo scope."
+              fi
+              return 1
+            fi
+            echo "$output"
+            cd "$GITHUB_WORKSPACE"
+          }
+
           for pkg in darwin-arm64 linux-x64 win32-x64; do
             pkg_dir="npm/@clawmacdo/${pkg}"
             if [ -d "${pkg_dir}/bin" ] && [ -n "$(ls -A ${pkg_dir}/bin 2>/dev/null)" ]; then
-              echo "Publishing @clawmacdo/${pkg}..."
-              cd "$pkg_dir"
-              npm publish --access public
-              cd "$GITHUB_WORKSPACE"
+              publish_package "$pkg_dir"
             else
               echo "Skipping @clawmacdo/${pkg} (no binary)"
             fi
@@ -155,4 +200,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd npm/clawmacdo
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "clawmacdo@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "Skipping clawmacdo@${PACKAGE_VERSION}; already published."
+            exit 0
+          fi
           npm publish --access public
