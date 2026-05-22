@@ -4,6 +4,7 @@ pub mod ark;
 pub mod bp_restore;
 #[cfg(feature = "byteplus")]
 pub mod bp_snapshot;
+pub mod claude_auth;
 pub mod cron_schedule;
 pub mod deploy;
 pub mod deploy_cmd;

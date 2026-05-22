@@ -36,6 +36,8 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
 - [update-model](#update-model) — Update the AI model on a deployed instance
+- [claude-auth-start](#claude-auth-start) — Start Claude Code reconnect and return a login URL
+- [claude-auth-status](#claude-auth-status) — Poll Claude Code auth status as JSON
 - [update-ip](#update-ip) — Refresh IP address from cloud provider
 - [plugin-install](#plugin-install) — Install an OpenClaw plugin on a deployed instance
 - [openclaw-versions](#openclaw-versions) — List available OpenClaw versions from npm
@@ -2210,6 +2212,74 @@ AI model updated on 192.168.1.100:
   Primary: openai (openai/gpt-5-mini)
   Failover 1: anthropic (anthropic/claude-opus-4-6)
 ```
+
+---
+
+## claude-auth-start
+
+Start Claude Code reconnect on a deployed OpenClaw instance and return the generated login URL as JSON for 2ndBrain.
+
+### Syntax
+
+```
+clawmacdo claude-auth-start --instance <QUERY> --json [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--instance` | Yes | — | Deploy ID, hostname, or IP address |
+| `--mode` | No | `claudeai` | Auth flow: `claudeai` or `console` |
+| `--email` | No | — | Email to pre-fill on the Claude login page |
+| `--sso` | No | `false` | Force the SSO login flow |
+| `--wait-secs` | No | `30` | Seconds to wait for Claude Code to print a login URL |
+| `--json` | No | `false` | Output structured JSON |
+
+### Sample JSON
+
+```json
+{
+  "ok": true,
+  "valid": false,
+  "status": "pending",
+  "login_url": "https://claude.ai/...",
+  "instance": "openclaw-a1b2c3",
+  "ip": "52.77.210.3"
+}
+```
+
+`ok: true` means clawmacdo successfully started or reused the remote login process. `valid: false` means the user still needs to complete the browser auth flow.
+
+---
+
+## claude-auth-status
+
+Poll whether Claude Code is authenticated on the instance. The command exits successfully while auth is pending so web apps can parse JSON without treating unauthenticated state as an SSH failure.
+
+### Syntax
+
+```
+clawmacdo claude-auth-status --instance <QUERY> --json
+```
+
+### Sample JSON
+
+```json
+{
+  "ok": true,
+  "valid": true,
+  "status": "authenticated",
+  "login_url": null,
+  "auth": {
+    "loggedIn": true,
+    "authMethod": "oauth",
+    "apiProvider": "firstParty"
+  }
+}
+```
+
+2ndBrain should poll until `valid` is `true` and `status` is `authenticated`.
 
 ---
 

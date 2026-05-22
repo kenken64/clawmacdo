@@ -622,6 +622,27 @@ clawmacdo openclaw-llm-wiki --instance my-server \
 
 SSHes into the instance as the OpenClaw user, resolves the target agent workspace, creates or uploads an attachable `llm_wiki.md` under `workspace/<project>/`, seeds that project wiki folder, then optionally launches Claude Code inside the project directory to refine the wiki structure. `--project` defaults to `llm_wiki`; `--llm-wiki-md` uploads any local Markdown file as `<project>/llm_wiki.md`; `--skip-claude` makes the command upload/seed only. `--json` returns `{ ok, project, files, claude_status, error }` plus paths so web apps can display Claude failure details.
 
+### Claude Code Reconnect
+
+```bash
+clawmacdo claude-auth-start --instance my-server --json
+clawmacdo claude-auth-status --instance my-server --json
+```
+
+`claude-auth-start` SSHes into the instance as the OpenClaw user, starts Claude Code auth in a remote PTY, captures the generated login URL, and returns JSON for app integrations:
+
+```json
+{
+  "ok": true,
+  "valid": false,
+  "status": "pending",
+  "login_url": "https://claude.ai/...",
+  "instance": "my-server"
+}
+```
+
+After the user completes the browser flow, poll `claude-auth-status --json` until `valid` is `true` and `status` is `authenticated`. The status command exits successfully while auth is still pending, so web apps can parse the JSON instead of scraping SSH errors.
+
 ### OpenClaw Wiki Files
 
 ```bash
@@ -1137,4 +1158,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.82.0
+**Current version:** 0.83.0

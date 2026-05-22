@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.83.0
+
+### Added
+- **Claude Code reconnect flow** - `claude-auth-start --json` SSHes into an OpenClaw instance, starts Claude Code auth in a remote PTY, captures the generated login URL, and returns it for 2ndBrain; `claude-auth-status --json` gives a pollable authenticated/pending JSON contract.
+
 ## v0.82.0
 
 ### Added
@@ -454,7 +459,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 

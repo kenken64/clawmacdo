@@ -708,6 +708,36 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Start Claude Code OAuth reconnect on an OpenClaw instance and return the login URL
+    ClaudeAuthStart {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Claude auth flow to start
+        #[arg(long, default_value = "claudeai", value_parser = ["claudeai", "console"])]
+        mode: String,
+        /// Optional email address to pre-fill on the Claude login page
+        #[arg(long)]
+        email: Option<String>,
+        /// Force the SSO login flow
+        #[arg(long)]
+        sso: bool,
+        /// Seconds to wait for Claude Code to print a login URL
+        #[arg(long, default_value = "30")]
+        wait_secs: u64,
+        /// Output structured JSON for 2ndBrain
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check whether Claude Code auth is valid on an OpenClaw instance
+    ClaudeAuthStatus {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Output structured JSON for 2ndBrain polling
+        #[arg(long)]
+        json: bool,
+    },
     /// List Markdown files in an OpenClaw project wiki
     WikiTree {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1574,6 +1604,31 @@ async fn async_main() -> anyhow::Result<()> {
                 timeout,
                 llm_wiki_md,
                 skip_claude,
+                json,
+            })
+            .await
+        }
+        Commands::ClaudeAuthStart {
+            instance,
+            mode,
+            email,
+            sso,
+            wait_secs,
+            json,
+        } => {
+            commands::claude_auth::start(commands::claude_auth::ClaudeAuthStartParams {
+                instance,
+                mode,
+                email,
+                sso,
+                wait_secs,
+                json,
+            })
+            .await
+        }
+        Commands::ClaudeAuthStatus { instance, json } => {
+            commands::claude_auth::status(commands::claude_auth::ClaudeAuthStatusParams {
+                instance,
                 json,
             })
             .await
