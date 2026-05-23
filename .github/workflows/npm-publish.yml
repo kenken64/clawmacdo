@@ -94,6 +94,8 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -102,28 +104,11 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Validate npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Verify OIDC identity
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is not set. Add an npm automation token with publish access to clawmacdo and @clawmacdo/*."
-            exit 1
-          fi
-
-          if ! npm whoami >/tmp/npm-whoami.txt 2>/tmp/npm-whoami.err; then
-            cat /tmp/npm-whoami.err
-            echo "::error::NPM_TOKEN is invalid or expired. Regenerate it in npm and update the GitHub Actions secret."
-            exit 1
-          fi
-          echo "npm user: $(cat /tmp/npm-whoami.txt)"
-
-          for package in clawmacdo @clawmacdo/darwin-arm64 @clawmacdo/linux-x64 @clawmacdo/win32-x64; do
-            if ! npm view "$package" version >/dev/null 2>&1; then
-              echo "::error::Cannot read $package from npm. Check registry access before publishing."
-              exit 1
-            fi
-          done
+          echo "Repository:  $GITHUB_REPOSITORY"
+          echo "Workflow:    $GITHUB_WORKFLOW"
+          echo "Ref:         $GITHUB_REF"
 
       - name: Download all platform artifacts
         uses: actions/download-artifact@v4
@@ -158,8 +143,6 @@ jobs:
           done
 
       - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           publish_package() {
             local package_dir="$1"
@@ -175,11 +158,8 @@ jobs:
 
             echo "Publishing ${package_name}@${package_version}..."
             cd "$package_dir"
-            if ! output="$(npm publish --access public 2>&1)"; then
+            if ! output="$(npm publish --access public --provenance 2>&1)"; then
               echo "$output"
-              if echo "$output" | grep -q 'E404'; then
-                echo "::error::npm returned E404 while publishing ${package_name}. If the package already exists on npm, this usually means NPM_TOKEN does not have publish access to the package or @clawmacdo scope."
-              fi
               return 1
             fi
             echo "$output"
@@ -196,8 +176,6 @@ jobs:
           done
 
       - name: Publish root package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd npm/clawmacdo
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
@@ -205,4 +183,4 @@ jobs:
             echo "Skipping clawmacdo@${PACKAGE_VERSION}; already published."
             exit 0
           fi
-          npm publish --access public
+          npm publish --access public --provenance
