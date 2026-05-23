@@ -95,6 +95,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +104,9 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable OIDC auth for npm
+        run: npm config delete //registry.npmjs.org/:_authToken
 
       - name: Verify OIDC identity
         run: |
