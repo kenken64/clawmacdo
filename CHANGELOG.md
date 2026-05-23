@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.84.0
+## v0.85.0
 
 ### Added
 - **Claude Code reconnect flow** - `claude-auth-start --json` SSHes into an OpenClaw instance, starts Claude Code auth in a remote PTY, captures the generated login URL, and returns it for 2ndBrain; `claude-auth-status --json` gives a pollable authenticated/pending JSON contract.
