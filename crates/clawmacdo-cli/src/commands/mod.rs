@@ -14,6 +14,8 @@ pub mod do_restore;
 #[cfg(feature = "digitalocean")]
 pub mod do_snapshot;
 pub mod docker_fix;
+#[cfg(feature = "lightsail")]
+pub mod hermes_lightsail;
 pub mod hooks;
 #[cfg(feature = "lightsail")]
 pub mod ls_restore;

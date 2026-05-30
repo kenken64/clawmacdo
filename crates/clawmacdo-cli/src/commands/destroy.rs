@@ -29,7 +29,7 @@ pub struct DestroyParams {
 pub async fn run(params: DestroyParams) -> Result<()> {
     match params.provider.as_str() {
         "digitalocean" => run_do(params).await,
-        "lightsail" => {
+        "lightsail" | "hermes-lightsail" => {
             #[cfg(feature = "lightsail")]
             {
                 run_lightsail(params).await
@@ -179,12 +179,14 @@ async fn run_lightsail(params: DestroyParams) -> Result<()> {
         params.aws_secret_access_key.clone(),
     );
 
-    println!("Fetching openclaw instances (Lightsail)...");
+    println!("Fetching Lightsail instances...");
     let instances = provider.list_instances("openclaw").await?;
     let instance = instances
         .into_iter()
         .find(|i| i.name == params.name)
-        .ok_or_else(|| anyhow::anyhow!("No openclaw instance found with name '{}'", params.name))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("No Lightsail instance found with name '{}'", params.name)
+        })?;
 
     println!(
         "

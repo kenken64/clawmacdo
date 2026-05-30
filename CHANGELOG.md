@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.87.0
+
+### Added
+- **Hermes Agent Lightsail provisioning** - new `hermes-provision` / `provision-hermes` command provisions Hermes Agent on AWS Lightsail with Docker, hardened SSH/UFW defaults, deploy records, dashboard support, and dry-run output.
+- **Hermes deployment path in the web UI** - after PIN unlock, deployment cards now let users choose OpenClaw or Hermes Agent; Hermes deployments use AWS Lightsail credentials, regions, sizes, and Hermes-specific progress/summary actions.
+- **Hermes Telegram onboarding** - CLI and web UI collect Telegram bot token, allowed user IDs, and home channel ID, then write the matching Hermes environment variables during provisioning.
+- **AWS Bedrock Nova Pro onboarding for Hermes** - Hermes provisioning now requires a Bedrock API key, defaults to Nova Pro (`amazon.nova-pro-v1:0`) in Singapore (`ap-southeast-1`), writes the Bedrock Mantle endpoint, and configures AWS CLI region files on the instance.
+
+### Changed
+- **Deployment copy and branding** - web UI copy and artwork now reflect both OpenClaw and Hermes Agent deployment support.
+
 ## v0.86.0
 
 ### Added
@@ -459,7 +470,6 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
-
 
 
 

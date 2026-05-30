@@ -141,6 +141,65 @@ enum Commands {
         #[arg(long = "_deploy-id", hide = true)]
         _deploy_id: Option<String>,
     },
+    /// Provision Hermes Agent on AWS Lightsail
+    #[cfg(feature = "lightsail")]
+    #[command(name = "hermes-provision", visible_alias = "provision-hermes")]
+    HermesProvision {
+        /// Lightsail instance name (default: hermes-<deploy-id>)
+        #[arg(long)]
+        name: Option<String>,
+        /// AWS Access Key ID (Lightsail)
+        #[arg(long, default_value = "", env = "AWS_ACCESS_KEY_ID")]
+        aws_access_key_id: String,
+        /// AWS Secret Access Key (Lightsail)
+        #[arg(long, default_value = "", env = "AWS_SECRET_ACCESS_KEY")]
+        aws_secret_access_key: String,
+        /// AWS region (Lightsail)
+        #[arg(long, default_value = "ap-southeast-1")]
+        aws_region: String,
+        /// Lightsail instance size (s-1vcpu-2gb, s-2vcpu-4gb, s-4vcpu-8gb)
+        #[arg(long)]
+        size: Option<String>,
+        /// Hermes Agent container image
+        #[arg(long, default_value = "nousresearch/hermes-agent:latest")]
+        image: String,
+        /// Path to a Hermes .env file to load into the instance
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        /// Extra KEY=VALUE env var to append; repeat for multiple values
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
+        /// AWS Bedrock API key for Hermes Nova Pro
+        #[arg(long, env = "AWS_BEARER_TOKEN_BEDROCK")]
+        bedrock_api_key: Option<String>,
+        /// AWS Bedrock region for Hermes AI model
+        #[arg(long, default_value = "ap-southeast-1")]
+        bedrock_region: String,
+        /// AWS Bedrock model ID for Hermes AI model
+        #[arg(long, default_value = "amazon.nova-pro-v1:0")]
+        bedrock_model: String,
+        /// Telegram bot token for Hermes gateway onboarding
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
+        telegram_bot_token: Option<String>,
+        /// Telegram user IDs allowed to use the bot, comma-separated
+        #[arg(long, env = "TELEGRAM_ALLOWED_USERS")]
+        telegram_allowed_users: Option<String>,
+        /// Telegram home channel/user ID for notifications
+        #[arg(long, env = "TELEGRAM_HOME_CHANNEL")]
+        telegram_home_channel: Option<String>,
+        /// Run the Hermes dashboard on 127.0.0.1:9119; access via SSH tunnel
+        #[arg(long)]
+        dashboard: bool,
+        /// Mount /var/run/docker.sock into the Hermes container
+        #[arg(long)]
+        mount_docker_socket: bool,
+        /// Print the Lightsail user-data script without creating resources
+        #[arg(long)]
+        dry_run: bool,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Track a deployment's progress
     Track {
         /// Deploy ID, hostname, or IP address
@@ -1199,6 +1258,53 @@ async fn async_main() -> anyhow::Result<()> {
             })
             .await
         }
+        #[cfg(feature = "lightsail")]
+        Commands::HermesProvision {
+            name,
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_region,
+            size,
+            image,
+            env_file,
+            env_vars,
+            bedrock_api_key,
+            bedrock_region,
+            bedrock_model,
+            telegram_bot_token,
+            telegram_allowed_users,
+            telegram_home_channel,
+            dashboard,
+            mount_docker_socket,
+            dry_run,
+            json,
+        } => commands::hermes_lightsail::run(commands::hermes_lightsail::HermesLightsailParams {
+            deploy_id: None,
+            customer_email: "hermes-agent".to_string(),
+            name,
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_region,
+            size,
+            image,
+            env_file,
+            env_content: None,
+            env_vars,
+            bedrock_api_key,
+            bedrock_region,
+            bedrock_model,
+            telegram_bot_token,
+            telegram_allowed_users,
+            telegram_home_channel,
+            dashboard,
+            mount_docker_socket,
+            dry_run,
+            json,
+            progress_tx: None,
+            db: None,
+        })
+        .await
+        .map(|_| ()),
         Commands::Track {
             query,
             follow,

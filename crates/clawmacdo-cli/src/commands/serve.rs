@@ -56,6 +56,8 @@ enum JobStatus {
 
 #[derive(Deserialize)]
 struct DeployRequest {
+    #[serde(default = "default_deploy_target")]
+    target: String,
     customer_name: String,
     customer_email: String,
     #[serde(default = "default_provider")]
@@ -126,10 +128,46 @@ struct DeployRequest {
     spot: bool,
     #[serde(default)]
     openclaw_version: String,
+    #[serde(default = "default_hermes_image")]
+    hermes_image: String,
+    #[serde(default)]
+    hermes_env: String,
+    #[serde(default)]
+    hermes_bedrock_api_key: String,
+    #[serde(default = "default_hermes_bedrock_region")]
+    hermes_bedrock_region: String,
+    #[serde(default = "default_hermes_bedrock_model")]
+    hermes_bedrock_model: String,
+    #[serde(default)]
+    hermes_telegram_bot_token: String,
+    #[serde(default)]
+    hermes_telegram_allowed_users: String,
+    #[serde(default)]
+    hermes_telegram_home_channel: String,
+    #[serde(default)]
+    hermes_dashboard: bool,
+    #[serde(default)]
+    hermes_mount_docker_socket: bool,
+}
+
+fn default_deploy_target() -> String {
+    "openclaw".to_string()
 }
 
 fn default_provider() -> String {
     "digitalocean".to_string()
+}
+
+fn default_hermes_image() -> String {
+    "nousresearch/hermes-agent:latest".to_string()
+}
+
+fn default_hermes_bedrock_region() -> String {
+    "ap-southeast-1".to_string()
+}
+
+fn default_hermes_bedrock_model() -> String {
+    "amazon.nova-pro-v1:0".to_string()
 }
 
 fn default_primary_model() -> String {
@@ -868,7 +906,42 @@ async fn start_deploy_handler(
 ) -> impl IntoResponse {
     let jobs = state.jobs;
     let db = state.db;
-    if req.tailscale && req.tailscale_auth_key.trim().is_empty() {
+    let is_hermes = req.target == "hermes" || req.provider == "hermes-lightsail";
+
+    if is_hermes {
+        #[cfg(not(feature = "lightsail"))]
+        {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(ErrorResponse {
+                    message: "Hermes Agent Lightsail provisioning requires the lightsail feature."
+                        .into(),
+                }),
+            )
+                .into_response();
+        }
+        if req.aws_access_key_id.trim().is_empty() || req.aws_secret_access_key.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    message: "AWS credentials are required to provision Hermes Agent on Lightsail."
+                        .into(),
+                }),
+            )
+                .into_response();
+        }
+        if req.hermes_bedrock_api_key.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    message: "AWS Bedrock API key is required for Hermes Agent Nova Pro.".into(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    if !is_hermes && req.tailscale && req.tailscale_auth_key.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -878,37 +951,40 @@ async fn start_deploy_handler(
             .into_response();
     }
 
-    // Validate primary model's API key is present
-    let primary_key_present = match req.primary_model.as_str() {
-        "anthropic" => !req.anthropic_key.trim().is_empty(),
-        "openai" => !req.openai_key.trim().is_empty(),
-        "gemini" => !req.gemini_key.trim().is_empty(),
-        "byteplus" => !req.byteplus_ark_api_key.trim().is_empty(),
-        "opencode" => !req.opencode_api_key.trim().is_empty(),
-        _ => false,
-    };
-    if !primary_key_present {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                message: format!(
-                    "API key for primary model '{}' is required.",
-                    req.primary_model
-                ),
-            }),
-        )
-            .into_response();
-    }
+    if !is_hermes {
+        // Validate primary model's API key is present
+        let primary_key_present = match req.primary_model.as_str() {
+            "anthropic" => !req.anthropic_key.trim().is_empty(),
+            "openai" => !req.openai_key.trim().is_empty(),
+            "gemini" => !req.gemini_key.trim().is_empty(),
+            "byteplus" => !req.byteplus_ark_api_key.trim().is_empty(),
+            "opencode" => !req.opencode_api_key.trim().is_empty(),
+            _ => false,
+        };
+        if !primary_key_present {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    message: format!(
+                        "API key for primary model '{}' is required.",
+                        req.primary_model
+                    ),
+                }),
+            )
+                .into_response();
+        }
 
-    if req.openclaw_version.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                message: "OpenClaw version is required. Use the version dropdown to select one."
-                    .to_string(),
-            }),
-        )
-            .into_response();
+        if req.openclaw_version.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    message:
+                        "OpenClaw version is required. Use the version dropdown to select one."
+                            .to_string(),
+                }),
+            )
+                .into_response();
+        }
     }
 
     let deploy_id = uuid::Uuid::new_v4().to_string();
@@ -927,7 +1003,7 @@ async fn start_deploy_handler(
         }
     };
 
-    let backup: Option<PathBuf> = if req.backup.is_empty() || req.backup == "none" {
+    let backup: Option<PathBuf> = if is_hermes || req.backup.is_empty() || req.backup == "none" {
         None
     } else {
         match config::resolve_backup_path(&req.backup) {
@@ -959,7 +1035,11 @@ async fn start_deploy_handler(
     // Insert deployment record BEFORE spawning so it's immediately visible
     // in the Deployments tab even if the user navigates away instantly.
     {
-        let provider_str = &req.provider;
+        let provider_str = if is_hermes {
+            "hermes-lightsail"
+        } else {
+            &req.provider
+        };
         let region_str = &req.region;
         let size_str = &req.size;
         let hostname_str = hostname.as_deref().unwrap_or("");
@@ -978,6 +1058,104 @@ async fn start_deploy_handler(
     }
 
     tokio::spawn(async move {
+        if is_hermes {
+            #[cfg(feature = "lightsail")]
+            {
+                let hermes_region = if req.aws_region.trim().is_empty() {
+                    if req.region.trim().is_empty() {
+                        "ap-southeast-1".to_string()
+                    } else {
+                        req.region.clone()
+                    }
+                } else {
+                    req.aws_region.clone()
+                };
+                let hermes_size = if req.size.trim().is_empty() {
+                    None
+                } else {
+                    Some(req.size.clone())
+                };
+                let result = crate::commands::hermes_lightsail::run(
+                    crate::commands::hermes_lightsail::HermesLightsailParams {
+                        deploy_id: Some(id.clone()),
+                        customer_email: customer_email.clone(),
+                        name: hostname,
+                        aws_access_key_id: req.aws_access_key_id,
+                        aws_secret_access_key: req.aws_secret_access_key,
+                        aws_region: hermes_region,
+                        size: hermes_size,
+                        image: req.hermes_image,
+                        env_file: None,
+                        env_content: Some(req.hermes_env),
+                        env_vars: Vec::new(),
+                        bedrock_api_key: Some(req.hermes_bedrock_api_key)
+                            .filter(|value| !value.trim().is_empty()),
+                        bedrock_region: req.hermes_bedrock_region,
+                        bedrock_model: req.hermes_bedrock_model,
+                        telegram_bot_token: Some(req.hermes_telegram_bot_token)
+                            .filter(|value| !value.trim().is_empty()),
+                        telegram_allowed_users: Some(req.hermes_telegram_allowed_users)
+                            .filter(|value| !value.trim().is_empty()),
+                        telegram_home_channel: Some(req.hermes_telegram_home_channel)
+                            .filter(|value| !value.trim().is_empty()),
+                        dashboard: req.hermes_dashboard,
+                        mount_docker_socket: req.hermes_mount_docker_socket,
+                        dry_run: is_dry_run(),
+                        json: false,
+                        progress_tx: Some(tx.clone()),
+                        db: Some(db_clone.clone()),
+                    },
+                )
+                .await;
+
+                let final_status = match &result {
+                    Ok(record) => {
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(
+                                &conn,
+                                &id,
+                                if is_dry_run() { "dry-run" } else { "completed" },
+                                Some(&record.ip_address),
+                                Some(&record.hostname),
+                            );
+                        }
+                        let payload = serde_json::json!({
+                            "ip": record.ip_address,
+                            "ssh_key_path": record.ssh_key_path,
+                            "hostname": record.hostname
+                        })
+                        .to_string();
+                        let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
+                        JobStatus::Completed
+                    }
+                    Err(e) => {
+                        if let Ok(conn) = db_clone.lock() {
+                            let _ = db::update_deployment_status(&conn, &id, "failed", None, None);
+                        }
+                        let _ = tx.send(format!("DEPLOY_ERROR:{e:#}"));
+                        JobStatus::Failed
+                    }
+                };
+
+                if let Some(job) = jobs_clone.write().await.get_mut(&id) {
+                    job.status = final_status;
+                }
+                return;
+            }
+
+            #[cfg(not(feature = "lightsail"))]
+            {
+                let _ = tx.send(
+                    "DEPLOY_ERROR:Hermes Agent Lightsail provisioning requires the lightsail feature."
+                        .to_string(),
+                );
+                if let Some(job) = jobs_clone.write().await.get_mut(&id) {
+                    job.status = JobStatus::Failed;
+                }
+                return;
+            }
+        }
+
         let params = DeployParams {
             deploy_id: Some(id.clone()),
             customer_name: customer_name.clone(),
@@ -1200,7 +1378,7 @@ async fn refresh_ip_handler(State(state): State<AppState>, Path(id): Path<String
 
     let new_ip =
         match provider.as_str() {
-            "lightsail" => {
+            "lightsail" | "hermes-lightsail" => {
                 let ls_region = if region.is_empty() {
                     "ap-southeast-1".to_string()
                 } else {
@@ -1748,8 +1926,13 @@ async fn destroy_deployment_handler(
     };
 
     // Build destroy params and run
+    let destroy_provider = if provider == "hermes-lightsail" {
+        "lightsail".to_string()
+    } else {
+        provider.clone()
+    };
     let destroy_params = crate::commands::destroy::DestroyParams {
-        provider: provider.clone(),
+        provider: destroy_provider,
         do_token: req.do_token,
         tencent_secret_id: req.tencent_secret_id,
         tencent_secret_key: req.tencent_secret_key,
@@ -3085,7 +3268,12 @@ async fn ark_api_key_handler(Json(_req): Json<ArkApiKeyRequest>) -> impl IntoRes
 /// Lightsail uses "ubuntu"; all others default to "root".
 fn ssh_user_for_provider(provider: Option<&str>) -> &str {
     match provider {
-        Some(p) if p.eq_ignore_ascii_case("lightsail") => "ubuntu",
+        Some(p)
+            if p.eq_ignore_ascii_case("lightsail")
+                || p.eq_ignore_ascii_case("hermes-lightsail") =>
+        {
+            "ubuntu"
+        }
         Some(p) if p.eq_ignore_ascii_case("azure") => "azureuser",
         _ => "root",
     }
@@ -3488,10 +3676,10 @@ tailwind.config = {
 <div class="hero-shell mb-8 p-5 sm:p-7 lg:p-8">
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-center">
     <div class="flex flex-col sm:flex-row items-center gap-5 sm:gap-6">
-      <img src="/assets/mascot.jpg" alt="ClawMacToDO Mascot" class="rounded-[24px] border border-white/10 shadow-[0_24px_60px_rgba(0,0,0,0.35)] w-28 h-28 sm:w-36 sm:h-36 object-cover shrink-0">
+      <img src="https://github.com/kenken64/clawmacdo/raw/main/clawmacdo.png" alt="ClawMacToDO" class="rounded-[24px] border border-white/10 shadow-[0_24px_60px_rgba(0,0,0,0.35)] w-28 h-28 sm:w-36 sm:h-36 object-cover shrink-0">
       <div class="flex-1 text-center sm:text-left">
         <div class="kicker">Operator Workspace</div>
-        <h2 class="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-white">Deploy OpenClaw with less friction and better control.</h2>
+        <h2 class="mt-4 text-3xl sm:text-4xl font-bold tracking-tight text-white">Deploy OpenClaw or Hermes Agent with less friction and better control.</h2>
         <p class="mt-3 max-w-2xl text-sm sm:text-base leading-7 text-slate-300">Provision fresh agents, resume saved deployments, and manage cloud snapshots from one console across DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, and BytePlus Cloud.</p>
         <div class="mt-5 flex flex-col sm:flex-row gap-3">
           <button type="button" onclick="addDeployCard()" class="cta-primary w-full sm:w-auto text-sm font-semibold py-3 px-5 rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-rose-300/60 focus:ring-offset-2 focus:ring-offset-slate-900 flex items-center justify-center gap-2">
@@ -3634,6 +3822,7 @@ tailwind.config = {
 
 <script>
 const TOTAL_STEPS = 16;
+const HERMES_TOTAL_STEPS = 8;
 const DEPLOY_STORAGE_KEY = 'clawmacdo.savedDeploys.v1';
 let deployCounter = 0;
 let backupOptions = '<option value="none">None</option>';
@@ -3861,6 +4050,25 @@ function addDeployCard(initialState) {
       </button>
     </div>
     <form class="space-y-6" novalidate onsubmit="startDeploy(event, ${n})">
+      <fieldset class="space-y-3">
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Deploy Target</legend>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-slate-200" data-target-option="openclaw">
+            <input type="radio" name="target" value="openclaw" checked onchange="toggleDeployTarget(this, ${n})" class="h-4 w-4 border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
+            <span>
+              <span class="block font-semibold">OpenClaw</span>
+              <span class="block text-xs text-slate-400">Existing multi-cloud OpenClaw deployment</span>
+            </span>
+          </label>
+          <label class="deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-200" data-target-option="hermes">
+            <input type="radio" name="target" value="hermes" onchange="toggleDeployTarget(this, ${n})" class="h-4 w-4 border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+            <span>
+              <span class="block font-semibold">Hermes Agent</span>
+              <span class="block text-xs text-slate-400">Provision Hermes Agent on AWS Lightsail</span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Customer Information</legend>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3876,7 +4084,7 @@ function addDeployCard(initialState) {
       </fieldset>
       <fieldset class="space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Cloud Provider</legend>
-        <div>
+        <div id="provider-select-wrap-${n}" class="openclaw-only">
           <label class="block text-sm font-medium text-slate-300 mb-1">Provider</label>
           <select name="provider" onchange="toggleProvider(this, ${n})" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
             <option value="digitalocean" selected>DigitalOcean</option>
@@ -3884,7 +4092,12 @@ function addDeployCard(initialState) {
             <option value="lightsail">AWS Lightsail</option>
             <option value="azure">Microsoft Azure</option>
             <option value="byteplus">BytePlus Cloud</option>
+            <option value="hermes-lightsail">Hermes Agent on AWS Lightsail</option>
           </select>
+        </div>
+        <div id="hermes-provider-note-${n}" class="hermes-only hidden rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <p class="text-sm font-medium text-amber-200">AWS Lightsail</p>
+          <p class="mt-1 text-xs text-amber-100/70">Hermes Agent provisioning currently targets Lightsail Ubuntu instances.</p>
         </div>
         <div id="do-creds-${n}">
           ${passwordField('do_token', 'DigitalOcean Token', 'dop_v1_...', true)}
@@ -3908,7 +4121,7 @@ function addDeployCard(initialState) {
           ${passwordField('byteplus_secret_key', 'BytePlus Secret Key', '...', true)}
         </div>
       </fieldset>
-      <fieldset class="space-y-4">
+      <fieldset class="space-y-4 openclaw-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">AI Models</legend>
         <div id="model-selectors-${n}" class="space-y-4"></div>
         <div>
@@ -3922,7 +4135,7 @@ function addDeployCard(initialState) {
         </div>
         ${passwordField('tailscale_auth_key', 'Tailscale Auth Key', 'tskey-auth-...', false)}
       </fieldset>
-      <fieldset class="space-y-4">
+      <fieldset class="space-y-4 openclaw-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Messaging <span class="text-slate-500 normal-case">(optional)</span></legend>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           ${passwordField('whatsapp_phone_number', 'WhatsApp Phone', '+1234567890', false)}
@@ -3963,7 +4176,7 @@ function addDeployCard(initialState) {
             <label class="block text-sm font-medium text-slate-300 mb-1">Hostname</label>
             <input type="text" name="hostname" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" placeholder="Auto-generated if empty">
           </div>
-          <div>
+          <div class="openclaw-only">
             <label class="block text-sm font-medium text-slate-300 mb-1">Restore Backup</label>
             <select name="backup" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
               ${backupOptions}
@@ -3971,7 +4184,56 @@ function addDeployCard(initialState) {
           </div>
         </div>
       </fieldset>
-      <fieldset class="space-y-3">
+      <fieldset id="hermes-config-${n}" class="hermes-only hidden space-y-4">
+        <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Hermes Agent</legend>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Container Image</label>
+          <input type="text" name="hermes_image" value="nousresearch/hermes-agent:latest" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+        </div>
+        <div class="space-y-4">
+          <div class="text-sm font-medium text-slate-300">AI Model</div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            ${passwordField('hermes_bedrock_api_key', 'AWS Bedrock API Key', 'bedrock...', true)}
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1">Bedrock Region</label>
+              <input type="text" name="hermes_bedrock_region" value="ap-southeast-1" readonly class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Bedrock Model</label>
+            <input type="text" name="hermes_bedrock_model" value="amazon.nova-pro-v1:0" readonly class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+          </div>
+        </div>
+        <div class="space-y-4">
+          <div class="text-sm font-medium text-slate-300">Telegram Bot <span class="text-slate-500">(optional)</span></div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            ${passwordField('hermes_telegram_bot_token', 'Bot Token', '123456:ABC-DEF...', false)}
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1">Allowed User IDs <span class="text-slate-500">(optional)</span></label>
+              <input type="text" name="hermes_telegram_allowed_users" placeholder="123456789,987654321" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Home Channel ID <span class="text-slate-500">(optional)</span></label>
+            <input type="text" name="hermes_telegram_home_channel" placeholder="Defaults to first allowed user" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Hermes .env <span class="text-slate-500">(optional)</span></label>
+          <textarea name="hermes_env" rows="7" spellcheck="false" class="w-full resize-y bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 font-mono text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent" placeholder="OPENROUTER_API_KEY=...\nNOUS_API_KEY=...\nEXTRA_SETTING=..."></textarea>
+        </div>
+        <div class="space-y-3">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="hermes_dashboard" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+            <span class="text-sm text-slate-300">Run Hermes dashboard on 127.0.0.1:9119</span>
+          </label>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="hermes_mount_docker_socket" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+            <span class="text-sm text-slate-300">Mount host Docker socket into Hermes container</span>
+          </label>
+        </div>
+      </fieldset>
+      <fieldset class="space-y-3 openclaw-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">OpenClaw Version <span class="text-red-400">*</span></legend>
         <div>
           <select name="openclaw_version" required class="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-sm text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
@@ -3980,7 +4242,7 @@ function addDeployCard(initialState) {
           <p class="text-xs text-slate-500 mt-1">Select an OpenClaw version — required to avoid breaking changes from untested releases</p>
         </div>
       </fieldset>
-      <fieldset class="space-y-3">
+      <fieldset class="space-y-3 openclaw-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Options</legend>
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" name="enable_backups" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
@@ -4000,7 +4262,7 @@ function addDeployCard(initialState) {
         </label>
       </fieldset>
       <button type="submit" class="deploy-submit-btn cta-primary w-full font-semibold py-3 sm:py-3.5 text-sm sm:text-base rounded-2xl transition-all focus:outline-none focus:ring-2 focus:ring-rose-300/60 focus:ring-offset-2 focus:ring-offset-slate-900">
-        Deploy
+        Deploy OpenClaw
       </button>
     </form>
     <div class="deploy-progress hidden mt-6">
@@ -4013,7 +4275,7 @@ function addDeployCard(initialState) {
       </div>
       <div class="mb-4">
         <div class="flex justify-between text-sm text-slate-400 mb-1">
-          <span>Step <span class="deploy-step-current">0</span> / 16</span>
+          <span>Step <span class="deploy-step-current">0</span> / <span class="deploy-step-total">16</span></span>
           <span class="deploy-step-percent">0%</span>
         </div>
         <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
@@ -4031,11 +4293,16 @@ function addDeployCard(initialState) {
   syncModelSelectors(n);
   const form = card.querySelector('form');
   bindTailscaleControls(form);
+  if (initialState && initialState.provider === 'hermes-lightsail') {
+    const hermesRadio = form.querySelector('input[name="target"][value="hermes"]');
+    if (hermesRadio) hermesRadio.checked = true;
+  }
+  toggleDeployTarget(form, n);
   if (initialState && initialState.completed) {
     const progressDiv = card.querySelector('.deploy-progress');
     progressDiv.classList.remove('hidden');
     panelSetStatus(card, 'completed');
-    panelUpdateProgress(card, TOTAL_STEPS);
+    panelUpdateProgress(card, deploymentTotalSteps(card));
     panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '');
     if (initialState.restored) {
       panelAppendLog(card, 'Recovered completed deployment from local storage.', 'text-slate-400');
@@ -4242,6 +4509,45 @@ function bindTailscaleControls(form) {
   syncTailscaleKeyRequirement(form);
 }
 
+function getDeployTarget(form) {
+  const checked = form.querySelector('input[name="target"]:checked');
+  return checked ? checked.value : 'openclaw';
+}
+
+function toggleDeployTarget(source, n) {
+  const card = document.getElementById('deploy-card-' + n);
+  if (!card) return;
+  const form = source && source.tagName === 'FORM' ? source : card.querySelector('form');
+  if (!form) return;
+  const target = getDeployTarget(form);
+  const isHermes = target === 'hermes';
+  const providerSelect = form.querySelector('[name="provider"]');
+  const submitBtn = card.querySelector('.deploy-submit-btn');
+  card.dataset.deployTarget = target;
+
+  card.querySelectorAll('.openclaw-only').forEach(el => el.classList.toggle('hidden', isHermes));
+  card.querySelectorAll('.hermes-only').forEach(el => el.classList.toggle('hidden', !isHermes));
+  card.querySelectorAll('.deploy-target-option').forEach(el => {
+    const active = el.dataset.targetOption === target;
+    el.className = active
+      ? 'deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-slate-200'
+      : 'deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-200';
+  });
+
+  if (providerSelect) {
+    if (isHermes) {
+      providerSelect.value = 'hermes-lightsail';
+    } else if (providerSelect.value === 'hermes-lightsail') {
+      providerSelect.value = 'digitalocean';
+    }
+    toggleProvider(providerSelect, n);
+  }
+  if (submitBtn) submitBtn.textContent = isHermes ? 'Provision Hermes Agent' : 'Deploy OpenClaw';
+  const totalEl = card.querySelector('.deploy-step-total');
+  if (totalEl) totalEl.textContent = String(isHermes ? HERMES_TOTAL_STEPS : TOTAL_STEPS);
+  syncTailscaleKeyRequirement(form);
+}
+
 function toggleProvider(select, n) {
   const provider = select.value;
   const doCreds = document.getElementById('do-creds-' + n);
@@ -4287,7 +4593,7 @@ function toggleProvider(select, n) {
       <option value="S8.LARGE8">S8.LARGE8 (4 vCPU, 8 GB)</option>
       <option value="SA5.LARGE16">SA5.LARGE16 (4 vCPU, 16 GB)</option>
     `;
-  } else if (provider === 'lightsail') {
+  } else if (provider === 'lightsail' || provider === 'hermes-lightsail') {
     awsCreds.style.display = 'block';
     awsCreds.querySelectorAll('input').forEach(i => i.required = true);
     regionSel.innerHTML = `
@@ -4305,11 +4611,9 @@ function toggleProvider(select, n) {
       <option value="ca-central-1">ca-central-1 (Canada)</option>
     `;
     sizeSel.innerHTML = `
-      <option value="micro">micro (1 vCPU, 1 GB - $10/mo)</option>
-      <option value="small">small (1 vCPU, 2 GB - $15/mo)</option>
-      <option value="medium" selected>medium (2 vCPUs, 4 GB - $30/mo)</option>
-      <option value="large">large (2 vCPUs, 8 GB - $60/mo)</option>
-      <option value="xlarge">xlarge (4 vCPUs, 16 GB - $120/mo)</option>
+      <option value="s-1vcpu-2gb">small_3_0 (1 vCPU, 2 GB)</option>
+      <option value="s-2vcpu-4gb" selected>medium_3_0 (2 vCPUs, 4 GB)</option>
+      <option value="s-4vcpu-8gb">large_3_0 (4 vCPUs, 8 GB)</option>
     `;
   } else if (provider === 'azure') {
     azureCreds.style.display = 'block';
@@ -4399,11 +4703,18 @@ function panelAppendLog(panel, text, color) {
   area.scrollTop = area.scrollHeight;
 }
 
+function deploymentTotalSteps(panel) {
+  return panel && panel.dataset.deployTarget === 'hermes' ? HERMES_TOTAL_STEPS : TOTAL_STEPS;
+}
+
 function panelUpdateProgress(panel, step) {
   const prev = parseInt(panel.querySelector('.deploy-step-current').textContent) || 0;
   if (step <= prev) return;
-  const pct = Math.round((step / TOTAL_STEPS) * 100);
+  const total = deploymentTotalSteps(panel);
+  const pct = Math.round((step / total) * 100);
   panel.querySelector('.deploy-step-current').textContent = step;
+  const totalEl = panel.querySelector('.deploy-step-total');
+  if (totalEl) totalEl.textContent = String(total);
   panel.querySelector('.deploy-step-percent').textContent = pct + '%';
   panel.querySelector('.deploy-progress-bar').style.width = pct + '%';
 }
@@ -4484,11 +4795,26 @@ async function appendStepTimingTable(panel, deployId) {
 function panelShowSummary(panel, ip, keyPath, hostname, provider) {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
+  const isHermes = provider === 'hermes-lightsail';
   panel.dataset.deployIp = ip;
   panel.dataset.deployKeyPath = keyPath;
   panel.dataset.deployProvider = provider || '';
+  panel.dataset.deployTarget = isHermes ? 'hermes' : 'openclaw';
   panel.dataset.deployFingerprint = deployFingerprint(ip, keyPath, hostname);
   card.classList.remove('hidden');
+  if (isHermes) {
+    content.innerHTML = `
+      <p><span class="text-slate-500">Target:</span> Hermes Agent on AWS Lightsail</p>
+      <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
+      <p><span class="text-slate-500">IP:</span> ${ip}</p>
+      <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} ubuntu@${ip}</p>
+      <p><span class="text-slate-500">Logs:</span> ssh -i ${keyPath} ubuntu@${ip} 'sudo docker logs -f hermes'</p>
+      <p><span class="text-slate-500">Dashboard tunnel:</span> ssh -i ${keyPath} -L 9119:127.0.0.1:9119 ubuntu@${ip}</p>
+      <p><span class="text-slate-500">Dashboard URL:</span> http://127.0.0.1:9119</p>
+    `;
+    persistCompletedDeployment(ip, keyPath, hostname, provider || '');
+    return;
+  }
   content.innerHTML = `
     <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
     <p><span class="text-slate-500">IP:</span> ${ip}</p>
@@ -4724,14 +5050,16 @@ async function startDeploy(e, cardNum) {
   if (!validateForm(form)) return;
 
   const val = (name) => readFormValue(form, name);
+  const target = getDeployTarget(form);
   const selVal = (slot) => {
     const sel = card.querySelector(`select[data-model-slot="${slot}"]`);
     return sel ? sel.value : '';
   };
   const body = {
+    target: target,
     customer_name: val('customer_name'),
     customer_email: val('customer_email'),
-    provider: val('provider'),
+    provider: target === 'hermes' ? 'hermes-lightsail' : val('provider'),
     do_token: val('do_token'),
     tencent_secret_id: val('tencent_secret_id'),
     tencent_secret_key: val('tencent_secret_key'),
@@ -4765,9 +5093,19 @@ async function startDeploy(e, cardNum) {
     profile: val('profile'),
     spot: form.querySelector('[name="spot"]').checked,
     openclaw_version: val('openclaw_version'),
+    hermes_image: val('hermes_image'),
+    hermes_env: val('hermes_env'),
+    hermes_bedrock_api_key: val('hermes_bedrock_api_key'),
+    hermes_bedrock_region: val('hermes_bedrock_region'),
+    hermes_bedrock_model: val('hermes_bedrock_model'),
+    hermes_telegram_bot_token: val('hermes_telegram_bot_token'),
+    hermes_telegram_allowed_users: val('hermes_telegram_allowed_users'),
+    hermes_telegram_home_channel: val('hermes_telegram_home_channel'),
+    hermes_dashboard: form.querySelector('[name="hermes_dashboard"]').checked,
+    hermes_mount_docker_socket: form.querySelector('[name="hermes_mount_docker_socket"]').checked,
   };
 
-  if (!body.openclaw_version) {
+  if (target !== 'hermes' && !body.openclaw_version) {
     alert('Please select an OpenClaw version before deploying.');
     return;
   }
@@ -4784,7 +5122,7 @@ async function startDeploy(e, cardNum) {
   delete card.dataset.deployKeyPath;
   delete card.dataset.deployProvider;
   btn.disabled = true;
-  btn.textContent = 'Deploying...';
+  btn.textContent = target === 'hermes' ? 'Provisioning...' : 'Deploying...';
   btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-slate-700 cursor-not-allowed');
   progressDiv.classList.remove('hidden');
 
@@ -4819,15 +5157,16 @@ async function startDeploy(e, cardNum) {
           panelAppendLog(card, 'ERROR: Invalid deploy completion payload', 'text-red-400 font-semibold');
           evtSource.close();
           btn.disabled = false;
-          btn.textContent = 'Retry Deploy';
+          btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
           btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
           return;
         }
         panelSetStatus(card, 'completed');
-        panelUpdateProgress(card, TOTAL_STEPS);
+        const totalSteps = deploymentTotalSteps(card);
+        panelUpdateProgress(card, totalSteps);
         // Duration of final step
-        if (_stepStartTimes[deployId] && _stepStartTimes[deployId][TOTAL_STEPS]) {
-          panelAppendLog(card, '  \u21b3 ' + formatDuration(Date.now() - _stepStartTimes[deployId][TOTAL_STEPS]), 'text-slate-500 text-xs italic');
+        if (_stepStartTimes[deployId] && _stepStartTimes[deployId][totalSteps]) {
+          panelAppendLog(card, '  \u21b3 ' + formatDuration(Date.now() - _stepStartTimes[deployId][totalSteps]), 'text-slate-500 text-xs italic');
         }
         // Total deploy time
         const _ds1 = _stepStartTimes[deployId] && _stepStartTimes[deployId][1];
@@ -4845,7 +5184,7 @@ async function startDeploy(e, cardNum) {
         const hostname = parts[parts.length - 1] || '';
         const keyPath = parts.slice(2, parts.length - 1).join(':');
         panelSetStatus(card, 'completed');
-        panelUpdateProgress(card, TOTAL_STEPS);
+        panelUpdateProgress(card, deploymentTotalSteps(card));
         const _ds2 = _stepStartTimes[deployId] && _stepStartTimes[deployId][1];
         if (_ds2) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds2), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
@@ -4861,14 +5200,18 @@ async function startDeploy(e, cardNum) {
         panelAppendLog(card, 'ERROR: ' + err, 'text-red-400 font-semibold');
         evtSource.close();
         btn.disabled = false;
-        btn.textContent = 'Retry Deploy';
+        btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
         btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
         return;
       }
 
-      const match = msg.match(/\[Step (\d+)\/16\]/);
+      const match = msg.match(/\[Step (\d+)\/(\d+)\]/);
       if (match) {
         const stepNum = parseInt(match[1]);
+        const stepTotal = parseInt(match[2]);
+        if (stepTotal === HERMES_TOTAL_STEPS) card.dataset.deployTarget = 'hermes';
+        const totalEl = card.querySelector('.deploy-step-total');
+        if (totalEl) totalEl.textContent = String(stepTotal);
         if (!_stepStartTimes[deployId]) _stepStartTimes[deployId] = {};
         const now = Date.now();
         // Append duration of the previous step
@@ -4897,7 +5240,7 @@ async function startDeploy(e, cardNum) {
     panelSetStatus(card, 'failed');
     panelAppendLog(card, 'Failed to start deploy: ' + err.message, 'text-red-400');
     btn.disabled = false;
-    btn.textContent = 'Retry Deploy';
+    btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
     btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
   }
 }
@@ -4992,6 +5335,12 @@ function deploymentActionsMenu(d) {
   const provider = esc(d.provider || '');
   const hostname = esc(d.hostname || '');
   const ip = esc(d.ip_address || '');
+  const isHermes = (d.provider || '') === 'hermes-lightsail';
+
+  const hermesActions =
+      '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Hermes Agent</div>' +
+      deploymentActionButton('Refresh IP', 'text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20', 'Refresh IP from AWS Lightsail', 'closeDeploymentActionMenu(this); refreshIp(\'' + id + '\',this)') +
+      deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')');
 
   return '<div class="deployment-action-shell relative w-full max-w-[8.5rem] text-left">' +
     '<button type="button" onclick="toggleDeploymentActions(this)" data-deploy-actions-toggle aria-expanded="false" class="flex w-full items-center justify-between rounded-xl border border-slate-600 bg-slate-800/70 px-2.5 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-200 transition hover:border-slate-500 hover:bg-slate-700/80">' +
@@ -4999,6 +5348,7 @@ function deploymentActionsMenu(d) {
       '<svg data-deploy-actions-chevron class="h-3.5 w-3.5 text-slate-400 transition-transform duration-200" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" clip-rule="evenodd"></path></svg>' +
     '</button>' +
     '<div class="deployment-actions-menu hidden absolute right-0 top-full z-30 mt-2 flex min-w-[13rem] flex-col gap-1.5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.35)] backdrop-blur">' +
+      (isHermes ? hermesActions :
       '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Funnel</div>' +
       deploymentActionButton('Funnel: Turn On', funnelToggleButtonClass('off'), 'Step 1: Toggle Tailscale Funnel', 'toggleFunnel(\'' + id + '\',this)', 'id="funnel-btn-' + id + '" data-funnel-state="off"') +
       deploymentActionButton('Open Funnel URL', 'text-slate-500 bg-slate-900/70 border-slate-700 cursor-not-allowed', 'Step 2: Open the Funnel URL after it becomes available', 'closeDeploymentActionMenu(this); openFunnel(\'' + id + '\')', 'id="funnel-open-' + id + '" disabled') +
@@ -5009,7 +5359,7 @@ function deploymentActionsMenu(d) {
       deploymentActionButton('Snapshot', 'text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border-rose-500/20', 'Create snapshot', 'closeDeploymentActionMenu(this); depSnapshot(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\')') +
       deploymentActionButton('Refresh IP', 'text-purple-400 hover:text-purple-300 bg-purple-500/10 hover:bg-purple-500/20 border-purple-500/20', 'Refresh IP from cloud provider', 'closeDeploymentActionMenu(this); refreshIp(\'' + id + '\',this)') +
       deploymentActionButton('Upload LLM Wiki', 'text-cyan-400 hover:text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border-cyan-500/20', 'Upload llm_wiki.md to the OpenClaw workspace', 'closeDeploymentActionMenu(this); showLlmWikiModal(\'' + id + '\')') +
-      deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')') +
+      deploymentActionButton('Destroy', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Destroy deployment', 'closeDeploymentActionMenu(this); showDestroyModal(\'' + id + '\',\'' + provider + '\',\'' + hostname + '\',\'' + ip + '\')')) +
     '</div>' +
   '</div>';
 }
@@ -5350,7 +5700,7 @@ function showDestroyModal(id, provider, hostname, ip) {
   } else if (provider === 'tencent') {
     credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretId <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-id" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKID...">' + eyeBtn() + '</div></div>' +
       '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">Tencent SecretKey <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-tencent-key" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>';
-  } else if (provider === 'lightsail') {
+  } else if (provider === 'lightsail' || provider === 'hermes-lightsail') {
     credsHtml = '<div><label class="block text-sm font-medium text-slate-300 mb-1">AWS Access Key ID <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-aws-ak" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent" placeholder="AKIA...">' + eyeBtn() + '</div></div>' +
       '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Secret Access Key <span class="text-red-400">*</span></label><div class="relative"><input type="password" id="destroy-aws-sk" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:ring-2 focus:ring-red-500 focus:border-transparent">' + eyeBtn() + '</div></div>' +
       '<div class="mt-3"><label class="block text-sm font-medium text-slate-300 mb-1">AWS Region</label><input type="text" id="destroy-aws-region" value="ap-southeast-1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-red-500 focus:border-transparent"></div>';
@@ -5419,7 +5769,7 @@ async function confirmDestroy(id, provider) {
     body.tencent_secret_id = (document.getElementById('destroy-tencent-id') || {}).value || '';
     body.tencent_secret_key = (document.getElementById('destroy-tencent-key') || {}).value || '';
     if (!body.tencent_secret_id.trim() || !body.tencent_secret_key.trim()) { alert('Tencent credentials are required.'); btn.disabled = false; btn.textContent = 'Destroy Instance'; status.classList.add('hidden'); return; }
-  } else if (provider === 'lightsail') {
+  } else if (provider === 'lightsail' || provider === 'hermes-lightsail') {
     body.aws_access_key_id = (document.getElementById('destroy-aws-ak') || {}).value || '';
     body.aws_secret_access_key = (document.getElementById('destroy-aws-sk') || {}).value || '';
     body.aws_region = (document.getElementById('destroy-aws-region') || {}).value || 'ap-southeast-1';
@@ -6191,6 +6541,7 @@ mod tests {
     #[test]
     fn ssh_user_for_provider_maps_known_clouds() {
         assert_eq!(ssh_user_for_provider(Some("lightsail")), "ubuntu");
+        assert_eq!(ssh_user_for_provider(Some("hermes-lightsail")), "ubuntu");
         assert_eq!(ssh_user_for_provider(Some("azure")), "azureuser");
         assert_eq!(ssh_user_for_provider(Some("digitalocean")), "root");
         assert_eq!(ssh_user_for_provider(None), "root");
