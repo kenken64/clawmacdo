@@ -140,6 +140,10 @@ clawmacdo deploy --provider digitalocean --openclaw-version 2026.3.22 ...  # dep
 clawmacdo update-model --instance <deploy-id> \
   --primary-model openai --openai-key "$OPENAI_API_KEY"
 
+# Update the Bedrock token used by the OpenClaw workspace tty proxy
+clawmacdo bedrock-token-set --instance <deploy-id> \
+  --bearer-token "$AWS_BEARER_TOKEN_BEDROCK"
+
 # Set OpenClaw display name and owner context
 clawmacdo openclaw-identity --instance <deploy-id> \
   --openclaw-name "Clawdia" --owner-name "Kenneth"
@@ -331,6 +335,22 @@ clawmacdo update-model --instance <deploy-id> \
 ```
 
 The command updates API keys in `.env`, configures provider settings (BytePlus `openclaw.json`), sets the model via `openclaw models set`, adds failovers, and restarts the gateway service. When `opencode` is selected, OpenCode is installed via `curl -fsSL https://opencode.ai/install | bash` and configured with MiniMax M2.5 Free (`opencode/minimax-m2.5-free`) — no API key required. API keys for other providers are optional — if omitted, the existing key on the instance is preserved.
+
+### Update Bedrock Token for the TTY Proxy
+
+OpenClaw deployments that point to the local Ollama-compatible tty proxy keep the OpenClaw model selection unchanged. To rotate the AWS Bedrock token used by that proxy, update the tty proxy project `.env` under `/home/openclaw/.openclaw/workspace`:
+
+```bash
+clawmacdo bedrock-token-set --instance <deploy-id> \
+  --bearer-token "$AWS_BEARER_TOKEN_BEDROCK"
+
+# If auto-detection finds the wrong workspace project, pass the .env explicitly.
+clawmacdo bedrock-token-set --instance <deploy-id> \
+  --bearer-token "$AWS_BEARER_TOKEN_BEDROCK" \
+  --env-file claw-tty-proxy/.env
+```
+
+The command installs `dotenvx` on the instance if needed and writes `AWS_BEARER_TOKEN_BEDROCK` with dotenvx encryption. It handles an already-encrypted `.env` by using `dotenvx set --encrypt` instead of editing ciphertext with `sed`.
 
 ### ARK API Key Management
 
@@ -870,6 +890,11 @@ execSync(`${bin} update-model \
   --primary-model openai \
   --openai-key "${process.env.OPENAI_API_KEY}"`, { stdio: "inherit" });
 
+// --- Rotate Bedrock token for the OpenClaw workspace tty proxy ---
+execSync(`${bin} bedrock-token-set \
+  --instance <deploy-id> \
+  --bearer-token "${process.env.AWS_BEARER_TOKEN_BEDROCK}"`, { stdio: "inherit" });
+
 // --- Install a plugin ---
 execSync(`${bin} plugin-install \
   --instance <deploy-id> \
@@ -1158,4 +1183,4 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.87.0
+**Current version:** 0.88.0

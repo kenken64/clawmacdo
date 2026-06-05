@@ -1,5 +1,6 @@
 #[cfg(feature = "byteplus")]
 pub mod ark;
+pub mod bedrock_token;
 #[cfg(feature = "byteplus")]
 pub mod bp_restore;
 #[cfg(feature = "byteplus")]

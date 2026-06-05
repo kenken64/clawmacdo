@@ -595,6 +595,18 @@ enum Commands {
         #[arg(long, default_value = "", env = "OPENCODE_API_KEY")]
         opencode_api_key: String,
     },
+    /// Set the AWS Bedrock bearer token in the OpenClaw workspace tty proxy .env
+    BedrockTokenSet {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// AWS Bedrock bearer token to encrypt into the tty proxy .env
+        #[arg(long, env = "AWS_BEARER_TOKEN_BEDROCK")]
+        bearer_token: String,
+        /// Optional tty proxy .env path, absolute or relative to /home/openclaw/.openclaw/workspace
+        #[arg(long)]
+        env_file: Option<String>,
+    },
     /// Set up WhatsApp on a deployed instance (set phone number, enable plugin, fetch QR)
     WhatsappSetup {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1605,6 +1617,18 @@ async fn async_main() -> anyhow::Result<()> {
                 gemini_key,
                 byteplus_ark_api_key,
                 opencode_api_key,
+            })
+            .await
+        }
+        Commands::BedrockTokenSet {
+            instance,
+            bearer_token,
+            env_file,
+        } => {
+            commands::bedrock_token::run(commands::bedrock_token::BedrockTokenSetParams {
+                instance,
+                bearer_token,
+                env_file,
             })
             .await
         }

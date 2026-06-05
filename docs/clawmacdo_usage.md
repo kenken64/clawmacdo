@@ -36,6 +36,7 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [ark-chat](#ark-chat) — Send a prompt to a BytePlus ARK model
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
 - [update-model](#update-model) — Update the AI model on a deployed instance
+- [bedrock-token-set](#bedrock-token-set) — Encrypt the Bedrock bearer token into the OpenClaw workspace tty proxy .env
 - [claude-auth-start](#claude-auth-start) — Start Claude Code reconnect and return a login URL
 - [claude-auth-status](#claude-auth-status) — Poll Claude Code auth status as JSON
 - [update-ip](#update-ip) — Refresh IP address from cloud provider
@@ -2211,6 +2212,58 @@ Updating AI model on 192.168.1.100...
 AI model updated on 192.168.1.100:
   Primary: openai (openai/gpt-5-mini)
   Failover 1: anthropic (anthropic/claude-opus-4-6)
+```
+
+---
+
+## bedrock-token-set
+
+Encrypt the AWS Bedrock bearer token into the OpenClaw workspace tty proxy `.env`.
+
+Use this when OpenClaw is already configured to talk to the local Ollama-compatible tty proxy and only the proxy's Bedrock token needs to be rotated. This command does not run `openclaw models set` and does not change OpenClaw's primary/failover model settings.
+
+### Syntax
+
+```
+clawmacdo bedrock-token-set --instance <QUERY> --bearer-token <TOKEN> [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Env Var | Description |
+|------|----------|---------|---------|-------------|
+| `--instance` | Yes | — | — | Deploy ID, hostname, or IP address |
+| `--bearer-token` | Yes | — | `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock bearer token to encrypt into the tty proxy `.env` |
+| `--env-file` | No | auto-detect | — | TTY proxy `.env` path, absolute or relative to `/home/openclaw/.openclaw/workspace` |
+
+### What It Does
+
+1. Resolves the instance deploy record and uses the provider's SSH user (`ubuntu` for Lightsail, `azureuser` for Azure, otherwise `root`)
+2. Finds the tty proxy `.env` under `/home/openclaw/.openclaw/workspace`, or uses `--env-file`
+3. Installs `dotenvx` on the instance if it is missing
+4. Runs `dotenvx set AWS_BEARER_TOKEN_BEDROCK --encrypt -f .env -- <token>`
+5. Verifies the resulting value is encrypted and leaves a timestamped `.bak` beside the original file
+
+### Examples
+
+```bash
+clawmacdo bedrock-token-set --instance my-deploy \
+  --bearer-token "$AWS_BEARER_TOKEN_BEDROCK"
+
+clawmacdo bedrock-token-set --instance my-deploy \
+  --bearer-token "$AWS_BEARER_TOKEN_BEDROCK" \
+  --env-file claw-tty-proxy/.env
+```
+
+### Sample Output
+
+```
+Updating Bedrock bearer token on 192.168.1.100...
+  Target: OpenClaw workspace tty proxy .env
+  bedrock-token: updated
+  env_file=/home/openclaw/.openclaw/workspace/claw-tty-proxy/.env
+  backup=/home/openclaw/.openclaw/workspace/claw-tty-proxy/.env.clawmacdo.20260604092301.bak
+Bedrock bearer token updated with dotenvx encryption.
 ```
 
 ---
