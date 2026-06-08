@@ -173,6 +173,14 @@ clawmacdo remotion-avatar-setup --instance <deploy-id> --name "Kenny" \
 # Install a plugin
 clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltguard"
 
+# Google Workspace (gws) authentication
+# gws auth login is an interactive browser OAuth flow with no headless mode, and
+# the instance is headless — so credentials are injected, not minted on the box.
+# Run the OAuth elsewhere (browser machine or 2ndbrain.ceo), then push the JSON:
+clawmacdo gws-login --instance <deploy-id> --credentials ./gws-credentials.json
+clawmacdo gws-login --instance <deploy-id> --credentials ./token.json --filename token.json  # custom dest name
+clawmacdo gws-logout --instance <deploy-id>   # gws auth logout (revoke) + clear local credentials
+
 # Refresh IP after instance restart
 clawmacdo update-ip --instance <deploy-id>
 

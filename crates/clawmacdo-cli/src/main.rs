@@ -986,6 +986,35 @@ enum Commands {
         #[arg(long)]
         plugin: String,
     },
+    /// Install Google Workspace (gws) credentials on a deployed instance
+    ///
+    /// `gws auth login` is an interactive browser OAuth flow with no headless
+    /// mode, and the instance is headless — so credentials are injected rather
+    /// than minted on the instance. Perform the Google OAuth elsewhere (e.g.
+    /// `gws auth export --unmasked > creds.json`, or via 2ndbrain.ceo) and pass
+    /// the resulting JSON here; it is written to ~/.config/gws/ as the openclaw
+    /// user with 0600 permissions.
+    GwsLogin {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Path to the local gws credentials JSON
+        #[arg(long)]
+        credentials: PathBuf,
+        /// Destination file name under ~/.config/gws (default: credentials.json)
+        #[arg(long, default_value = "credentials.json")]
+        filename: String,
+    },
+    /// Log out Google Workspace (gws) on a deployed instance
+    ///
+    /// Runs `gws auth logout` (revoke + clear) and removes any local
+    /// credentials.json/token.json as a fallback. Keeps client_secret.json so a
+    /// future login needs no `gws auth setup` re-run.
+    GwsLogout {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+    },
     /// Add a scheduled message cron job on an OpenClaw instance
     ///
     /// The gateway agent receives the message on schedule and delivers the
@@ -1876,6 +1905,12 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::PluginInstall { instance, plugin } => {
             commands::plugin_install::run(&instance, &plugin).await
         }
+        Commands::GwsLogin {
+            instance,
+            credentials,
+            filename,
+        } => commands::gws::login(&instance, &credentials, &filename).await,
+        Commands::GwsLogout { instance } => commands::gws::logout(&instance).await,
         Commands::CronMessage {
             instance,
             name,
