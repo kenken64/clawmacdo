@@ -16,6 +16,7 @@ pub mod do_restore;
 pub mod do_snapshot;
 pub mod docker_fix;
 pub mod gws;
+pub mod gyne_consumer_profile;
 #[cfg(feature = "lightsail")]
 pub mod hermes_lightsail;
 pub mod hooks;

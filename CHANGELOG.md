@@ -1,8 +1,9 @@
 # Changelog
 
-## v0.89.0
+## v0.90.0
 
 ### Added
+- **`gyne-consumer-profile` subcommand** — update `workspace/gyne-agent/.env` on a deployed OpenClaw instance (`--instance` + `--name`, optional `--agent`, `--project`, `--task-stream`, `--json`) by changing `CONSUMER_NAME` and the matching `CONSUMER_TASK_STREAM` while preserving the rest of the file and writing a backup beside it
 - **`gws-login` subcommand** — install Google Workspace (`gws`) credentials on a deployed instance (`--instance` + `--credentials` + optional `--filename`, default `credentials.json`). `gws auth login` is an interactive browser OAuth flow with no headless mode and the instance is headless, so credentials are *injected* rather than minted on the box: the local JSON (e.g. from `gws auth export --unmasked`, or produced by an external OAuth flow) is validated as JSON, base64-encoded, and written over a single SSH session to `~/.config/gws/` as the `openclaw` user with `0600` permissions; a best-effort `gws auth status` confirms gws accepted it
 - **`gws-logout` subcommand** — log out Google Workspace on a deployed instance (`--instance`): runs `gws auth logout` (revokes the token with Google + clears it), then removes local `credentials.json`/`token.json` as a fallback while preserving `client_secret.json` so a future login needs no `gws auth setup` re-run
 
@@ -476,6 +477,7 @@
 - Tencent Cloud provider support (deploy, destroy, status)
 - Web UI with instance type selection for both providers
 - `--yes`/`--force` flag on destroy command to skip TTY confirmation
+
 
 
 

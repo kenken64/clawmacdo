@@ -737,6 +737,27 @@ enum Commands {
         #[arg(long)]
         avatar: Option<String>,
     },
+    /// Update Gyne consumer profile values in workspace/gyne-agent/.env
+    GyneConsumerProfile {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// Agent id whose workspace contains the Gyne project
+        #[arg(long, default_value = "main")]
+        agent: String,
+        /// Gyne project folder under the OpenClaw workspace
+        #[arg(long, default_value = "gyne-agent")]
+        project: String,
+        /// Consumer profile name to write to CONSUMER_NAME
+        #[arg(long, visible_alias = "consumer-name")]
+        name: String,
+        /// Base task stream used to derive CONSUMER_TASK_STREAM; defaults to TASK_STREAM in .env
+        #[arg(long)]
+        task_stream: Option<String>,
+        /// Output structured JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Download OpenClaw workspace Markdown context files as a ZIP
     OpenclawMdDownload {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1727,6 +1748,26 @@ async fn async_main() -> anyhow::Result<()> {
                 emoji,
                 avatar,
             })
+            .await
+        }
+        Commands::GyneConsumerProfile {
+            instance,
+            agent,
+            project,
+            name,
+            task_stream,
+            json,
+        } => {
+            commands::gyne_consumer_profile::run(
+                commands::gyne_consumer_profile::GyneConsumerProfileParams {
+                    instance,
+                    agent,
+                    project,
+                    name,
+                    task_stream,
+                    json,
+                },
+            )
             .await
         }
         Commands::OpenclawMdDownload {

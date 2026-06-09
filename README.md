@@ -148,6 +148,9 @@ clawmacdo bedrock-token-set --instance <deploy-id> \
 clawmacdo openclaw-identity --instance <deploy-id> \
   --openclaw-name "Clawdia" --owner-name "Kenneth"
 
+# Update the Gyne consumer profile in workspace/gyne-agent/.env
+clawmacdo gyne-consumer-profile --instance <deploy-id> --name consumer-4
+
 # Download OpenClaw Markdown context files and memory logs as a ZIP
 clawmacdo openclaw-md-download --instance <deploy-id> --output ~/backups/
 
@@ -623,6 +626,24 @@ clawmacdo openclaw-identity --instance my-server \
 ```
 
 This command sets the target agent's OpenClaw identity and writes managed owner context into the remote workspace `USER.md`, then restarts the gateway.
+
+### Gyne Consumer Profile
+
+```bash
+clawmacdo gyne-consumer-profile --instance my-server --name consumer-4
+
+# Equivalent terminology for the profile name
+clawmacdo gyne-consumer-profile --instance my-server --consumer-name consumer-4
+
+# Non-default workspace project or base task stream
+clawmacdo gyne-consumer-profile --instance my-server \
+  --project gyne-agent \
+  --task-stream openclaw:tasks \
+  --name consumer-4 \
+  --json
+```
+
+This command SSHes into the instance as the OpenClaw user, resolves the configured workspace for `--agent` (default `main`), and updates only `workspace/<project>/.env` (default `gyne-agent/.env`). It sets `CONSUMER_NAME=<name>` and `CONSUMER_TASK_STREAM=<TASK_STREAM>:<name>`, preserving the rest of the `.env` and creating a `.clawmacdo-gyne-*.bak` backup beside it. If `--task-stream` is omitted, the command derives the base stream from the existing `TASK_STREAM` value, falling back to `openclaw:tasks`.
 
 ### OpenClaw Markdown Download
 
@@ -1191,5 +1212,6 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.89.0
+**Current version:** 0.90.0
+
 
