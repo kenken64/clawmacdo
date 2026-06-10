@@ -1011,17 +1011,35 @@ enum Commands {
     ///
     /// `gws auth login` is an interactive browser OAuth flow with no headless
     /// mode, and the instance is headless — so credentials are injected rather
-    /// than minted on the instance. Perform the Google OAuth elsewhere (e.g.
-    /// `gws auth export --unmasked > creds.json`, or via 2ndbrain.ceo) and pass
-    /// the resulting JSON here; it is written to ~/.config/gws/ as the openclaw
-    /// user with 0600 permissions.
+    /// than minted on the instance. Provide them one of two ways:
+    ///   --credentials <file>: a local gws JSON (e.g. `gws auth export --unmasked`).
+    ///   --code <oauth-code>:  an OAuth authorization code (with --client-id,
+    ///                         --client-secret, --redirect-uri, plus --code-verifier
+    ///                         if PKCE was used) that clawmacdo exchanges with Google
+    ///                         and writes as an authorized_user credential.
+    /// The result is written to ~/.config/gws/ as the openclaw user with 0600 perms.
     GwsLogin {
         /// Deploy ID, hostname, or IP address of the instance
         #[arg(long)]
         instance: String,
-        /// Path to the local gws credentials JSON
+        /// Path to a local gws credentials JSON (mutually exclusive with --code)
         #[arg(long)]
-        credentials: PathBuf,
+        credentials: Option<PathBuf>,
+        /// OAuth authorization code to exchange with Google (mutually exclusive with --credentials)
+        #[arg(long)]
+        code: Option<String>,
+        /// OAuth client ID (required with --code)
+        #[arg(long)]
+        client_id: Option<String>,
+        /// OAuth client secret (required with --code)
+        #[arg(long)]
+        client_secret: Option<String>,
+        /// OAuth redirect URI used to obtain the code (required with --code)
+        #[arg(long)]
+        redirect_uri: Option<String>,
+        /// PKCE code verifier (required only if the auth request used PKCE)
+        #[arg(long)]
+        code_verifier: Option<String>,
         /// Destination file name under ~/.config/gws (default: credentials.json)
         #[arg(long, default_value = "credentials.json")]
         filename: String,
@@ -1949,8 +1967,23 @@ async fn async_main() -> anyhow::Result<()> {
         Commands::GwsLogin {
             instance,
             credentials,
+            code,
+            client_id,
+            client_secret,
+            redirect_uri,
+            code_verifier,
             filename,
-        } => commands::gws::login(&instance, &credentials, &filename).await,
+        } => {
+            let source = commands::gws::LoginSource::from_args(
+                credentials,
+                code,
+                client_id,
+                client_secret,
+                redirect_uri,
+                code_verifier,
+            )?;
+            commands::gws::login(&instance, source, &filename).await
+        }
         Commands::GwsLogout { instance } => commands::gws::logout(&instance).await,
         Commands::CronMessage {
             instance,

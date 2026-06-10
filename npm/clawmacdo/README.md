@@ -179,9 +179,16 @@ clawmacdo plugin-install --instance <deploy-id> --plugin "@openguardrails/moltgu
 # Google Workspace (gws) authentication
 # gws auth login is an interactive browser OAuth flow with no headless mode, and
 # the instance is headless — so credentials are injected, not minted on the box.
-# Run the OAuth elsewhere (browser machine or 2ndbrain.ceo), then push the JSON:
+# Mode 1 — push a credentials JSON exported elsewhere (browser machine / 2ndbrain.ceo):
 clawmacdo gws-login --instance <deploy-id> --credentials ./gws-credentials.json
 clawmacdo gws-login --instance <deploy-id> --credentials ./token.json --filename token.json  # custom dest name
+# Mode 2 — hand clawmacdo a raw OAuth authorization code; it exchanges it with Google
+# and writes the authorized_user credentials. Add --code-verifier if the flow used PKCE.
+# The auth URL must request access_type=offline, or Google returns no refresh_token.
+clawmacdo gws-login --instance <deploy-id> \
+  --code <oauth-code> \
+  --client-id <client-id> --client-secret <client-secret> \
+  --redirect-uri <redirect-uri> [--code-verifier <pkce-verifier>]
 clawmacdo gws-logout --instance <deploy-id>   # gws auth logout (revoke) + clear local credentials
 
 # Refresh IP after instance restart
@@ -1212,6 +1219,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.90.0
+**Current version:** 0.91.0
+
 
 
