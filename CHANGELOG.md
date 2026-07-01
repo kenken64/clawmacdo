@@ -1,8 +1,9 @@
 # Changelog
 
-## v0.91.0
+## v0.92.0
 
 ### Added
+- **`gyne-consumer-profile` now restarts the consumer** — after writing `CONSUMER_NAME`/`CONSUMER_TASK_STREAM` to `.env`, the command restarts the Gyne consumer `systemctl --user` service by default so the worker re-registers under the new name (editing `.env` alone does not affect a running process). The unit is auto-detected from the enabled `--user` services (a `gyne`/`consumer` unit, excluding the gateway); pass `--service <unit>` to target a specific unit or `--no-restart` to only edit `.env`
 - **`gyne-consumer-profile` subcommand** — update `workspace/gyne-agent/.env` on a deployed OpenClaw instance (`--instance` + `--name`, optional `--agent`, `--project`, `--task-stream`, `--json`) by changing `CONSUMER_NAME` and the matching `CONSUMER_TASK_STREAM` while preserving the rest of the file and writing a backup beside it
 - **`gws-login` subcommand** — install Google Workspace (`gws`) credentials on a deployed instance (`--instance` + `--filename`, default `credentials.json`). `gws auth login` is an interactive browser OAuth flow with no headless mode and the instance is headless, so credentials are *injected* rather than minted on the box. Two input modes:
   - `--credentials <file>`: a local gws JSON (e.g. from `gws auth export --unmasked`, or produced by an external OAuth flow), validated as JSON.

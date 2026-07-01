@@ -10,6 +10,8 @@ pub struct GyneConsumerProfileParams {
     pub project: String,
     pub name: String,
     pub task_stream: Option<String>,
+    pub restart: bool,
+    pub service: Option<String>,
     pub json: bool,
 }
 
@@ -124,6 +126,46 @@ fn clean_consumer_profile_name(value: &str) -> Result<String> {
         bail!("--name may only contain letters, numbers, dots, underscores, and hyphens.");
     }
     Ok(name.to_string())
+}
+
+fn clean_service_unit(value: &str) -> Result<String> {
+    let unit = value.trim();
+    if unit.is_empty() {
+        bail!("--service cannot be empty.");
+    }
+    if unit.len() > 128 {
+        bail!("--service must be 128 bytes or fewer.");
+    }
+    // Restrict to systemd unit-name characters so the value is safe to embed in the restart shell.
+    if !unit
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'\\'))
+    {
+        bail!("--service may only contain letters, numbers, dots, underscores, hyphens, @, and backslashes.");
+    }
+    Ok(unit.to_string())
+}
+
+/// Builds the shell that restarts the Gyne consumer `--user` systemd unit so it re-registers under the
+/// freshly written CONSUMER_NAME. When no unit is given it auto-detects a gyne/consumer service
+/// (excluding the gateway). Emits a single JSON line on stdout describing the outcome.
+fn build_restart_cmd(service: Option<&str>) -> String {
+    let explicit = service.unwrap_or("");
+    format!(
+        "export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; \
+unit='{explicit}'; \
+if [ -z \"$unit\" ]; then \
+  unit=$(systemctl --user list-unit-files --type=service --no-legend 2>/dev/null | awk '{{print $1}}' | grep -iE 'gyne|consumer' | grep -viE 'gateway' | head -n1); \
+fi; \
+if [ -z \"$unit\" ]; then \
+  printf '{{\"restart\":\"skipped\",\"reason\":\"no_gyne_service_found\"}}\\n'; \
+else \
+  systemctl --user daemon-reload 2>/dev/null || true; \
+  systemctl --user restart \"$unit\" 2>/dev/null || systemctl --user start \"$unit\" 2>/dev/null || true; \
+  for i in 1 2 3; do s=$(systemctl --user is-active \"$unit\" 2>/dev/null); [ \"$s\" = active ] && break; sleep 1; done; \
+  printf '{{\"restart\":\"%s\",\"unit\":\"%s\"}}\\n' \"$(systemctl --user is-active \"$unit\" 2>/dev/null || echo unknown)\" \"$unit\"; \
+fi"
+    )
 }
 
 fn clean_task_stream(value: &str) -> Result<String> {
@@ -352,6 +394,11 @@ pub async fn run(params: GyneConsumerProfileParams) -> Result<()> {
     let agent = clean_agent_id(&params.agent)?;
     let project = clean_project_slug(&params.project)?;
     let name = clean_consumer_profile_name(&params.name)?;
+    let service = params
+        .service
+        .as_deref()
+        .map(clean_service_unit)
+        .transpose()?;
     let task_stream = params
         .task_stream
         .as_deref()
@@ -364,10 +411,33 @@ pub async fn run(params: GyneConsumerProfileParams) -> Result<()> {
 
     println!("Updating Gyne consumer profile on {ip}...");
     let output = ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await?;
-    let value = remote_json_value(&output)?;
+    let mut value = remote_json_value(&output)?;
     handle_remote_status(&value, params.json)?;
 
+    // Restart the consumer so it re-registers under the new CONSUMER_NAME; editing .env alone is not
+    // enough while the systemd service is already running.
+    let restart_value = if params.restart {
+        if !params.json {
+            println!("Restarting Gyne consumer service on {ip}...");
+        }
+        let restart_cmd = build_restart_cmd(service.as_deref());
+        match ssh_as_openclaw_with_user_async(&ip, &key, &restart_cmd, ssh_user).await {
+            Ok(restart_output) => remote_json_value(&restart_output).ok(),
+            Err(err) => {
+                if !params.json {
+                    println!("  Warning: consumer restart failed: {err}");
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if params.json {
+        if let (Some(object), Some(restart)) = (value.as_object_mut(), restart_value.as_ref()) {
+            object.insert("restart".to_string(), restart.clone());
+        }
         return print_json(&value);
     }
 
@@ -408,7 +478,26 @@ pub async fn run(params: GyneConsumerProfileParams) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("")
     );
-    println!("Gyne consumer profile updated. Restart the Gyne consumer process if it is already running.");
+    match &restart_value {
+        Some(restart) => {
+            let state = restart
+                .get("restart")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            match restart.get("unit").and_then(Value::as_str) {
+                Some(unit) => println!("Gyne consumer profile updated. Consumer restarted ({state}, unit: {unit})."),
+                None => println!(
+                    "Gyne consumer profile updated, but no Gyne consumer service was found to restart. Pass --service <unit> or restart it manually."
+                ),
+            }
+        }
+        None if params.restart => {
+            println!("Gyne consumer profile updated. Restart attempted (status unknown).")
+        }
+        None => println!(
+            "Gyne consumer profile updated. Restart the Gyne consumer process if it is already running (--no-restart was set)."
+        ),
+    }
     Ok(())
 }
 
@@ -454,6 +543,34 @@ mod tests {
         assert!(script.contains("gyne-agent"));
         assert!(script.contains("consumer-4"));
         assert!(!script.contains("REDIS_URL="));
+    }
+
+    #[test]
+    fn service_unit_accepts_expected_and_rejects_unsafe() {
+        assert_eq!(
+            clean_service_unit("gyne-agent.service").unwrap(),
+            "gyne-agent.service"
+        );
+        assert_eq!(
+            clean_service_unit("gyne@main.service").unwrap(),
+            "gyne@main.service"
+        );
+        assert!(clean_service_unit("").is_err());
+        assert!(clean_service_unit("gyne; rm -rf /").is_err());
+        assert!(clean_service_unit("gyne$(id)").is_err());
+    }
+
+    #[test]
+    fn restart_cmd_auto_detects_when_no_service_and_uses_override() {
+        let auto = build_restart_cmd(None);
+        assert!(auto.contains("systemctl --user restart"));
+        assert!(auto.contains("list-unit-files"));
+        assert!(auto.contains("gyne|consumer"));
+        assert!(auto.contains("gateway")); // excluded via grep -v
+        assert!(auto.contains("no_gyne_service_found"));
+
+        let explicit = build_restart_cmd(Some("gyne-agent.service"));
+        assert!(explicit.contains("unit='gyne-agent.service'"));
     }
 
     #[test]

@@ -642,6 +642,10 @@ clawmacdo gyne-consumer-profile --instance my-server --name consumer-4
 # Equivalent terminology for the profile name
 clawmacdo gyne-consumer-profile --instance my-server --consumer-name consumer-4
 
+# Restart a specific unit, or skip the restart entirely
+clawmacdo gyne-consumer-profile --instance my-server --name consumer-4 --service gyne-agent.service
+clawmacdo gyne-consumer-profile --instance my-server --name consumer-4 --no-restart
+
 # Non-default workspace project or base task stream
 clawmacdo gyne-consumer-profile --instance my-server \
   --project gyne-agent \
@@ -651,6 +655,8 @@ clawmacdo gyne-consumer-profile --instance my-server \
 ```
 
 This command SSHes into the instance as the OpenClaw user, resolves the configured workspace for `--agent` (default `main`), and updates only `workspace/<project>/.env` (default `gyne-agent/.env`). It sets `CONSUMER_NAME=<name>` and `CONSUMER_TASK_STREAM=<TASK_STREAM>:<name>`, preserving the rest of the `.env` and creating a `.clawmacdo-gyne-*.bak` backup beside it. If `--task-stream` is omitted, the command derives the base stream from the existing `TASK_STREAM` value, falling back to `openclaw:tasks`.
+
+By default it then restarts the Gyne consumer `systemctl --user` service so the worker re-registers under the new `CONSUMER_NAME` (changing `.env` alone does not affect a running process). The unit is auto-detected from the enabled `--user` services (a `gyne`/`consumer` unit, excluding the gateway); pass `--service <unit>` to target a specific unit, or `--no-restart` to only edit `.env`.
 
 ### OpenClaw Markdown Download
 
@@ -1219,7 +1225,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.91.0
+**Current version:** 0.92.0
 
 
 

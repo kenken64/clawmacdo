@@ -754,6 +754,12 @@ enum Commands {
         /// Base task stream used to derive CONSUMER_TASK_STREAM; defaults to TASK_STREAM in .env
         #[arg(long)]
         task_stream: Option<String>,
+        /// Do not restart the Gyne consumer service after updating .env
+        #[arg(long)]
+        no_restart: bool,
+        /// systemd --user unit to restart (auto-detected from the gyne project when omitted)
+        #[arg(long)]
+        service: Option<String>,
         /// Output structured JSON
         #[arg(long)]
         json: bool,
@@ -1774,6 +1780,8 @@ async fn async_main() -> anyhow::Result<()> {
             project,
             name,
             task_stream,
+            no_restart,
+            service,
             json,
         } => {
             commands::gyne_consumer_profile::run(
@@ -1783,6 +1791,8 @@ async fn async_main() -> anyhow::Result<()> {
                     project,
                     name,
                     task_stream,
+                    restart: !no_restart,
+                    service,
                     json,
                 },
             )
