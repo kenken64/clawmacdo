@@ -607,6 +607,18 @@ enum Commands {
         #[arg(long)]
         env_file: Option<String>,
     },
+    /// Set the OPENCLAW_INSTANCE value in the claw-ttyproxy project .env on a deployed instance
+    TtyproxyInstanceSet {
+        /// Deploy ID, hostname, or IP address of the instance
+        #[arg(long)]
+        instance: String,
+        /// New OPENCLAW_INSTANCE value to write into the tty proxy .env
+        #[arg(long)]
+        openclaw_instance: String,
+        /// Optional tty proxy .env path, absolute or relative to /home/openclaw/.openclaw/workspace (default: claw-ttyproxy/.env)
+        #[arg(long)]
+        env_file: Option<String>,
+    },
     /// Set up WhatsApp on a deployed instance (set phone number, enable plugin, fetch QR)
     WhatsappSetup {
         /// Deploy ID, hostname, or IP address of the instance
@@ -1704,6 +1716,20 @@ async fn async_main() -> anyhow::Result<()> {
                 bearer_token,
                 env_file,
             })
+            .await
+        }
+        Commands::TtyproxyInstanceSet {
+            instance,
+            openclaw_instance,
+            env_file,
+        } => {
+            commands::ttyproxy_instance::run(
+                commands::ttyproxy_instance::TtyproxyInstanceSetParams {
+                    instance,
+                    openclaw_instance,
+                    env_file,
+                },
+            )
             .await
         }
         Commands::WhatsappSetup {

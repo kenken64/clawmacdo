@@ -45,6 +45,7 @@ pub mod skill_remove;
 pub mod tailscale_funnel;
 pub mod telegram;
 pub mod track;
+pub mod ttyproxy_instance;
 pub mod update_ip;
 pub mod update_model;
 pub mod whatsapp;

@@ -37,6 +37,7 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 - [do-restore](#do-restore) — Restore a DigitalOcean droplet from a snapshot
 - [update-model](#update-model) — Update the AI model on a deployed instance
 - [bedrock-token-set](#bedrock-token-set) — Encrypt the Bedrock bearer token into the OpenClaw workspace tty proxy .env
+- [ttyproxy-instance-set](#ttyproxy-instance-set) — Set OPENCLAW_INSTANCE in the claw-ttyproxy project .env on an instance
 - [claude-auth-start](#claude-auth-start) — Start Claude Code reconnect and return a login URL
 - [claude-auth-status](#claude-auth-status) — Poll Claude Code auth status as JSON
 - [update-ip](#update-ip) — Refresh IP address from cloud provider
@@ -2264,6 +2265,60 @@ Updating Bedrock bearer token on 192.168.1.100...
   env_file=/home/openclaw/.openclaw/workspace/claw-tty-proxy/.env
   backup=/home/openclaw/.openclaw/workspace/claw-tty-proxy/.env.clawmacdo.20260604092301.bak
 Bedrock bearer token updated with dotenvx encryption.
+```
+
+---
+
+## ttyproxy-instance-set
+
+Set the `OPENCLAW_INSTANCE` value in the claw-ttyproxy project `.env` on a deployed instance.
+
+The target file is `/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env` by default. The command replaces an existing `OPENCLAW_INSTANCE=` line in place (or appends one if missing) and leaves the rest of the `.env` untouched. Restart the tty proxy afterwards so it picks up the new value.
+
+### Syntax
+
+```
+clawmacdo ttyproxy-instance-set --instance <QUERY> --openclaw-instance <NAME> [OPTIONS]
+```
+
+### Options
+
+| Flag | Required | Default | Env Var | Description |
+|------|----------|---------|---------|-------------|
+| `--instance` | Yes | — | — | Deploy ID, hostname, or IP address |
+| `--openclaw-instance` | Yes | — | — | New `OPENCLAW_INSTANCE` value to write into the tty proxy `.env` |
+| `--env-file` | No | `claw-ttyproxy/.env` | — | TTY proxy `.env` path, absolute or relative to `/home/openclaw/.openclaw/workspace` |
+
+### What It Does
+
+1. Resolves the instance deploy record and uses the provider's SSH user (`ubuntu` for Lightsail, `azureuser` for Azure, otherwise `root`)
+2. Targets `/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env`, or the `--env-file` override; refuses symlinked files or paths outside the workspace
+3. Creates a timestamped `.bak` beside the original file
+4. Replaces the existing `OPENCLAW_INSTANCE=` line, or appends one if the key is not present, quoting the value safely
+5. Restores `600` permissions on the updated file
+
+### Examples
+
+```bash
+clawmacdo ttyproxy-instance-set --instance my-deploy \
+  --openclaw-instance openclaw-prod-1
+
+# The tty proxy project lives in a different workspace directory
+clawmacdo ttyproxy-instance-set --instance my-deploy \
+  --openclaw-instance openclaw-prod-1 \
+  --env-file claw-tty-proxy/.env
+```
+
+### Sample Output
+
+```
+Updating OPENCLAW_INSTANCE on 192.168.1.100...
+  Target: /home/openclaw/.openclaw/workspace/claw-ttyproxy/.env
+  ttyproxy-instance: updated
+  env_file=/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env
+  key=OPENCLAW_INSTANCE
+  backup=/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env.clawmacdo.20260718031418.bak
+OPENCLAW_INSTANCE updated. Restart the tty proxy to pick up the change.
 ```
 
 ---

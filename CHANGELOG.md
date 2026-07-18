@@ -1,8 +1,9 @@
 # Changelog
 
-## v0.92.0
+## v0.93.0
 
 ### Added
+- **`ttyproxy-instance-set` subcommand** — set the `OPENCLAW_INSTANCE` value in the claw-ttyproxy project `.env` (`/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env`) on a deployed instance (`--instance` + `--openclaw-instance`, optional `--env-file` for a different workspace path). Replaces the existing `OPENCLAW_INSTANCE=` line in place or appends it if missing, quotes the value safely, refuses symlinked or outside-workspace `.env` paths, and writes a timestamped backup beside the file. Restart the tty proxy afterwards to pick up the change
 - **`gyne-consumer-profile` now restarts the consumer** — after writing `CONSUMER_NAME`/`CONSUMER_TASK_STREAM` to `.env`, the command restarts the Gyne consumer `systemctl --user` service by default so the worker re-registers under the new name (editing `.env` alone does not affect a running process). The unit is auto-detected from the enabled `--user` services (a `gyne`/`consumer` unit, excluding the gateway); pass `--service <unit>` to target a specific unit or `--no-restart` to only edit `.env`
 - **`gyne-consumer-profile` subcommand** — update `workspace/gyne-agent/.env` on a deployed OpenClaw instance (`--instance` + `--name`, optional `--agent`, `--project`, `--task-stream`, `--json`) by changing `CONSUMER_NAME` and the matching `CONSUMER_TASK_STREAM` while preserving the rest of the file and writing a backup beside it
 - **`gws-login` subcommand** — install Google Workspace (`gws`) credentials on a deployed instance (`--instance` + `--filename`, default `credentials.json`). `gws auth login` is an interactive browser OAuth flow with no headless mode and the instance is headless, so credentials are *injected* rather than minted on the box. Two input modes:

@@ -144,6 +144,10 @@ clawmacdo update-model --instance <deploy-id> \
 clawmacdo bedrock-token-set --instance <deploy-id> \
   --bearer-token "$AWS_BEARER_TOKEN_BEDROCK"
 
+# Set OPENCLAW_INSTANCE in the claw-ttyproxy project .env
+clawmacdo ttyproxy-instance-set --instance <deploy-id> \
+  --openclaw-instance openclaw-prod-1
+
 # Set OpenClaw display name and owner context
 clawmacdo openclaw-identity --instance <deploy-id> \
   --openclaw-name "Clawdia" --owner-name "Kenneth"
@@ -369,6 +373,22 @@ clawmacdo bedrock-token-set --instance <deploy-id> \
 ```
 
 The command installs `dotenvx` on the instance if needed and writes `AWS_BEARER_TOKEN_BEDROCK` with dotenvx encryption. It handles an already-encrypted `.env` by using `dotenvx set --encrypt` instead of editing ciphertext with `sed`.
+
+### Set OPENCLAW_INSTANCE for the TTY Proxy
+
+Update the `OPENCLAW_INSTANCE` value in the claw-ttyproxy project `.env` (`/home/openclaw/.openclaw/workspace/claw-ttyproxy/.env`) on a deployed instance:
+
+```bash
+clawmacdo ttyproxy-instance-set --instance <deploy-id> \
+  --openclaw-instance openclaw-prod-1
+
+# If the tty proxy project lives in a different workspace directory, pass the .env explicitly.
+clawmacdo ttyproxy-instance-set --instance <deploy-id> \
+  --openclaw-instance openclaw-prod-1 \
+  --env-file claw-tty-proxy/.env
+```
+
+The command replaces the existing `OPENCLAW_INSTANCE=` line in place (or appends one if missing), leaves a timestamped `.bak` beside the file, and keeps every other key untouched. Restart the tty proxy afterwards so it picks up the new value.
 
 ### ARK API Key Management
 
@@ -1225,7 +1245,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.92.0
+**Current version:** 0.93.0
 
 
 
