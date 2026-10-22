@@ -30,6 +30,8 @@ pub struct CreateInstanceParams {
 }
 
 #[allow(dead_code)]
+// async_trait adds #[must_use] to boxed futures, which Rust 1.99 already marks must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait CloudProvider: Send + Sync {
     async fn upload_ssh_key(&self, name: &str, public_key: &str) -> Result<KeyInfo, AppError>;
