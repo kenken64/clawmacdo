@@ -2,6 +2,11 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (defaults to the selected ref)
+        required: false
+        type: string
   push:
     tags:
       - 'v*'
@@ -53,6 +58,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -70,7 +77,13 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # The Azure Ubuntu mirror can throttle the MinGW compiler downloads.
+          for source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$source" ]; then
+              sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' "$source"
+            fi
+          done
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update
           sudo apt-get install -y libssl-dev pkg-config
           if echo "${{ matrix.target }}" | grep -q windows; then
             sudo apt-get install -y gcc-mingw-w64-x86-64
@@ -121,6 +134,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -130,7 +145,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
+          # The Azure Ubuntu mirror can throttle the MinGW compiler downloads.
+          for source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$source" ]; then
+              sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' "$source"
+            fi
+          done
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update
           sudo apt-get install -y libssl-dev pkg-config
 
       - name: Run tests
@@ -147,6 +168,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -154,59 +177,27 @@ jobs:
           merge-multiple: true
 
       - name: Generate release body
-        id: release_body
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          cat > release_notes.md << 'EOF'
-          📋 [View full CHANGELOG](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)
+          python3 - <<'PYNOTES'
+          import os
+          from pathlib import Path
 
-          ## 🚀 ClawMacdo ${{ github.ref_name }}
-
-          ### ✨ What's New
-          - **Modular Workspace Architecture** - Refactored from monolithic to 7 focused crates
-          - **Binary Size Optimization** - 32% smaller builds with feature flags
-          - **Multiple Build Variants** - Full, minimal, and cloud-specific builds
-
-          ### 📦 Available Downloads
-
-          | Platform | Architecture | Full Build | Minimal Build |
-          |----------|--------------|------------|---------------|
-          | **Linux** | x86_64 | `clawmacdo-linux-amd64-full.tar.gz` | `clawmacdo-linux-amd64-minimal.tar.gz` |
-          | **macOS** | Apple Silicon | `clawmacdo-darwin-arm64-full.tar.gz` | `clawmacdo-darwin-arm64-minimal.tar.gz` |
-          | **Windows** | x86_64 | `clawmacdo-windows-amd64-full.zip` | `clawmacdo-windows-amd64-minimal.zip` |
-
-          ### 🎯 Build Variants
-
-          - **Full Build** (~4.6MB) - All features including web UI, both cloud providers
-          - **Minimal Build** (~3.1MB) - CLI only, no web UI (32% smaller)
-
-          ### 🏗️ Project Structure
-          ```
-          crates/
-          ├── clawmacdo-cli/      # 🖥️  Main CLI binary & commands
-          ├── clawmacdo-core/     # 🔧  Config, errors, types
-          ├── clawmacdo-cloud/    # ☁️   Cloud providers (DO, Tencent)
-          ├── clawmacdo-provision/# 🔨  Server provisioning logic
-          ├── clawmacdo-db/       # 💾  Database operations
-          ├── clawmacdo-ssh/      # 🔑  SSH/key management
-          └── clawmacdo-ui/       # 🎨  Web UI & progress
-          ```
-
-          ### ⚡ Quick Start
-          ```bash
-          # Download and extract
-          wget https://github.com/kenken64/clawmacdo/releases/download/${{ github.ref_name }}/clawmacdo-linux-amd64-minimal.tar.gz
-          tar -xzf clawmacdo-linux-amd64-minimal.tar.gz
-          chmod +x clawmacdo
-
-          # Deploy OpenClaw
-          export DO_TOKEN="your_token"
-          ./clawmacdo deploy --customer-name "my-openclaw"
-          ```
-          EOF
+          tag = os.environ["RELEASE_TAG"]
+          changelog = Path("CHANGELOG.md").read_text()
+          marker = f"## {tag}\n"
+          if marker not in changelog:
+              raise SystemExit(f"No CHANGELOG entry found for {tag}")
+          notes = changelog.split(marker, 1)[1].split("\n## ", 1)[0].strip()
+          url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{tag}/CHANGELOG.md"
+          Path("release_notes.md").write_text(f"{notes}\n\n[Full changelog]({url})\n")
+          PYNOTES
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release_notes.md
           files: |
             *.tar.gz
