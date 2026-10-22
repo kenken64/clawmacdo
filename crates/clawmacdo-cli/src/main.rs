@@ -169,6 +169,15 @@ enum Commands {
         /// Extra KEY=VALUE env var to append; repeat for multiple values
         #[arg(long = "env", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
+        /// AI provider for Hermes: openrouter or bedrock (default: auto)
+        #[arg(long, default_value = "")]
+        ai_provider: String,
+        /// OpenRouter API key (configures Hermes and OpenCode CLI)
+        #[arg(long, env = "OPENROUTER_API_KEY")]
+        openrouter_api_key: Option<String>,
+        /// OpenRouter model ID for Hermes and OpenCode
+        #[arg(long, default_value = "openai/gpt-6-sol")]
+        openrouter_model: String,
         /// AWS Bedrock API key for Hermes Nova Pro
         #[arg(long, env = "AWS_BEARER_TOKEN_BEDROCK")]
         bedrock_api_key: Option<String>,
@@ -178,6 +187,9 @@ enum Commands {
         /// AWS Bedrock model ID for Hermes AI model
         #[arg(long, default_value = "amazon.nova-pro-v1:0")]
         bedrock_model: String,
+        /// Skip installing the OpenCode CLI v2 on the instance
+        #[arg(long)]
+        no_opencode: bool,
         /// Telegram bot token for Hermes gateway onboarding
         #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
         telegram_bot_token: Option<String>,
@@ -187,6 +199,9 @@ enum Commands {
         /// Telegram home channel/user ID for notifications
         #[arg(long, env = "TELEGRAM_HOME_CHANNEL")]
         telegram_home_channel: Option<String>,
+        /// Approve a pending Telegram DM pairing code after the gateway starts
+        #[arg(long)]
+        telegram_pair_code: Option<String>,
         /// Run the Hermes dashboard on 127.0.0.1:9119; access via SSH tunnel
         #[arg(long)]
         dashboard: bool,
@@ -199,6 +214,20 @@ enum Commands {
         /// Output structured JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Approve or list Telegram DM pairings for a Hermes Agent deployment
+    #[cfg(feature = "lightsail")]
+    #[command(name = "hermes-telegram-pair")]
+    HermesTelegramPair {
+        /// Deploy ID, hostname, or IP address of the Hermes instance
+        #[arg(long)]
+        instance: String,
+        /// Pairing code shown by the bot after sending it a DM
+        #[arg(long)]
+        code: Option<String>,
+        /// List pending and approved pairings instead of approving a code
+        #[arg(long)]
+        list: bool,
     },
     /// Track a deployment's progress
     Track {
@@ -1366,12 +1395,17 @@ async fn async_main() -> anyhow::Result<()> {
             image,
             env_file,
             env_vars,
+            ai_provider,
+            openrouter_api_key,
+            openrouter_model,
             bedrock_api_key,
             bedrock_region,
             bedrock_model,
+            no_opencode,
             telegram_bot_token,
             telegram_allowed_users,
             telegram_home_channel,
+            telegram_pair_code,
             dashboard,
             mount_docker_socket,
             dry_run,
@@ -1388,12 +1422,17 @@ async fn async_main() -> anyhow::Result<()> {
             env_file,
             env_content: None,
             env_vars,
+            ai_provider,
+            openrouter_api_key,
+            openrouter_model,
             bedrock_api_key,
             bedrock_region,
             bedrock_model,
+            install_opencode: !no_opencode,
             telegram_bot_token,
             telegram_allowed_users,
             telegram_home_channel,
+            telegram_pair_code,
             dashboard,
             mount_docker_socket,
             dry_run,
@@ -1403,6 +1442,24 @@ async fn async_main() -> anyhow::Result<()> {
         })
         .await
         .map(|_| ()),
+        #[cfg(feature = "lightsail")]
+        Commands::HermesTelegramPair {
+            instance,
+            code,
+            list,
+        } => {
+            if list {
+                let output = commands::hermes_lightsail::list_telegram_pairings(&instance).await?;
+                println!("{output}");
+            } else {
+                let Some(code) = code else {
+                    anyhow::bail!("--code is required unless --list is used");
+                };
+                let output = commands::hermes_lightsail::pair_telegram(&instance, &code).await?;
+                println!("{output}");
+            }
+            Ok(())
+        }
         Commands::Track {
             query,
             follow,

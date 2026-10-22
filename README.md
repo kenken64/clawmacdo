@@ -256,6 +256,57 @@ clawmacdo deploy \
 | `s-2vcpu-4gb` *(default)* | `medium_3_0` | 2 | 4 GB | ~$20/mo |
 | `s-4vcpu-8gb` | `large_3_0` | 4 | 8 GB | ~$40/mo |
 
+### Provision Hermes Agent on AWS Lightsail
+
+Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
+OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled.
+
+```bash
+export AWS_ACCESS_KEY_ID="your_access_key_id"
+export AWS_SECRET_ACCESS_KEY="your_secret_access_key"
+export OPENROUTER_API_KEY="sk-or-..."
+
+clawmacdo hermes-provision \
+  --aws-access-key-id "$AWS_ACCESS_KEY_ID" \
+  --aws-secret-access-key "$AWS_SECRET_ACCESS_KEY" \
+  --aws-region ap-southeast-1 \
+  --openrouter-api-key "$OPENROUTER_API_KEY" \
+  --openrouter-model openai/gpt-6-sol \
+  --telegram-bot-token "$TELEGRAM_BOT_TOKEN"
+```
+
+The AWS IAM credentials can also be supplied through the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+environment variables shown above.
+
+What gets configured:
+
+- The Telegram bot token is validated before provisioning and verified with Telegram's `getMe` API when the network allows.
+- Hermes `config.yaml` uses `provider: openrouter` with `default: openai/gpt-6-sol`.
+- `OPENROUTER_API_KEY` is written to both the Hermes container env and `$HERMES_HOME/.env`.
+- OpenCode CLI v2 is installed for the `ubuntu` user and configured with the **same** `--openrouter-model`
+  (`openrouter/openai/gpt-6-sol`) in `~/.config/opencode/opencode.json`.
+- Use `--no-opencode` to skip the OpenCode CLI install.
+
+To pair a Telegram user after provisioning, DM the bot. It replies with a pairing code, then approve it:
+
+```bash
+clawmacdo hermes-telegram-pair --instance my-hermes-host --code XKGH5N7P
+
+# View pending and approved pairings
+clawmacdo hermes-telegram-pair --instance my-hermes-host --list
+```
+
+Alternatively, pre-authorize users with `--telegram-allowed-users 123456789,987654321` and optionally set
+`--telegram-home-channel`. If you already have a pending code while running `hermes-provision`, pass
+`--telegram-pair-code`; the code is approved automatically once the gateway is up.
+
+The AI provider is selected automatically: an OpenRouter key takes precedence, otherwise the command falls back to
+AWS Bedrock. Override with `--ai-provider openrouter` or `--ai-provider bedrock`. Bedrock still accepts
+`--bedrock-api-key`, `--bedrock-region`, and `--bedrock-model`.
+
+Use `--dry-run` to print the generated Lightsail user-data script without creating resources, or `--json` for
+structured output.
+
 ### Deploy to Tencent Cloud
 
 ```bash

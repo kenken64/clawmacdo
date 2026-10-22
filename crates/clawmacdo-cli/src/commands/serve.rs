@@ -1088,16 +1088,22 @@ async fn start_deploy_handler(
                         env_file: None,
                         env_content: Some(req.hermes_env),
                         env_vars: Vec::new(),
+                        ai_provider: String::new(),
+                        openrouter_api_key: None,
+                        openrouter_model:
+                            crate::commands::hermes_lightsail::DEFAULT_OPENROUTER_MODEL.to_string(),
                         bedrock_api_key: Some(req.hermes_bedrock_api_key)
                             .filter(|value| !value.trim().is_empty()),
                         bedrock_region: req.hermes_bedrock_region,
                         bedrock_model: req.hermes_bedrock_model,
+                        install_opencode: true,
                         telegram_bot_token: Some(req.hermes_telegram_bot_token)
                             .filter(|value| !value.trim().is_empty()),
                         telegram_allowed_users: Some(req.hermes_telegram_allowed_users)
                             .filter(|value| !value.trim().is_empty()),
                         telegram_home_channel: Some(req.hermes_telegram_home_channel)
                             .filter(|value| !value.trim().is_empty()),
+                        telegram_pair_code: None,
                         dashboard: req.hermes_dashboard,
                         mount_docker_socket: req.hermes_mount_docker_socket,
                         dry_run: is_dry_run(),

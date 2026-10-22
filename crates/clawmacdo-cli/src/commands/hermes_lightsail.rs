@@ -18,6 +18,14 @@ pub const TOTAL_STEPS: i32 = 8;
 pub const DEFAULT_HERMES_IMAGE: &str = "nousresearch/hermes-agent:latest";
 pub const DEFAULT_BEDROCK_REGION: &str = "ap-southeast-1";
 pub const DEFAULT_BEDROCK_MODEL: &str = "amazon.nova-pro-v1:0";
+pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6-sol";
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiProvider {
+    OpenRouter,
+    Bedrock,
+}
 
 pub struct HermesLightsailParams {
     pub deploy_id: Option<String>,
@@ -31,12 +39,17 @@ pub struct HermesLightsailParams {
     pub env_file: Option<PathBuf>,
     pub env_content: Option<String>,
     pub env_vars: Vec<String>,
+    pub ai_provider: String,
+    pub openrouter_api_key: Option<String>,
+    pub openrouter_model: String,
     pub bedrock_api_key: Option<String>,
     pub bedrock_region: String,
     pub bedrock_model: String,
+    pub install_opencode: bool,
     pub telegram_bot_token: Option<String>,
     pub telegram_allowed_users: Option<String>,
     pub telegram_home_channel: Option<String>,
+    pub telegram_pair_code: Option<String>,
     pub dashboard: bool,
     pub mount_docker_socket: bool,
     pub dry_run: bool,
@@ -136,6 +149,136 @@ fn normalized_bedrock_model(params: &HermesLightsailParams) -> String {
     }
 }
 
+fn normalized_openrouter_model(params: &HermesLightsailParams) -> String {
+    let model = params.openrouter_model.trim();
+    if model.is_empty() {
+        DEFAULT_OPENROUTER_MODEL.to_string()
+    } else {
+        model.to_string()
+    }
+}
+
+fn has_value(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|value| !value.is_empty())
+}
+
+/// Validate a Telegram bot token of the form `<bot_id>:<secret>`.
+fn validate_telegram_bot_token(token: &str) -> Result<()> {
+    let token = token.trim();
+    let Some((bot_id, secret)) = token.split_once(':') else {
+        bail!("Invalid Telegram bot token: expected <bot_id>:<secret> from @BotFather.");
+    };
+    if bot_id.is_empty() || !bot_id.chars().all(|ch| ch.is_ascii_digit()) {
+        bail!("Invalid Telegram bot token: the bot ID before ':' must be numeric.");
+    }
+    if secret.is_empty()
+        || !secret
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        bail!("Invalid Telegram bot token: the secret after ':' contains unexpected characters.");
+    }
+    Ok(())
+}
+
+fn validate_telegram_pair_code(code: &str) -> Result<()> {
+    let code = code.trim();
+    if !(4..=32).contains(&code.len())
+        || !code.chars().all(|ch| ch.is_ascii_alphanumeric())
+    {
+        bail!("Invalid Telegram pairing code '{code}'. Expected the alphanumeric code shown by the bot.");
+    }
+    Ok(())
+}
+
+enum TelegramVerification {
+    Verified(String),
+    Unverified(String),
+}
+
+/// Call Telegram's `getMe` endpoint to confirm the bot token is live.
+///
+/// An invalid token is a hard error. Network failures return `Unverified` so
+/// provisioning can still proceed and be verified later.
+async fn verify_telegram_bot_token(token: &str) -> Result<TelegramVerification> {
+    validate_telegram_bot_token(token)?;
+    let url = format!("https://api.telegram.org/bot{}/getMe", token.trim());
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
+    };
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
+    };
+    let payload: serde_json::Value = match response.json().await {
+        Ok(payload) => payload,
+        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
+    };
+    if payload.get("ok").and_then(|value| value.as_bool()) == Some(true) {
+        let username = payload
+            .pointer("/result/username")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Ok(TelegramVerification::Verified(username))
+    } else {
+        let description = payload
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Telegram rejected the bot token");
+        bail!("Telegram bot token verification failed: {description}");
+    }
+}
+
+/// Resolve which AI provider to configure.
+///
+/// An explicit `--ai-provider` wins. Otherwise OpenRouter is preferred when
+/// an OpenRouter key is supplied, falling back to Bedrock for backwards
+/// compatibility with existing `--bedrock-api-key` deployments.
+fn resolve_ai_provider(params: &HermesLightsailParams) -> Result<AiProvider> {
+    let requested = params.ai_provider.trim().to_ascii_lowercase();
+    let has_openrouter = has_value(params.openrouter_api_key.as_deref());
+    let has_bedrock = has_value(params.bedrock_api_key.as_deref());
+
+    match requested.as_str() {
+        "openrouter" => {
+            if !has_openrouter {
+                bail!(
+                    "OpenRouter provider selected but no API key was supplied. \
+                     Pass --openrouter-api-key or set OPENROUTER_API_KEY."
+                );
+            }
+            Ok(AiProvider::OpenRouter)
+        }
+        "bedrock" | "aws-bedrock" => {
+            if !has_bedrock {
+                bail!(
+                    "Bedrock provider selected but no API key was supplied. \
+                     Pass --bedrock-api-key or set AWS_BEARER_TOKEN_BEDROCK."
+                );
+            }
+            Ok(AiProvider::Bedrock)
+        }
+        "" | "auto" => {
+            if has_openrouter {
+                Ok(AiProvider::OpenRouter)
+            } else if has_bedrock {
+                Ok(AiProvider::Bedrock)
+            } else {
+                bail!(
+                    "AI provider credentials required. Set OPENROUTER_API_KEY \
+                     (recommended) or AWS_BEARER_TOKEN_BEDROCK."
+                );
+            }
+        }
+        other => bail!("Unsupported --ai-provider '{other}'. Use openrouter or bedrock."),
+    }
+}
+
 fn bedrock_mantle_base_url(region: &str) -> String {
     format!("https://bedrock-mantle.{region}.api.aws/v1")
 }
@@ -152,6 +295,29 @@ fn build_bedrock_config_content(region: &str, model: &str) -> String {
         yaml_single_quote(&base_url),
         yaml_single_quote(region),
     )
+}
+
+fn build_openrouter_config_content(model: &str) -> String {
+    format!(
+        "model:\n  default: {}\n  provider: openrouter\n  base_url: {}\n",
+        yaml_single_quote(model),
+        yaml_single_quote(OPENROUTER_BASE_URL),
+    )
+}
+
+/// OpenCode V2 global config that routes the CLI through OpenRouter using the
+/// same model as Hermes.
+fn build_opencode_config_content(model: &str) -> String {
+    let payload = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "model": format!("openrouter/{model}"),
+        "providers": {
+            "openrouter": {
+                "env": ["OPENROUTER_API_KEY"],
+            },
+        },
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn build_aws_cli_config_content(region: &str) -> String {
@@ -191,14 +357,23 @@ fn build_env_content(params: &HermesLightsailParams) -> Result<String> {
     if !env.is_empty() && !env.ends_with('\n') {
         env.push('\n');
     }
-    if let Some(api_key) = params.bedrock_api_key.as_deref() {
-        let region = normalized_bedrock_region(params);
-        let base_url = bedrock_mantle_base_url(&region);
-        append_env_assignment(&mut env, "AWS_BEARER_TOKEN_BEDROCK", api_key);
-        append_env_assignment(&mut env, "OPENAI_API_KEY", api_key);
-        append_env_assignment(&mut env, "OPENAI_BASE_URL", &base_url);
-        append_env_assignment(&mut env, "AWS_REGION", &region);
-        append_env_assignment(&mut env, "AWS_DEFAULT_REGION", &region);
+    match resolve_ai_provider(params)? {
+        AiProvider::OpenRouter => {
+            if let Some(api_key) = params.openrouter_api_key.as_deref() {
+                append_env_assignment(&mut env, "OPENROUTER_API_KEY", api_key);
+            }
+        }
+        AiProvider::Bedrock => {
+            if let Some(api_key) = params.bedrock_api_key.as_deref() {
+                let region = normalized_bedrock_region(params);
+                let base_url = bedrock_mantle_base_url(&region);
+                append_env_assignment(&mut env, "AWS_BEARER_TOKEN_BEDROCK", api_key);
+                append_env_assignment(&mut env, "OPENAI_API_KEY", api_key);
+                append_env_assignment(&mut env, "OPENAI_BASE_URL", &base_url);
+                append_env_assignment(&mut env, "AWS_REGION", &region);
+                append_env_assignment(&mut env, "AWS_DEFAULT_REGION", &region);
+            }
+        }
     }
     if let Some(token) = params.telegram_bot_token.as_deref() {
         append_env_assignment(&mut env, "TELEGRAM_BOT_TOKEN", token);
@@ -223,11 +398,51 @@ fn build_env_content(params: &HermesLightsailParams) -> Result<String> {
     Ok(env)
 }
 
+fn build_opencode_install_block(api_key: Option<&str>, config_content: &str) -> String {
+    let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "# OpenCode CLI install skipped (no OpenRouter API key)\n".to_string();
+    };
+    let key_q = sh_quote(api_key);
+    let config_b64 =
+        base64::engine::general_purpose::STANDARD.encode(config_content.as_bytes());
+    format!(
+        r#"echo "[clawmacdo] Installing OpenCode CLI v2 for ubuntu user"
+OPENCODE_CONFIG_B64='{config_b64}'
+OC_HOME=/home/ubuntu
+mkdir -p "$OC_HOME/.config/opencode"
+if [ -n "$OPENCODE_CONFIG_B64" ]; then
+  printf '%s' "$OPENCODE_CONFIG_B64" | base64 -d > "$OC_HOME/.config/opencode/opencode.json"
+fi
+chown -R ubuntu:ubuntu "$OC_HOME/.config"
+
+if runuser -u ubuntu -- env HOME="$OC_HOME" bash -c 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'; then
+  echo "[clawmacdo] OpenCode CLI installed"
+else
+  echo "[clawmacdo] Warning: OpenCode CLI install failed"
+fi
+
+if [ -x "$OC_HOME/.opencode/bin/opencode" ]; then
+  ln -sf "$OC_HOME/.opencode/bin/opencode" /usr/local/bin/opencode
+fi
+
+if ! grep -q '\.opencode/bin' "$OC_HOME/.bashrc" 2>/dev/null; then
+  printf '\nexport PATH="$HOME/.opencode/bin:$PATH"\n' >> "$OC_HOME/.bashrc"
+fi
+if ! grep -q '^export OPENROUTER_API_KEY=' "$OC_HOME/.bashrc" 2>/dev/null; then
+  printf 'export OPENROUTER_API_KEY=%s\n' {key_q} >> "$OC_HOME/.bashrc"
+fi
+chown ubuntu:ubuntu "$OC_HOME/.bashrc"
+chmod 600 "$OC_HOME/.bashrc"
+"#,
+    )
+}
+
 fn generate_user_data(
     image: &str,
     env_content: &str,
     config_content: &str,
     aws_cli_config_content: &str,
+    opencode_install_block: &str,
     dashboard: bool,
     mount_docker_socket: bool,
 ) -> String {
@@ -267,6 +482,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 HERMES_IMAGE={image_q}
 ENV_FILE=/opt/hermes-provision/hermes.env
+DATA_ENV_FILE=/opt/hermes-data/.env
 ENV_B64='{env_b64}'
 CONFIG_FILE=/opt/hermes-data/config.yaml
 CONFIG_B64='{config_b64}'
@@ -307,10 +523,21 @@ cat > "$ENV_FILE" <<'ENVEOF'
 ENVEOF
 if [ -n "$ENV_B64" ]; then
   printf '%s' "$ENV_B64" | base64 -d >> "$ENV_FILE"
+  # Hermes loads $HERMES_HOME/.env with override=True, so the same secrets
+  # must be present there as well as in the container environment.
+  if [ ! -f "$DATA_ENV_FILE" ]; then
+    printf '# Managed by clawmacdo hermes-provision.\n' > "$DATA_ENV_FILE"
+  elif [ -s "$DATA_ENV_FILE" ] && [ -n "$(tail -c 1 "$DATA_ENV_FILE" 2>/dev/null)" ]; then
+    printf '\n' >> "$DATA_ENV_FILE"
+  fi
+  printf '%s' "$ENV_B64" | base64 -d >> "$DATA_ENV_FILE"
 fi
 grep -q '^HERMES_UID=' "$ENV_FILE" || printf 'HERMES_UID=10000\n' >> "$ENV_FILE"
 grep -q '^HERMES_GID=' "$ENV_FILE" || printf 'HERMES_GID=10000\n' >> "$ENV_FILE"
 chmod 600 "$ENV_FILE"
+if [ -f "$DATA_ENV_FILE" ]; then
+  chmod 600 "$DATA_ENV_FILE"
+fi
 
 if [ -n "$CONFIG_B64" ]; then
   printf '%s' "$CONFIG_B64" | base64 -d > "$CONFIG_FILE"
@@ -337,6 +564,7 @@ docker run -d \
   "$HERMES_IMAGE" gateway run
 
 {dashboard_block}
+{opencode_install_block}
 docker ps --filter name=hermes
 
 touch {sentinel}
@@ -348,8 +576,9 @@ echo "[clawmacdo] Hermes Agent bootstrap complete"
 fn print_summary(
     record: &DeployRecord,
     dashboard: bool,
-    bedrock_region: &str,
-    bedrock_model: &str,
+    ai_summary: &str,
+    opencode: bool,
+    telegram_bot: Option<&str>,
 ) {
     let divider = "=".repeat(60);
     let ip = &record.ip_address;
@@ -369,8 +598,19 @@ fn print_summary(
     println!("  Hermes data:       /opt/hermes-data on server");
     println!("  Hermes env:        /opt/hermes-provision/hermes.env on server");
     println!("  AWS CLI config:    /root/.aws/config and /opt/hermes-data/.aws/config");
-    println!("  AI model:          AWS Bedrock {bedrock_model} ({bedrock_region})");
+    println!("  AI model:          {ai_summary}");
+    if let Some(bot) = telegram_bot {
+        println!("  Telegram bot:      @{bot}");
+        println!(
+            "  Telegram pairing:  DM the bot, then run: clawmacdo hermes-telegram-pair --instance {} --code <CODE>",
+            record.hostname
+        );
+    }
     println!("  Gateway logs:      ssh -i {key} ubuntu@{ip} 'sudo docker logs -f hermes'");
+    if opencode {
+        println!("  OpenCode CLI:      installed for ubuntu (opencode)");
+        println!("  OpenCode config:   /home/ubuntu/.config/opencode/opencode.json");
+    }
     if dashboard {
         println!("  Dashboard tunnel:  ssh -i {key} -L 9119:127.0.0.1:9119 ubuntu@{ip}");
         println!("                     then open http://127.0.0.1:9119");
@@ -381,6 +621,81 @@ fn print_summary(
     );
     println!("{divider}\n");
 }
+
+fn find_deploy_record(query: &str) -> Result<(String, PathBuf)> {
+    let deploys_dir = config::deploys_dir()?;
+    if !deploys_dir.exists() {
+        bail!("No deploy records found. Provision a Hermes instance first.");
+    }
+    for entry in std::fs::read_dir(&deploys_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<DeployRecord>(&contents) else {
+            continue;
+        };
+        if record.id == query || record.hostname == query || record.ip_address == query {
+            return Ok((
+                record.ip_address,
+                PathBuf::from(record.ssh_key_path),
+            ));
+        }
+    }
+    bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
+}
+
+async fn exec_in_hermes_container(ip: &str, key: &std::path::Path, args: &str) -> Result<String> {
+    let ip_owned = ip.to_string();
+    let key_owned = key.to_path_buf();
+    let command = format!(
+        "sudo docker exec -u hermes -e HOME=/opt/data -e HERMES_HOME=/opt/data hermes hermes {args}"
+    );
+    let output = tokio::task::spawn_blocking(move || {
+        ssh::exec_as(&ip_owned, &key_owned, &command, "ubuntu")
+    })
+    .await??;
+    Ok(output)
+}
+
+/// Approve a pending Telegram DM pairing code inside the running Hermes container.
+async fn approve_telegram_pairing(ip: &str, key: &std::path::Path, code: &str) -> Result<String> {
+    validate_telegram_pair_code(code)?;
+    let args = format!("pairing approve telegram {}", sh_quote(code.trim()));
+    let mut last_error = String::new();
+    for attempt in 0..8 {
+        match exec_in_hermes_container(ip, key, &args).await {
+            Ok(output) => return Ok(output),
+            Err(err) => {
+                last_error = err.to_string();
+                if attempt < 7 {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+    bail!(
+        "Failed to approve Telegram pairing code '{code}'. \
+         DM the bot first so it issues a code, then retry. Last error: {last_error}"
+    )
+}
+
+/// Approve a Telegram pairing code for an existing Hermes deployment.
+pub async fn pair_telegram(instance: &str, code: &str) -> Result<String> {
+    validate_telegram_pair_code(code)?;
+    let (ip, key) = find_deploy_record(instance)?;
+    approve_telegram_pairing(&ip, &key, code).await
+}
+
+/// List pending and approved Telegram pairings for an existing Hermes deployment.
+pub async fn list_telegram_pairings(instance: &str) -> Result<String> {
+    let (ip, key) = find_deploy_record(instance)?;
+    exec_in_hermes_container(&ip, &key, "pairing list").await
+}
+
 
 pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
@@ -421,28 +736,95 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     } else {
         params.image.trim().to_string()
     };
-    if params
-        .bedrock_api_key
+    let telegram_token = params
+        .telegram_bot_token
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        let err =
-            "AWS Bedrock API key required. Set AWS_BEARER_TOKEN_BEDROCK or pass --bedrock-api-key.";
-        record_step_failed(step_db, &deploy_id, 1, err);
-        bail!("{err}");
+        .filter(|value| !value.is_empty());
+    let telegram_pair_code = params
+        .telegram_pair_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut telegram_bot_username: Option<String> = None;
+    if let Some(token) = telegram_token {
+        if let Err(err) = validate_telegram_bot_token(token) {
+            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
+            return Err(err);
+        }
+        if params.dry_run {
+            progress::emit(tx, "  Telegram:  bot token format valid (not verified in dry-run)");
+        } else {
+            match verify_telegram_bot_token(token).await {
+                Ok(TelegramVerification::Verified(username)) => {
+                    progress::emit(tx, &format!("  Telegram:  verified @{username}"));
+                    telegram_bot_username = Some(username);
+                }
+                Ok(TelegramVerification::Unverified(reason)) => {
+                    progress::emit(
+                        tx,
+                        &format!(
+                            "  Telegram:  token accepted locally; getMe unavailable ({reason})"
+                        ),
+                    );
+                    telegram_bot_username = Some("configured".to_string());
+                }
+                Err(err) => {
+                    record_step_failed(step_db, &deploy_id, 1, &err.to_string());
+                    return Err(err);
+                }
+            }
+        }
     }
+    if let Some(code) = telegram_pair_code {
+        if telegram_token.is_none() {
+            let err = "A Telegram bot token is required to approve a pairing code.";
+            record_step_failed(step_db, &deploy_id, 1, err);
+            bail!("{err}");
+        }
+        if let Err(err) = validate_telegram_pair_code(code) {
+            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
+            return Err(err);
+        }
+    }
+    let ai_provider = match resolve_ai_provider(&params) {
+        Ok(provider) => provider,
+        Err(err) => {
+            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
+            return Err(err);
+        }
+    };
+    // Hermes and the OpenCode CLI both use this single resolved OpenRouter model.
+    let openrouter_model = normalized_openrouter_model(&params);
     let bedrock_region = normalized_bedrock_region(&params);
     let bedrock_model = normalized_bedrock_model(&params);
-    let config_content = build_bedrock_config_content(&bedrock_region, &bedrock_model);
-    let aws_cli_config_content = build_aws_cli_config_content(&bedrock_region);
+    let (config_content, aws_cli_config_content, ai_summary) = match ai_provider {
+        AiProvider::OpenRouter => (
+            build_openrouter_config_content(&openrouter_model),
+            String::new(),
+            format!("OpenRouter {openrouter_model}"),
+        ),
+        AiProvider::Bedrock => (
+            build_bedrock_config_content(&bedrock_region, &bedrock_model),
+            build_aws_cli_config_content(&bedrock_region),
+            format!("AWS Bedrock {bedrock_model} ({bedrock_region})"),
+        ),
+    };
     let env_content = build_env_content(&params)?;
+    let opencode_install_block = if params.install_opencode {
+        build_opencode_install_block(
+            params.openrouter_api_key.as_deref(),
+            &build_opencode_config_content(&openrouter_model),
+        )
+    } else {
+        "# OpenCode CLI install disabled by --no-opencode\n".to_string()
+    };
     let user_data = generate_user_data(
         &image,
         &env_content,
         &config_content,
         &aws_cli_config_content,
+        &opencode_install_block,
         params.dashboard,
         params.mount_docker_socket,
     );
@@ -451,8 +833,10 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     progress::emit(tx, &format!("  Size:     {size}"));
     progress::emit(tx, &format!("  Hostname: {hostname}"));
     progress::emit(tx, &format!("  Image:    {image}"));
-    progress::emit(tx, &format!("  AI Model: AWS Bedrock {bedrock_model}"));
-    progress::emit(tx, &format!("  AI Region: {bedrock_region}"));
+    progress::emit(tx, &format!("  AI Model: {ai_summary}"));
+    if params.install_opencode {
+        progress::emit(tx, "  OpenCode: CLI v2 will be installed for ubuntu");
+    }
     record_step_complete(step_db, &deploy_id, 1);
 
     if params.dry_run {
@@ -464,8 +848,15 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "size": size,
                 "hostname": hostname,
                 "image": image,
-                "bedrock_region": bedrock_region,
-                "bedrock_model": bedrock_model,
+                "ai_provider": match ai_provider {
+                    AiProvider::OpenRouter => "openrouter",
+                    AiProvider::Bedrock => "bedrock",
+                },
+                "ai_model": ai_summary,
+                "openrouter_model": openrouter_model,
+                "opencode_installed": params.install_opencode,
+                "telegram_configured": telegram_token.is_some(),
+                "telegram_pair_code_requested": telegram_pair_code.is_some(),
                 "dashboard": params.dashboard,
                 "mount_docker_socket": params.mount_docker_socket,
                 "user_data": user_data,
@@ -604,6 +995,28 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     progress::emit(tx, "[Step 7/8] Hermes Agent cloud-init complete");
     record_step_complete(step_db, &deploy_id, 7);
 
+    if let Some(code) = telegram_pair_code {
+        progress::emit(tx, "[Step 7/8] Approving Telegram pairing code...");
+        match approve_telegram_pairing(&ip, &keypair.private_key_path, code).await {
+            Ok(output) => {
+                let output = output.trim();
+                if !output.is_empty() {
+                    progress::emit(tx, &format!("  {output}"));
+                }
+                progress::emit(tx, "[Step 7/8] Telegram pairing approved");
+            }
+            Err(err) => {
+                progress::emit(
+                    tx,
+                    &format!(
+                        "  Warning: Telegram pairing was not approved: {err}\n  \
+                         Retry with: clawmacdo hermes-telegram-pair --instance <deploy-id|hostname|ip> --code {code}"
+                    ),
+                );
+            }
+        }
+    }
+
     record_step_start(step_db, &deploy_id, 8, "Saving deploy record");
     progress::emit(tx, "\n[Step 8/8] Saving deploy record...");
     let record = DeployRecord {
@@ -630,7 +1043,14 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     if params.json {
         println!("{}", serde_json::to_string_pretty(&record)?);
     } else {
-        print_summary(&record, params.dashboard, &bedrock_region, &bedrock_model);
+        print_summary(
+            &record,
+            params.dashboard,
+            &ai_summary,
+            params.install_opencode
+                && has_value(params.openrouter_api_key.as_deref()),
+            telegram_bot_username.as_deref(),
+        );
     }
     Ok(record)
 }
@@ -654,6 +1074,10 @@ mod tests {
             "TELEGRAM_BOT_TOKEN=test\n",
             &build_bedrock_config_content(DEFAULT_BEDROCK_REGION, DEFAULT_BEDROCK_MODEL),
             &build_aws_cli_config_content(DEFAULT_BEDROCK_REGION),
+            &build_opencode_install_block(
+                Some("sk-or-test"),
+                &build_opencode_config_content(DEFAULT_OPENROUTER_MODEL),
+            ),
             true,
             true,
         );
@@ -665,6 +1089,9 @@ mod tests {
         assert!(user_data.contains("\"$HERMES_IMAGE\" gateway run"));
         assert!(user_data.contains("hermes-dashboard"));
         assert!(user_data.contains("/var/run/docker.sock:/var/run/docker.sock"));
+        assert!(user_data.contains("https://opencode.ai/install"));
+        assert!(user_data.contains("/home/ubuntu/.config/opencode/opencode.json"));
+        assert!(user_data.contains("DATA_ENV_FILE=/opt/hermes-data/.env"));
         assert!(user_data.contains(config::CLOUD_INIT_SENTINEL));
     }
 
@@ -682,12 +1109,17 @@ mod tests {
             env_file: None,
             env_content: Some("NOUS_API_KEY=nous-test".to_string()),
             env_vars: vec!["OPENROUTER_API_KEY=or-test".to_string()],
+            ai_provider: String::new(),
+            openrouter_api_key: None,
+            openrouter_model: DEFAULT_OPENROUTER_MODEL.to_string(),
             bedrock_api_key: Some("bedrock-test".to_string()),
             bedrock_region: DEFAULT_BEDROCK_REGION.to_string(),
             bedrock_model: DEFAULT_BEDROCK_MODEL.to_string(),
+            install_opencode: true,
             telegram_bot_token: Some("123456:abc".to_string()),
             telegram_allowed_users: Some("111, 222".to_string()),
             telegram_home_channel: None,
+            telegram_pair_code: None,
             dashboard: false,
             mount_docker_socket: false,
             dry_run: true,
@@ -716,5 +1148,114 @@ mod tests {
         assert!(config.contains("provider: custom"));
         assert!(config.contains("base_url: 'https://bedrock-mantle.ap-southeast-1.api.aws/v1'"));
         assert!(config.contains("region: 'ap-southeast-1'"));
+    }
+
+    fn openrouter_params(
+        ai_provider: &str,
+        openrouter_api_key: Option<&str>,
+        bedrock_api_key: Option<&str>,
+    ) -> HermesLightsailParams {
+        HermesLightsailParams {
+            deploy_id: None,
+            customer_email: "test@example.com".to_string(),
+            name: None,
+            aws_access_key_id: String::new(),
+            aws_secret_access_key: String::new(),
+            aws_region: "ap-southeast-1".to_string(),
+            size: None,
+            image: DEFAULT_HERMES_IMAGE.to_string(),
+            env_file: None,
+            env_content: None,
+            env_vars: Vec::new(),
+            ai_provider: ai_provider.to_string(),
+            openrouter_api_key: openrouter_api_key.map(str::to_string),
+            openrouter_model: DEFAULT_OPENROUTER_MODEL.to_string(),
+            bedrock_api_key: bedrock_api_key.map(str::to_string),
+            bedrock_region: DEFAULT_BEDROCK_REGION.to_string(),
+            bedrock_model: DEFAULT_BEDROCK_MODEL.to_string(),
+            install_opencode: true,
+            telegram_bot_token: None,
+            telegram_allowed_users: None,
+            telegram_home_channel: None,
+            telegram_pair_code: None,
+            dashboard: false,
+            mount_docker_socket: false,
+            dry_run: true,
+            json: false,
+            progress_tx: None,
+            db: None,
+        }
+    }
+
+    #[test]
+    fn auto_provider_prefers_openrouter_when_key_present() {
+        let params = openrouter_params("", Some("sk-or-test"), Some("bedrock-test"));
+        assert_eq!(resolve_ai_provider(&params).unwrap(), AiProvider::OpenRouter);
+
+        let params = openrouter_params("", None, Some("bedrock-test"));
+        assert_eq!(resolve_ai_provider(&params).unwrap(), AiProvider::Bedrock);
+    }
+
+    #[test]
+    fn explicit_provider_requires_its_key() {
+        let params = openrouter_params("openrouter", None, Some("bedrock-test"));
+        assert!(resolve_ai_provider(&params).is_err());
+
+        let params = openrouter_params("bedrock", Some("sk-or-test"), None);
+        assert!(resolve_ai_provider(&params).is_err());
+    }
+
+    #[test]
+    fn openrouter_config_and_env_use_gpt_6_sol() {
+        let params = openrouter_params("", Some("sk-or-test"), None);
+        let env = build_env_content(&params).unwrap();
+        assert!(env.contains("OPENROUTER_API_KEY=sk-or-test\n"));
+        assert!(!env.contains("AWS_BEARER_TOKEN_BEDROCK"));
+
+        let config = build_openrouter_config_content(DEFAULT_OPENROUTER_MODEL);
+        assert!(config.contains("default: 'openai/gpt-6-sol'"));
+        assert!(config.contains("provider: openrouter"));
+        assert!(config.contains("base_url: 'https://openrouter.ai/api/v1'"));
+    }
+
+    #[test]
+    fn opencode_config_uses_openrouter_model() {
+        let config = build_opencode_config_content(DEFAULT_OPENROUTER_MODEL);
+        let value: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(value["model"], "openrouter/openai/gpt-6-sol");
+        assert_eq!(value["providers"]["openrouter"]["env"][0], "OPENROUTER_API_KEY");
+    }
+
+    #[test]
+    fn hermes_and_opencode_share_the_same_openrouter_model() {
+        let mut params = openrouter_params("", Some("sk-or-test"), None);
+        params.openrouter_model = "openai/gpt-6.1-sol".to_string();
+        let model = normalized_openrouter_model(&params);
+
+        let hermes = build_openrouter_config_content(&model);
+        let opencode: serde_json::Value =
+            serde_json::from_str(&build_opencode_config_content(&model)).unwrap();
+
+        assert!(hermes.contains("provider: openrouter"));
+        assert!(hermes.contains("default: 'openai/gpt-6.1-sol'"));
+        assert_eq!(opencode["model"], "openrouter/openai/gpt-6.1-sol");
+    }
+
+    #[test]
+    fn validates_telegram_bot_tokens() {
+        assert!(validate_telegram_bot_token("123456789:ABCdefGHIjklMNOpqrSTUvwxYZ").is_ok());
+        assert!(validate_telegram_bot_token("123456789:abc-def_123").is_ok());
+        assert!(validate_telegram_bot_token("").is_err());
+        assert!(validate_telegram_bot_token("not-a-token").is_err());
+        assert!(validate_telegram_bot_token("abc:secret").is_err());
+        assert!(validate_telegram_bot_token("123:bad secret").is_err());
+    }
+
+    #[test]
+    fn validates_telegram_pair_codes() {
+        assert!(validate_telegram_pair_code("XKGH5N7P").is_ok());
+        assert!(validate_telegram_pair_code("abcd1234").is_ok());
+        assert!(validate_telegram_pair_code("abc").is_err());
+        assert!(validate_telegram_pair_code("bad code").is_err());
     }
 }
