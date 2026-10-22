@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.94.0
+
+### Added
+- **Hermes OpenRouter + OpenAI GPT-6 Sol** — `hermes-provision` now accepts `--openrouter-api-key` and `--openrouter-model` (default `openai/gpt-6-sol`), configures Hermes with `provider: openrouter` and the OpenRouter base URL, and auto-selects OpenRouter when a key is present. AWS Bedrock remains available via `--ai-provider bedrock`.
+- **OpenCode CLI v2 for Hermes** — provisioning installs the OpenCode CLI for the `ubuntu` user by default and configures it with the same OpenRouter/OpenAI model in `~/.config/opencode/opencode.json`. Use `--no-opencode` to skip the install.
+- **Hermes Telegram pairing** — validates bot tokens against Telegram's `getMe` API, writes secrets to both the container environment and `$HERMES_HOME/.env`, adds `--telegram-pair-code` for post-boot approval, and adds `hermes-telegram-pair --code|--list`.
+
+### Fixed
+- Hermes now reads provisioned secrets from `$HERMES_HOME/.env`, preventing empty seeded `.env` values from overriding the container environment.
+
 ## v0.93.0
 
 ### Added
