@@ -55,10 +55,11 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          # The Azure Ubuntu mirror can throttle the MinGW compiler downloads.
-          for source in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+          # Hosted runners also select mirrors through mirror+file source lists.
+          for source in /etc/apt/apt-mirrors*.txt /etc/apt/apt-security-mirrors*.txt \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [ -f "$source" ]; then
-              sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' "$source"
+              sudo sed -E -i 's#https?://azure[.]archive[.]ubuntu[.]com/#https://archive.ubuntu.com/#g' "$source"
             fi
           done
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update
