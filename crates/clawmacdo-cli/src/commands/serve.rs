@@ -128,10 +128,16 @@ struct DeployRequest {
     spot: bool,
     #[serde(default)]
     openclaw_version: String,
-    #[serde(default = "default_hermes_image")]
-    hermes_image: String,
     #[serde(default)]
     hermes_env: String,
+    #[serde(default)]
+    hermes_ai_provider: String,
+    #[serde(default)]
+    hermes_openrouter_api_key: String,
+    #[serde(default = "default_hermes_openrouter_model")]
+    hermes_openrouter_model: String,
+    #[serde(default = "default_true")]
+    hermes_install_opencode: bool,
     #[serde(default)]
     hermes_bedrock_api_key: String,
     #[serde(default = "default_hermes_bedrock_region")]
@@ -145,9 +151,57 @@ struct DeployRequest {
     #[serde(default)]
     hermes_telegram_home_channel: String,
     #[serde(default)]
-    hermes_dashboard: bool,
+    hermes_telegram_pair_code: String,
     #[serde(default)]
-    hermes_mount_docker_socket: bool,
+    hermes_dashboard: bool,
+}
+
+#[cfg(feature = "lightsail")]
+impl DeployRequest {
+    fn hermes_params(&self) -> crate::commands::hermes_lightsail::HermesLightsailParams {
+        let optional = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        };
+        crate::commands::hermes_lightsail::HermesLightsailParams {
+            deploy_id: None,
+            customer_email: self.customer_email.clone(),
+            name: optional(&self.hostname),
+            aws_access_key_id: self.aws_access_key_id.clone(),
+            aws_secret_access_key: self.aws_secret_access_key.clone(),
+            aws_region: optional(&self.aws_region)
+                .or_else(|| optional(&self.region))
+                .unwrap_or_else(|| "ap-southeast-1".into()),
+            size: optional(&self.size),
+            env_file: None,
+            env_content: Some(self.hermes_env.clone()),
+            env_vars: Vec::new(),
+            ai_provider: self.hermes_ai_provider.clone(),
+            openrouter_api_key: optional(&self.hermes_openrouter_api_key),
+            openrouter_model: self.hermes_openrouter_model.clone(),
+            bedrock_api_key: optional(&self.hermes_bedrock_api_key),
+            bedrock_region: self.hermes_bedrock_region.clone(),
+            bedrock_model: self.hermes_bedrock_model.clone(),
+            install_opencode: self.hermes_install_opencode,
+            telegram_bot_token: optional(&self.hermes_telegram_bot_token),
+            telegram_allowed_users: optional(&self.hermes_telegram_allowed_users),
+            telegram_home_channel: optional(&self.hermes_telegram_home_channel),
+            telegram_pair_code: optional(&self.hermes_telegram_pair_code),
+            dashboard: self.hermes_dashboard,
+            dry_run: is_dry_run(),
+            json: false,
+            progress_tx: None,
+            db: None,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_hermes_openrouter_model() -> String {
+    "openai/gpt-6-sol".to_string()
 }
 
 fn default_deploy_target() -> String {
@@ -156,10 +210,6 @@ fn default_deploy_target() -> String {
 
 fn default_provider() -> String {
     "digitalocean".to_string()
-}
-
-fn default_hermes_image() -> String {
-    "nousresearch/hermes-agent:latest".to_string()
 }
 
 fn default_hermes_bedrock_region() -> String {
@@ -930,11 +980,14 @@ async fn start_deploy_handler(
             )
                 .into_response();
         }
-        if req.hermes_bedrock_api_key.trim().is_empty() {
+        #[cfg(feature = "lightsail")]
+        if let Err(err) =
+            crate::commands::hermes_lightsail::validate_configuration(&req.hermes_params())
+        {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    message: "AWS Bedrock API key is required for Hermes Agent Nova Pro.".into(),
+                    message: err.to_string(),
                 }),
             )
                 .into_response();
@@ -1061,58 +1114,12 @@ async fn start_deploy_handler(
         if is_hermes {
             #[cfg(feature = "lightsail")]
             {
-                let hermes_region = if req.aws_region.trim().is_empty() {
-                    if req.region.trim().is_empty() {
-                        "ap-southeast-1".to_string()
-                    } else {
-                        req.region.clone()
-                    }
-                } else {
-                    req.aws_region.clone()
-                };
-                let hermes_size = if req.size.trim().is_empty() {
-                    None
-                } else {
-                    Some(req.size.clone())
-                };
-                let result = crate::commands::hermes_lightsail::run(
-                    crate::commands::hermes_lightsail::HermesLightsailParams {
-                        deploy_id: Some(id.clone()),
-                        customer_email: customer_email.clone(),
-                        name: hostname,
-                        aws_access_key_id: req.aws_access_key_id,
-                        aws_secret_access_key: req.aws_secret_access_key,
-                        aws_region: hermes_region,
-                        size: hermes_size,
-                        image: req.hermes_image,
-                        env_file: None,
-                        env_content: Some(req.hermes_env),
-                        env_vars: Vec::new(),
-                        ai_provider: String::new(),
-                        openrouter_api_key: None,
-                        openrouter_model:
-                            crate::commands::hermes_lightsail::DEFAULT_OPENROUTER_MODEL.to_string(),
-                        bedrock_api_key: Some(req.hermes_bedrock_api_key)
-                            .filter(|value| !value.trim().is_empty()),
-                        bedrock_region: req.hermes_bedrock_region,
-                        bedrock_model: req.hermes_bedrock_model,
-                        install_opencode: true,
-                        telegram_bot_token: Some(req.hermes_telegram_bot_token)
-                            .filter(|value| !value.trim().is_empty()),
-                        telegram_allowed_users: Some(req.hermes_telegram_allowed_users)
-                            .filter(|value| !value.trim().is_empty()),
-                        telegram_home_channel: Some(req.hermes_telegram_home_channel)
-                            .filter(|value| !value.trim().is_empty()),
-                        telegram_pair_code: None,
-                        dashboard: req.hermes_dashboard,
-                        mount_docker_socket: req.hermes_mount_docker_socket,
-                        dry_run: is_dry_run(),
-                        json: false,
-                        progress_tx: Some(tx.clone()),
-                        db: Some(db_clone.clone()),
-                    },
-                )
-                .await;
+                let mut params = req.hermes_params();
+                params.deploy_id = Some(id.clone());
+                params.name = hostname;
+                params.progress_tx = Some(tx.clone());
+                params.db = Some(db_clone.clone());
+                let result = crate::commands::hermes_lightsail::run(params).await;
 
                 let final_status = match &result {
                     Ok(record) => {
@@ -1514,14 +1521,14 @@ async fn approve_telegram_pairing_handler(
         );
     }
 
-    let code = match normalize_pairing_code(&req.pairing_code) {
-        Some(code) => code,
-        None => {
+    let code = match pairing_code_for_provider(&req.pairing_code, req.provider.as_deref()) {
+        Ok(code) => code,
+        Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(TelegramPairingApproveResponse {
                     ok: false,
-                    message: "Invalid pairing code. Use 8 letters/numbers.".into(),
+                    message: err.to_string(),
                 }),
             )
         }
@@ -1548,10 +1555,25 @@ async fn approve_telegram_pairing_handler(
     );
 
     let ssh_user = ssh_user_for_provider(req.provider.as_deref());
-    let result = if ssh_user == "root" {
-        ssh_as_openclaw_async(&ip, &key, &cmd).await
+    let result = if req.provider.as_deref() == Some("hermes-lightsail") {
+        #[cfg(feature = "lightsail")]
+        {
+            crate::commands::hermes_lightsail::approve_telegram_pairing(&ip, &key, &code).await
+        }
+        #[cfg(not(feature = "lightsail"))]
+        {
+            Err(anyhow::anyhow!(
+                "Hermes pairing requires the lightsail feature."
+            ))
+        }
+    } else if ssh_user == "root" {
+        ssh_as_openclaw_async(&ip, &key, &cmd)
+            .await
+            .map_err(anyhow::Error::from)
     } else {
-        ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user).await
+        ssh_as_openclaw_with_user_async(&ip, &key, &cmd, ssh_user)
+            .await
+            .map_err(anyhow::Error::from)
     };
     match result {
         Ok(_out) => (
@@ -3295,6 +3317,20 @@ fn normalize_pairing_code(raw: &str) -> Option<String> {
     }
 }
 
+fn pairing_code_for_provider(raw: &str, provider: Option<&str>) -> anyhow::Result<String> {
+    if provider == Some("hermes-lightsail") {
+        #[cfg(feature = "lightsail")]
+        {
+            crate::commands::hermes_lightsail::validate_telegram_pair_code(raw)?;
+            return Ok(raw.trim().to_string());
+        }
+        #[cfg(not(feature = "lightsail"))]
+        anyhow::bail!("Hermes pairing requires the lightsail feature.");
+    }
+    normalize_pairing_code(raw)
+        .ok_or_else(|| anyhow::anyhow!("Invalid pairing code. Use 8 letters/numbers."))
+}
+
 /// LList backup files.
 fn list_backup_files() -> anyhow::Result<Vec<BackupEntry>> {
     let backups_dir = config::backups_dir()?;
@@ -4192,12 +4228,29 @@ function addDeployCard(initialState) {
       </fieldset>
       <fieldset id="hermes-config-${n}" class="hermes-only hidden space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Hermes Agent</legend>
-        <div>
-          <label class="block text-sm font-medium text-slate-300 mb-1">Container Image</label>
-          <input type="text" name="hermes_image" value="nousresearch/hermes-agent:latest" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
-        </div>
+        <p class="text-xs text-slate-400">Hermes runs directly on the Lightsail host as the ubuntu user, with the local terminal backend.</p>
         <div class="space-y-4">
           <div class="text-sm font-medium text-slate-300">AI Model</div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">AI Provider</label>
+            <select name="hermes_ai_provider" onchange="syncHermesProvider(this.form)" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+              <option value="openrouter" selected>OpenRouter</option>
+              <option value="bedrock">AWS Bedrock</option>
+            </select>
+          </div>
+          <div class="hermes-openrouter-config space-y-4">
+            ${passwordField('hermes_openrouter_api_key', 'OpenRouter API Key', 'sk-or-...', true)}
+            <div>
+              <label class="block text-sm font-medium text-slate-300 mb-1">OpenRouter Model</label>
+              <input type="text" name="hermes_openrouter_model" value="openai/gpt-6-sol" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+            </div>
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" name="hermes_install_opencode" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
+              <span class="text-sm text-slate-300">Install OpenCode CLI v2</span>
+            </label>
+            <p class="text-xs text-slate-400">Hermes and OpenCode use the same OpenRouter API key and model. OpenCode is installed for the ubuntu user.</p>
+          </div>
+          <div class="hermes-bedrock-config hidden space-y-4">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             ${passwordField('hermes_bedrock_api_key', 'AWS Bedrock API Key', 'bedrock...', true)}
             <div>
@@ -4208,6 +4261,7 @@ function addDeployCard(initialState) {
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1">Bedrock Model</label>
             <input type="text" name="hermes_bedrock_model" value="amazon.nova-pro-v1:0" readonly class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
+          </div>
           </div>
         </div>
         <div class="space-y-4">
@@ -4223,6 +4277,11 @@ function addDeployCard(initialState) {
             <label class="block text-sm font-medium text-slate-300 mb-1">Home Channel ID <span class="text-slate-500">(optional)</span></label>
             <input type="text" name="hermes_telegram_home_channel" placeholder="Defaults to first allowed user" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
           </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Pending Pairing Code <span class="text-slate-500">(optional)</span></label>
+            <input type="text" name="hermes_telegram_pair_code" maxlength="32" placeholder="If the bot has already issued a code" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+          </div>
+          <p class="text-xs text-slate-400">Enter the bot token from @BotFather. After provisioning, message your bot and approve its pairing code below. Allowed user IDs can be supplied to authorize users in advance.</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Hermes .env <span class="text-slate-500">(optional)</span></label>
@@ -4232,10 +4291,6 @@ function addDeployCard(initialState) {
           <label class="flex items-center gap-3 cursor-pointer">
             <input type="checkbox" name="hermes_dashboard" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
             <span class="text-sm text-slate-300">Run Hermes dashboard on 127.0.0.1:9119</span>
-          </label>
-          <label class="flex items-center gap-3 cursor-pointer">
-            <input type="checkbox" name="hermes_mount_docker_socket" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
-            <span class="text-sm text-slate-300">Mount host Docker socket into Hermes container</span>
           </label>
         </div>
       </fieldset>
@@ -4552,6 +4607,13 @@ function toggleDeployTarget(source, n) {
   const totalEl = card.querySelector('.deploy-step-total');
   if (totalEl) totalEl.textContent = String(isHermes ? HERMES_TOTAL_STEPS : TOTAL_STEPS);
   syncTailscaleKeyRequirement(form);
+  syncHermesProvider(form);
+}
+
+function syncHermesProvider(form) {
+  const isOpenRouter = readFormValue(form, 'hermes_ai_provider') === 'openrouter';
+  form.querySelector('.hermes-openrouter-config').classList.toggle('hidden', !isOpenRouter);
+  form.querySelector('.hermes-bedrock-config').classList.toggle('hidden', isOpenRouter);
 }
 
 function toggleProvider(select, n) {
@@ -4798,6 +4860,20 @@ async function appendStepTimingTable(panel, deployId) {
   } catch (_) {}
 }
 
+function telegramPairingForm() {
+  return `
+    <div class="mt-3 border border-slate-700 rounded-lg p-3">
+      <p class="text-slate-300 font-semibold mb-2">Telegram DM Pairing</p>
+      <p class="text-xs text-slate-400 mb-2">Message your Telegram bot to get a pairing code, then approve it here.</p>
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input type="text" maxlength="32" class="telegram-pairing-code w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200" placeholder="AB12CD34">
+        <button type="button" onclick="approveTelegramPairing(this)" class="telegram-pairing-btn bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg whitespace-nowrap">Approve</button>
+      </div>
+      <div class="telegram-pairing-result text-xs mt-2 text-slate-400"></div>
+    </div>
+  `;
+}
+
 function panelShowSummary(panel, ip, keyPath, hostname, provider) {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
@@ -4814,9 +4890,10 @@ function panelShowSummary(panel, ip, keyPath, hostname, provider) {
       <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
       <p><span class="text-slate-500">IP:</span> ${ip}</p>
       <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} ubuntu@${ip}</p>
-      <p><span class="text-slate-500">Logs:</span> ssh -i ${keyPath} ubuntu@${ip} 'sudo docker logs -f hermes'</p>
+      <p><span class="text-slate-500">Logs:</span> ssh -i ${keyPath} ubuntu@${ip} 'sudo journalctl -u hermes-gateway -f'</p>
       <p><span class="text-slate-500">Dashboard tunnel:</span> ssh -i ${keyPath} -L 9119:127.0.0.1:9119 ubuntu@${ip}</p>
       <p><span class="text-slate-500">Dashboard URL:</span> http://127.0.0.1:9119</p>
+      ${telegramPairingForm()}
     `;
     persistCompletedDeployment(ip, keyPath, hostname, provider || '');
     return;
@@ -4825,15 +4902,7 @@ function panelShowSummary(panel, ip, keyPath, hostname, provider) {
     <p><span class="text-slate-500">Hostname:</span> ${hostname}</p>
     <p><span class="text-slate-500">IP:</span> ${ip}</p>
     <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} openclaw@${ip}</p>
-    <div class="mt-3 border border-slate-700 rounded-lg p-3">
-      <p class="text-slate-300 font-semibold mb-2">Telegram DM Pairing</p>
-      <p class="text-xs text-slate-400 mb-2">Message your Telegram bot to get an 8-char pairing code, then approve it here.</p>
-      <div class="flex flex-col sm:flex-row gap-2">
-        <input type="text" maxlength="16" class="telegram-pairing-code w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-slate-200" placeholder="AB12CD34">
-        <button type="button" onclick="approveTelegramPairing(this)" class="telegram-pairing-btn bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded-lg whitespace-nowrap">Approve</button>
-      </div>
-      <div class="telegram-pairing-result text-xs mt-2 text-slate-400"></div>
-    </div>
+    ${telegramPairingForm()}
     <div class="mt-3 border border-slate-700 rounded-lg p-3">
       <p class="text-slate-300 font-semibold mb-2">Agent Docker Access</p>
       <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-3">
@@ -4883,7 +4952,7 @@ async function approveTelegramPairing(btn) {
   btn.disabled = true;
   btn.textContent = 'Approving...';
   result.className = 'telegram-pairing-result text-xs mt-2 text-slate-400';
-  result.textContent = 'Approving code on droplet...';
+  result.textContent = 'Approving code on instance...';
 
   try {
     const res = await fetch('/api/telegram/pairing/approve', {
@@ -5099,16 +5168,19 @@ async function startDeploy(e, cardNum) {
     profile: val('profile'),
     spot: form.querySelector('[name="spot"]').checked,
     openclaw_version: val('openclaw_version'),
-    hermes_image: val('hermes_image'),
     hermes_env: val('hermes_env'),
-    hermes_bedrock_api_key: val('hermes_bedrock_api_key'),
+    hermes_ai_provider: val('hermes_ai_provider'),
+    hermes_openrouter_api_key: val('hermes_ai_provider') === 'openrouter' ? val('hermes_openrouter_api_key') : '',
+    hermes_openrouter_model: val('hermes_openrouter_model'),
+    hermes_install_opencode: val('hermes_ai_provider') === 'openrouter' && form.querySelector('[name="hermes_install_opencode"]').checked,
+    hermes_bedrock_api_key: val('hermes_ai_provider') === 'bedrock' ? val('hermes_bedrock_api_key') : '',
     hermes_bedrock_region: val('hermes_bedrock_region'),
     hermes_bedrock_model: val('hermes_bedrock_model'),
     hermes_telegram_bot_token: val('hermes_telegram_bot_token'),
     hermes_telegram_allowed_users: val('hermes_telegram_allowed_users'),
     hermes_telegram_home_channel: val('hermes_telegram_home_channel'),
+    hermes_telegram_pair_code: val('hermes_telegram_pair_code'),
     hermes_dashboard: form.querySelector('[name="hermes_dashboard"]').checked,
-    hermes_mount_docker_socket: form.querySelector('[name="hermes_mount_docker_socket"]').checked,
   };
 
   if (target !== 'hermes' && !body.openclaw_version) {
@@ -6542,6 +6614,108 @@ mod tests {
         );
         assert_eq!(normalize_pairing_code("bad-code"), None);
         assert_eq!(normalize_pairing_code("short"), None);
+    }
+
+    #[test]
+    #[cfg(feature = "lightsail")]
+    fn hermes_request_preserves_openrouter_and_telegram_configuration() {
+        let req: DeployRequest = serde_json::from_value(serde_json::json!({
+            "target": "hermes",
+            "customer_name": "Test",
+            "customer_email": "test@example.com",
+            "region": "ap-southeast-1",
+            "hermes_ai_provider": "openrouter",
+            "hermes_openrouter_api_key": " sk-or-test ",
+            "hermes_openrouter_model": "openai/custom-model",
+            "hermes_telegram_bot_token": "123456:test-token",
+            "hermes_telegram_allowed_users": "111,222",
+            "hermes_telegram_home_channel": "111",
+            "hermes_telegram_pair_code": "abcd1234"
+        }))
+        .unwrap();
+        let params = req.hermes_params();
+        assert!(crate::commands::hermes_lightsail::validate_configuration(&params).is_ok());
+        assert_eq!(params.ai_provider, "openrouter");
+        assert_eq!(params.openrouter_api_key.as_deref(), Some("sk-or-test"));
+        assert_eq!(params.openrouter_model, "openai/custom-model");
+        assert!(params.install_opencode);
+        assert!(params.bedrock_api_key.is_none());
+        assert_eq!(params.aws_region, "ap-southeast-1");
+        assert_eq!(
+            params.telegram_bot_token.as_deref(),
+            Some("123456:test-token")
+        );
+        assert_eq!(params.telegram_allowed_users.as_deref(), Some("111,222"));
+        assert_eq!(params.telegram_home_channel.as_deref(), Some("111"));
+        assert_eq!(params.telegram_pair_code.as_deref(), Some("abcd1234"));
+    }
+
+    #[test]
+    #[cfg(feature = "lightsail")]
+    fn hermes_request_keeps_legacy_bedrock_requests_working() {
+        let req: DeployRequest = serde_json::from_value(serde_json::json!({
+            "customer_name": "Test",
+            "customer_email": "test@example.com",
+            "hermes_bedrock_api_key": "bedrock-test",
+            "hermes_install_opencode": false
+        }))
+        .unwrap();
+        let params = req.hermes_params();
+        assert!(crate::commands::hermes_lightsail::validate_configuration(&params).is_ok());
+        assert!(!params.install_opencode);
+        assert_eq!(
+            params.openrouter_model,
+            crate::commands::hermes_lightsail::DEFAULT_OPENROUTER_MODEL
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "lightsail")]
+    async fn hermes_invalid_credentials_are_rejected_before_creating_jobs() {
+        for (key, token, provider, pair_code) in [
+            ("", "", "openrouter", ""),
+            ("sk-or-test", "invalid-token", "openrouter", ""),
+            ("sk-or-test", "", "unknown", ""),
+            ("sk-or-test", "", "bedrock", ""),
+            ("sk-or-test", "", "openrouter", "ABCD1234"),
+            ("sk-or-test", "123456:token", "openrouter", "bad-code"),
+        ] {
+            let state = test_state();
+            let req: DeployRequest = serde_json::from_value(serde_json::json!({
+                "target": "hermes",
+                "customer_name": "Test",
+                "customer_email": "test@example.com",
+                "aws_access_key_id": "test-access",
+                "aws_secret_access_key": "test-secret",
+                "hermes_ai_provider": provider,
+                "hermes_openrouter_api_key": key,
+                "hermes_telegram_bot_token": token,
+                "hermes_telegram_pair_code": pair_code
+            }))
+            .unwrap();
+            let response = start_deploy_handler(State(state.clone()), Json(req))
+                .await
+                .into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(state.jobs.read().await.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "lightsail")]
+    fn hermes_pairing_uses_hermes_code_rules_without_changing_openclaw() {
+        let hermes = Some("hermes-lightsail");
+        assert_eq!(
+            pairing_code_for_provider(" abcd1234 ", hermes).unwrap(),
+            "abcd1234"
+        );
+        assert!(pairing_code_for_provider("AB12", hermes).is_ok());
+        assert!(pairing_code_for_provider("AB12", Some("lightsail")).is_err());
+        assert!(pairing_code_for_provider("bad-code", hermes).is_err());
+        assert_eq!(
+            pairing_code_for_provider("abcd1234", Some("lightsail")).unwrap(),
+            "ABCD1234"
+        );
     }
 
     #[test]

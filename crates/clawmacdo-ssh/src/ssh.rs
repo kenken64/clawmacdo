@@ -648,9 +648,63 @@ pub async fn wait_for_ssh(
     }
 }
 
-/// Wait for the cloud-init sentinel file to appear on the remote host.
-/// When `ssh_user` is provided (e.g. "ubuntu" for Lightsail), connects as that
-/// user and prefixes commands with `sudo` so we can check the root-owned sentinel.
+#[derive(Debug, PartialEq)]
+enum CloudInitState {
+    Complete,
+    Pending,
+    Failed,
+}
+
+fn cloud_init_state(output: &str) -> CloudInitState {
+    if output.trim() == "done" {
+        return CloudInitState::Complete;
+    }
+    // A completed cloud-init run without our sentinel did not finish provisioning.
+    // Recoverable warnings can coexist with a still-running initializer.
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(status) = line.strip_prefix("status:") {
+            if matches!(
+                status.trim(),
+                "error" | "done" | "disabled" | "degraded done"
+            ) {
+                return CloudInitState::Failed;
+            }
+        }
+        if line == "extended_status: error - done" || line == "extended_status: degraded done" {
+            return CloudInitState::Failed;
+        }
+    }
+    CloudInitState::Pending
+}
+
+fn cloud_init_diagnostics_command(sudo: bool) -> String {
+    let prefix = if sudo { "sudo -n " } else { "" };
+    // Prefix each command, not a parenthesized expression (`sudo (...)` is invalid).
+    format!(
+        "{prefix}cloud-init status --long 2>/dev/null || true; \
+         {prefix}tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true; \
+         {prefix}tail -n 30 /var/log/clawmacdo-hermes-provision.log 2>/dev/null || true"
+    )
+}
+
+async fn cloud_init_diagnostics(ip: &str, key: &Path, user: Option<&str>) -> String {
+    let ip = ip.to_string();
+    let key = key.to_path_buf();
+    let user = user.map(str::to_string);
+    let command = cloud_init_diagnostics_command(user.as_deref().is_some_and(|u| u != "root"));
+    match tokio::task::spawn_blocking(move || match user.as_deref() {
+        Some(u) if u != "root" => exec_as(&ip, &key, &command, u),
+        _ => exec(&ip, &key, &command),
+    })
+    .await
+    {
+        Ok(Ok(out)) if !out.trim().is_empty() => out,
+        _ => "No diagnostic output available".to_string(),
+    }
+}
+
+/// Wait for provisioning's completion marker, failing as soon as cloud-init exits unsuccessfully.
 pub async fn wait_for_cloud_init(
     ip: &str,
     private_key_path: &Path,
@@ -661,32 +715,11 @@ pub async fn wait_for_cloud_init(
     let sentinel = config::CLOUD_INIT_SENTINEL;
     let key = private_key_path.to_path_buf();
     let ip = ip.to_string();
-    let ssh_user = ssh_user.map(|s| s.to_string());
+    let ssh_user = ssh_user.map(str::to_string);
     let mut last_status = String::from("unknown");
     loop {
         if start.elapsed() > timeout {
-            let ip_clone = ip.clone();
-            let key_clone = key.clone();
-            let user_clone = ssh_user.clone();
-            let diag_cmd_str = format!(
-                "{}(cloud-init status --long 2>/dev/null || cloud-init status 2>/dev/null || true); \
-                 echo '--- cloud-init.log (tail) ---'; \
-                 (tail -n 30 /var/log/cloud-init.log 2>/dev/null || true); \
-                 echo '--- cloud-init-output.log (tail) ---'; \
-                 (tail -n 30 /var/log/cloud-init-output.log 2>/dev/null || true)",
-                if user_clone.as_deref().is_some_and(|u| u != "root") { "sudo " } else { "" }
-            );
-            let diagnostics =
-                match tokio::task::spawn_blocking(move || match user_clone.as_deref() {
-                    Some(u) if u != "root" => exec_as(&ip_clone, &key_clone, &diag_cmd_str, u),
-                    _ => exec(&ip_clone, &key_clone, &diag_cmd_str),
-                })
-                .await
-                {
-                    Ok(Ok(out)) if !out.trim().is_empty() => out,
-                    _ => "No diagnostic output available".to_string(),
-                };
-
+            let diagnostics = cloud_init_diagnostics(&ip, &key, ssh_user.as_deref()).await;
             return Err(AppError::Timeout(format!(
                 "cloud-init to complete (last status: {last_status})\n{diagnostics}"
             )));
@@ -695,31 +728,86 @@ pub async fn wait_for_cloud_init(
         let key_clone = key.clone();
         let user_clone = ssh_user.clone();
         let sudo_prefix = if user_clone.as_deref().is_some_and(|u| u != "root") {
-            "sudo "
+            "sudo -n "
         } else {
             ""
         };
         let cmd = format!(
-            "if {sudo_prefix}test -f {sentinel}; then echo done; else cloud-init status 2>/dev/null || echo pending; fi"
+            "if {sudo_prefix}test -f {sentinel}; then echo done; else {sudo_prefix}cloud-init status --long 2>/dev/null || true; fi"
         );
         let result = tokio::task::spawn_blocking(move || match user_clone.as_deref() {
             Some(u) if u != "root" => exec_as(&ip_clone, &key_clone, &cmd, u),
             _ => exec(&ip_clone, &key_clone, &cmd),
         })
         .await;
-
-        match result {
-            Ok(Ok(out)) if out.trim() == "done" => return Ok(()),
-            Ok(Ok(out)) => {
-                let trimmed = out.trim();
-                if !trimmed.is_empty() {
-                    last_status = trimmed.to_string();
+        if let Ok(Ok(out)) = result {
+            match cloud_init_state(&out) {
+                CloudInitState::Complete => return Ok(()),
+                CloudInitState::Failed => {
+                    let diagnostics = cloud_init_diagnostics(&ip, &key, ssh_user.as_deref()).await;
+                    return Err(AppError::CloudInit(format!(
+                        "cloud-init stopped before provisioning completed.\n{diagnostics}"
+                    )));
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                CloudInitState::Pending => {
+                    if !out.trim().is_empty() {
+                        last_status = out.trim().to_string();
+                    }
+                }
             }
-            _ => {
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
+}
+
+#[cfg(test)]
+mod cloud_init_tests {
+    use super::*;
+
+    #[test]
+    fn distinguishes_marker_from_cloud_init_completion_and_errors() {
+        assert_eq!(cloud_init_state("done\n"), CloudInitState::Complete);
+        for output in [
+            "status: error\nextended_status: error - done\n",
+            "status: done\n",
+            "status: disabled\n",
+            "status: done\nextended_status: degraded done\n",
+        ] {
+            assert_eq!(cloud_init_state(output), CloudInitState::Failed, "{output}");
+        }
+        for output in [
+            "status: running\n",
+            "status: not run\n",
+            "",
+            "status: running\nrecoverable_errors: warning\n",
+        ] {
+            assert_eq!(
+                cloud_init_state(output),
+                CloudInitState::Pending,
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn diagnostics_are_valid_shell_for_root_and_sudo() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        for sudo in [true, false] {
+            let command = cloud_init_diagnostics_command(sudo);
+            let mut child = Command::new("sh")
+                .arg("-n")
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(command.as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
         }
     }
 }

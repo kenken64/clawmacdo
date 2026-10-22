@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.95.0
+
+### Changed
+- **Native Hermes provisioning** — Hermes now runs directly as `ubuntu` on Lightsail with the local terminal backend and systemd gateway/dashboard services. Docker image and socket options have been removed; Telegram pairing runs the native CLI.
+
+### Added
+- **Hermes web provisioning with OpenRouter** — deploy Hermes on AWS Lightsail using an OpenRouter API key and model, with OpenCode CLI v2 enabled by default and configured with the same credentials. Bedrock remains available.
+- **Hermes Telegram pairing in the web UI** — configure the bot token and optional allowed users, supply a pending code during provisioning, or approve a code from the completed deployment summary.
+
+### Fixed
+- Lightsail startup explicitly invokes Bash even when AWS prepends a `/bin/sh` wrapper.
+- Cloud-init failures are reported immediately with diagnostic logs instead of waiting for the full timeout; sudo diagnostics now use valid shell syntax.
+- Hermes web requests validate the selected AI provider and Telegram configuration before creating a deployment job.
+- OpenCode installation now uses the official v2 installer, fails provisioning when installation fails, and configures a protected OpenRouter key file for interactive and noninteractive use.
+
 ## v0.94.0
 
 ### Added

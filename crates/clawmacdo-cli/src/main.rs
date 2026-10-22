@@ -160,9 +160,6 @@ enum Commands {
         /// Lightsail instance size (s-1vcpu-2gb, s-2vcpu-4gb, s-4vcpu-8gb)
         #[arg(long)]
         size: Option<String>,
-        /// Hermes Agent container image
-        #[arg(long, default_value = "nousresearch/hermes-agent:latest")]
-        image: String,
         /// Path to a Hermes .env file to load into the instance
         #[arg(long)]
         env_file: Option<PathBuf>,
@@ -205,9 +202,6 @@ enum Commands {
         /// Run the Hermes dashboard on 127.0.0.1:9119; access via SSH tunnel
         #[arg(long)]
         dashboard: bool,
-        /// Mount /var/run/docker.sock into the Hermes container
-        #[arg(long)]
-        mount_docker_socket: bool,
         /// Print the Lightsail user-data script without creating resources
         #[arg(long)]
         dry_run: bool,
@@ -1392,7 +1386,6 @@ async fn async_main() -> anyhow::Result<()> {
             aws_secret_access_key,
             aws_region,
             size,
-            image,
             env_file,
             env_vars,
             ai_provider,
@@ -1407,7 +1400,6 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_home_channel,
             telegram_pair_code,
             dashboard,
-            mount_docker_socket,
             dry_run,
             json,
         } => commands::hermes_lightsail::run(commands::hermes_lightsail::HermesLightsailParams {
@@ -1418,7 +1410,6 @@ async fn async_main() -> anyhow::Result<()> {
             aws_secret_access_key,
             aws_region,
             size,
-            image,
             env_file,
             env_content: None,
             env_vars,
@@ -1434,7 +1425,6 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_home_channel,
             telegram_pair_code,
             dashboard,
-            mount_docker_socket,
             dry_run,
             json,
             progress_tx: None,

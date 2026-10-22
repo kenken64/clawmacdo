@@ -15,7 +15,6 @@ use tokio::sync::mpsc;
 pub type Db = Arc<Mutex<rusqlite::Connection>>;
 
 pub const TOTAL_STEPS: i32 = 8;
-pub const DEFAULT_HERMES_IMAGE: &str = "nousresearch/hermes-agent:latest";
 pub const DEFAULT_BEDROCK_REGION: &str = "ap-southeast-1";
 pub const DEFAULT_BEDROCK_MODEL: &str = "amazon.nova-pro-v1:0";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6-sol";
@@ -35,7 +34,6 @@ pub struct HermesLightsailParams {
     pub aws_secret_access_key: String,
     pub aws_region: String,
     pub size: Option<String>,
-    pub image: String,
     pub env_file: Option<PathBuf>,
     pub env_content: Option<String>,
     pub env_vars: Vec<String>,
@@ -51,7 +49,6 @@ pub struct HermesLightsailParams {
     pub telegram_home_channel: Option<String>,
     pub telegram_pair_code: Option<String>,
     pub dashboard: bool,
-    pub mount_docker_socket: bool,
     pub dry_run: bool,
     pub json: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
@@ -181,11 +178,9 @@ fn validate_telegram_bot_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_telegram_pair_code(code: &str) -> Result<()> {
+pub(super) fn validate_telegram_pair_code(code: &str) -> Result<()> {
     let code = code.trim();
-    if !(4..=32).contains(&code.len())
-        || !code.chars().all(|ch| ch.is_ascii_alphanumeric())
-    {
+    if !(4..=32).contains(&code.len()) || !code.chars().all(|ch| ch.is_ascii_alphanumeric()) {
         bail!("Invalid Telegram pairing code '{code}'. Expected the alphanumeric code shown by the bot.");
     }
     Ok(())
@@ -279,6 +274,29 @@ fn resolve_ai_provider(params: &HermesLightsailParams) -> Result<AiProvider> {
     }
 }
 
+/// Validate web requests before a deployment job or cloud resource is created.
+pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<()> {
+    resolve_ai_provider(params)?;
+    if let Some(token) = params
+        .telegram_bot_token
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        validate_telegram_bot_token(token)?;
+    }
+    if let Some(code) = params
+        .telegram_pair_code
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        if !has_value(params.telegram_bot_token.as_deref()) {
+            bail!("A Telegram bot token is required to approve a pairing code.");
+        }
+        validate_telegram_pair_code(code)?;
+    }
+    Ok(())
+}
+
 fn bedrock_mantle_base_url(region: &str) -> String {
     format!("https://bedrock-mantle.{region}.api.aws/v1")
 }
@@ -290,7 +308,7 @@ fn yaml_single_quote(value: &str) -> String {
 fn build_bedrock_config_content(region: &str, model: &str) -> String {
     let base_url = bedrock_mantle_base_url(region);
     format!(
-        "model:\n  default: {}\n  provider: custom\n  base_url: {}\nbedrock:\n  region: {}\n",
+        "model:\n  default: {}\n  provider: custom\n  base_url: {}\nbedrock:\n  region: {}\nterminal:\n  backend: local\n",
         yaml_single_quote(model),
         yaml_single_quote(&base_url),
         yaml_single_quote(region),
@@ -299,7 +317,7 @@ fn build_bedrock_config_content(region: &str, model: &str) -> String {
 
 fn build_openrouter_config_content(model: &str) -> String {
     format!(
-        "model:\n  default: {}\n  provider: openrouter\n  base_url: {}\n",
+        "model:\n  default: {}\n  provider: openrouter\n  base_url: {}\nterminal:\n  backend: local\n",
         yaml_single_quote(model),
         yaml_single_quote(OPENROUTER_BASE_URL),
     )
@@ -314,6 +332,9 @@ fn build_opencode_config_content(model: &str) -> String {
         "providers": {
             "openrouter": {
                 "env": ["OPENROUTER_API_KEY"],
+                "settings": {
+                    "apiKey": "{file:~/.config/opencode/openrouter-api-key}",
+                },
             },
         },
     });
@@ -395,6 +416,7 @@ fn build_env_content(params: &HermesLightsailParams) -> Result<String> {
     if let Some(channel) = home_channel.as_deref() {
         append_env_assignment(&mut env, "TELEGRAM_HOME_CHANNEL", channel);
     }
+    append_env_assignment(&mut env, "TERMINAL_ENV", "local");
     Ok(env)
 }
 
@@ -402,34 +424,37 @@ fn build_opencode_install_block(api_key: Option<&str>, config_content: &str) -> 
     let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) else {
         return "# OpenCode CLI install skipped (no OpenRouter API key)\n".to_string();
     };
+    let key_export_q = sh_quote(&format!("export OPENROUTER_API_KEY={}", sh_quote(api_key)));
     let key_q = sh_quote(api_key);
-    let config_b64 =
-        base64::engine::general_purpose::STANDARD.encode(config_content.as_bytes());
+    let config_b64 = base64::engine::general_purpose::STANDARD.encode(config_content.as_bytes());
     format!(
         r#"echo "[clawmacdo] Installing OpenCode CLI v2 for ubuntu user"
 OPENCODE_CONFIG_B64='{config_b64}'
 OC_HOME=/home/ubuntu
 mkdir -p "$OC_HOME/.config/opencode"
+printf '%s' {key_q} > "$OC_HOME/.config/opencode/openrouter-api-key"
+chmod 600 "$OC_HOME/.config/opencode/openrouter-api-key"
 if [ -n "$OPENCODE_CONFIG_B64" ]; then
   printf '%s' "$OPENCODE_CONFIG_B64" | base64 -d > "$OC_HOME/.config/opencode/opencode.json"
 fi
 chown -R ubuntu:ubuntu "$OC_HOME/.config"
 
-if runuser -u ubuntu -- env HOME="$OC_HOME" bash -c 'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'; then
+if runuser -u ubuntu -- env HOME="$OC_HOME" bash -o pipefail -c 'curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path'; then
   echo "[clawmacdo] OpenCode CLI installed"
 else
-  echo "[clawmacdo] Warning: OpenCode CLI install failed"
+  echo "[clawmacdo] OpenCode CLI v2 install failed" >&2
+  exit 1
 fi
 
-if [ -x "$OC_HOME/.opencode/bin/opencode" ]; then
-  ln -sf "$OC_HOME/.opencode/bin/opencode" /usr/local/bin/opencode
-fi
+test -x "$OC_HOME/.opencode/bin/opencode"
+ln -sf "$OC_HOME/.opencode/bin/opencode" /usr/local/bin/opencode
+runuser -u ubuntu -- env HOME="$OC_HOME" "$OC_HOME/.opencode/bin/opencode" --version
 
 if ! grep -q '\.opencode/bin' "$OC_HOME/.bashrc" 2>/dev/null; then
   printf '\nexport PATH="$HOME/.opencode/bin:$PATH"\n' >> "$OC_HOME/.bashrc"
 fi
 if ! grep -q '^export OPENROUTER_API_KEY=' "$OC_HOME/.bashrc" 2>/dev/null; then
-  printf 'export OPENROUTER_API_KEY=%s\n' {key_q} >> "$OC_HOME/.bashrc"
+  printf '%s\n' {key_export_q} >> "$OC_HOME/.bashrc"
 fi
 chown ubuntu:ubuntu "$OC_HOME/.bashrc"
 chmod 600 "$OC_HOME/.bashrc"
@@ -437,140 +462,122 @@ chmod 600 "$OC_HOME/.bashrc"
     )
 }
 
+/// Lightsail prepends a /bin/sh script, so an embedded shebang alone is ignored.
+fn bash_user_data(body: &str) -> String {
+    format!("#!/bin/sh\nexec /bin/bash <<'CLAWMACDO_HERMES_BOOTSTRAP'\n{body}\nCLAWMACDO_HERMES_BOOTSTRAP\n")
+}
+
+fn hermes_service(description: &str, command: &str) -> String {
+    format!(
+        r#"[Unit]
+Description={description}
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+Environment=HOME=/home/ubuntu
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/ubuntu/.local/bin/hermes {command}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"#
+    )
+}
+
 fn generate_user_data(
-    image: &str,
     env_content: &str,
     config_content: &str,
     aws_cli_config_content: &str,
     opencode_install_block: &str,
     dashboard: bool,
-    mount_docker_socket: bool,
 ) -> String {
     let sentinel = config::CLOUD_INIT_SENTINEL;
-    let image_q = sh_quote(image);
     let env_b64 = base64::engine::general_purpose::STANDARD.encode(env_content.as_bytes());
     let config_b64 = base64::engine::general_purpose::STANDARD.encode(config_content.as_bytes());
     let aws_cli_config_b64 =
         base64::engine::general_purpose::STANDARD.encode(aws_cli_config_content.as_bytes());
-    let docker_socket_mount = if mount_docker_socket {
-        "  -v /var/run/docker.sock:/var/run/docker.sock \\\n"
-    } else {
-        ""
-    };
+    let gateway_unit = hermes_service("Hermes Agent gateway", "gateway run");
     let dashboard_block = if dashboard {
-        r#"docker rm -f hermes-dashboard >/dev/null 2>&1 || true
-docker run -d \
-  --name hermes-dashboard \
-  --restart unless-stopped \
-  --network host \
-  -v /opt/hermes-data:/opt/data \
-  --env-file "$ENV_FILE" \
-  "$HERMES_IMAGE" dashboard --host 127.0.0.1 --no-open
-"#
-        .to_string()
+        let unit = hermes_service(
+            "Hermes Agent dashboard",
+            "dashboard --host 127.0.0.1 --port 9119 --no-open",
+        );
+        format!("cat > /etc/systemd/system/hermes-dashboard.service <<'UNIT'\n{unit}UNIT\nsystemctl daemon-reload\nsystemctl enable --now hermes-dashboard.service\n")
     } else {
-        "docker rm -f hermes-dashboard >/dev/null 2>&1 || true\n".to_string()
+        String::new()
     };
-
-    format!(
-        r#"#!/bin/bash
-set -euo pipefail
-
+    let body = format!(
+        r#"set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
 LOG=/var/log/clawmacdo-hermes-provision.log
 exec > >(tee -a "$LOG") 2>&1
+trap 'rc=$?; echo "[clawmacdo] Bootstrap failed at line $LINENO (exit $rc)"; exit "$rc"' ERR
 
-HERMES_IMAGE={image_q}
-ENV_FILE=/opt/hermes-provision/hermes.env
-DATA_ENV_FILE=/opt/hermes-data/.env
 ENV_B64='{env_b64}'
-CONFIG_FILE=/opt/hermes-data/config.yaml
 CONFIG_B64='{config_b64}'
 AWS_CLI_CONFIG_B64='{aws_cli_config_b64}'
 
-echo "[clawmacdo] Starting Hermes Agent Lightsail bootstrap"
-
+echo "[clawmacdo] Installing native Hermes Agent on Lightsail"
 apt-get update -y
 apt-get upgrade -y
-apt-get install -y ca-certificates curl gnupg unzip ufw docker.io fail2ban unattended-upgrades
-
-command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
-systemctl enable --now docker
-
-if ! command -v aws >/dev/null 2>&1; then
-  case "$(uname -m)" in
-    aarch64|arm64) AWSCLI_ARCH=aarch64 ;;
-    *) AWSCLI_ARCH=x86_64 ;;
-  esac
-  if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${{AWSCLI_ARCH}}.zip" -o /tmp/awscliv2.zip \
-      && rm -rf /tmp/aws \
-      && unzip -q /tmp/awscliv2.zip -d /tmp \
-      && /tmp/aws/install --update >/dev/null 2>&1; then
-    echo "[clawmacdo] AWS CLI installed"
-  else
-    echo "[clawmacdo] Warning: AWS CLI install failed; Hermes Bedrock API-key mode can still run"
-  fi
-fi
+apt-get install -y ca-certificates curl git unzip ufw fail2ban unattended-upgrades
 
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp
 ufw --force enable
 
-mkdir -p /opt/hermes-data /opt/hermes-provision
-cat > "$ENV_FILE" <<'ENVEOF'
-# Managed by clawmacdo hermes-provision.
-ENVEOF
-if [ -n "$ENV_B64" ]; then
-  printf '%s' "$ENV_B64" | base64 -d >> "$ENV_FILE"
-  # Hermes loads $HERMES_HOME/.env with override=True, so the same secrets
-  # must be present there as well as in the container environment.
-  if [ ! -f "$DATA_ENV_FILE" ]; then
-    printf '# Managed by clawmacdo hermes-provision.\n' > "$DATA_ENV_FILE"
-  elif [ -s "$DATA_ENV_FILE" ] && [ -n "$(tail -c 1 "$DATA_ENV_FILE" 2>/dev/null)" ]; then
-    printf '\n' >> "$DATA_ENV_FILE"
-  fi
-  printf '%s' "$ENV_B64" | base64 -d >> "$DATA_ENV_FILE"
-fi
-grep -q '^HERMES_UID=' "$ENV_FILE" || printf 'HERMES_UID=10000\n' >> "$ENV_FILE"
-grep -q '^HERMES_GID=' "$ENV_FILE" || printf 'HERMES_GID=10000\n' >> "$ENV_FILE"
-chmod 600 "$ENV_FILE"
-if [ -f "$DATA_ENV_FILE" ]; then
-  chmod 600 "$DATA_ENV_FILE"
-fi
+echo "[clawmacdo] Installing Hermes for ubuntu"
+install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.hermes
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/clawmacdo-hermes-install.sh
+runuser -u ubuntu -- env HOME=/home/ubuntu HERMES_HOME=/home/ubuntu/.hermes \
+  bash /tmp/clawmacdo-hermes-install.sh --non-interactive
 
-if [ -n "$CONFIG_B64" ]; then
-  printf '%s' "$CONFIG_B64" | base64 -d > "$CONFIG_FILE"
-  chmod 640 "$CONFIG_FILE"
-fi
+echo "[clawmacdo] Configuring Hermes AI provider and Telegram"
+printf '%s' "$ENV_B64" | base64 -d > /home/ubuntu/.hermes/.env
+printf '%s' "$CONFIG_B64" | base64 -d > /home/ubuntu/.hermes/config.yaml
+chown ubuntu:ubuntu /home/ubuntu/.hermes/.env /home/ubuntu/.hermes/config.yaml
+chmod 600 /home/ubuntu/.hermes/.env /home/ubuntu/.hermes/config.yaml
 
 if [ -n "$AWS_CLI_CONFIG_B64" ]; then
-  mkdir -p /root/.aws /opt/hermes-data/.aws
-  printf '%s' "$AWS_CLI_CONFIG_B64" | base64 -d > /root/.aws/config
-  printf '%s' "$AWS_CLI_CONFIG_B64" | base64 -d > /opt/hermes-data/.aws/config
-  chmod 700 /root/.aws /opt/hermes-data/.aws
-  chmod 600 /root/.aws/config /opt/hermes-data/.aws/config
+  install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.aws
+  printf '%s' "$AWS_CLI_CONFIG_B64" | base64 -d > /home/ubuntu/.aws/config
+  chown ubuntu:ubuntu /home/ubuntu/.aws/config
+  chmod 600 /home/ubuntu/.aws/config
 fi
 
-docker pull "$HERMES_IMAGE"
-
-docker rm -f hermes >/dev/null 2>&1 || true
-docker run -d \
-  --name hermes \
-  --restart unless-stopped \
-  --network host \
-  -v /opt/hermes-data:/opt/data \
-{docker_socket_mount}  --env-file "$ENV_FILE" \
-  "$HERMES_IMAGE" gateway run
-
-{dashboard_block}
 {opencode_install_block}
-docker ps --filter name=hermes
-
+echo "[clawmacdo] Starting native Hermes services"
+cat > /etc/systemd/system/hermes-gateway.service <<'UNIT'
+{gateway_unit}UNIT
+systemctl daemon-reload
+systemctl enable --now hermes-gateway.service
+{dashboard_block}
+# Catch immediate crashes instead of declaring a restarting service healthy.
+sleep 10
+systemctl is-active --quiet hermes-gateway.service
+{dashboard_check}
 touch {sentinel}
-echo "[clawmacdo] Hermes Agent bootstrap complete"
-"#
-    )
+echo "[clawmacdo] Native Hermes Agent bootstrap complete"
+"#,
+        dashboard_check = if dashboard {
+            "systemctl is-active --quiet hermes-dashboard.service"
+        } else {
+            ""
+        },
+    );
+    bash_user_data(&body)
 }
 
 fn print_summary(
@@ -595,9 +602,9 @@ fn print_summary(
     println!("  SSH Access:");
     println!("    ssh -i {key} ubuntu@{ip}");
     println!();
-    println!("  Hermes data:       /opt/hermes-data on server");
-    println!("  Hermes env:        /opt/hermes-provision/hermes.env on server");
-    println!("  AWS CLI config:    /root/.aws/config and /opt/hermes-data/.aws/config");
+    println!("  Hermes data:       /home/ubuntu/.hermes on server");
+    println!("  Hermes env:        /home/ubuntu/.hermes/.env on server");
+    println!("  AWS CLI config:    /home/ubuntu/.aws/config (Bedrock only)");
     println!("  AI model:          {ai_summary}");
     if let Some(bot) = telegram_bot {
         println!("  Telegram bot:      @{bot}");
@@ -606,7 +613,9 @@ fn print_summary(
             record.hostname
         );
     }
-    println!("  Gateway logs:      ssh -i {key} ubuntu@{ip} 'sudo docker logs -f hermes'");
+    println!(
+        "  Gateway logs:      ssh -i {key} ubuntu@{ip} 'sudo journalctl -u hermes-gateway -f'"
+    );
     if opencode {
         println!("  OpenCode CLI:      installed for ubuntu (opencode)");
         println!("  OpenCode config:   /home/ubuntu/.config/opencode/opencode.json");
@@ -639,20 +648,17 @@ fn find_deploy_record(query: &str) -> Result<(String, PathBuf)> {
             continue;
         };
         if record.id == query || record.hostname == query || record.ip_address == query {
-            return Ok((
-                record.ip_address,
-                PathBuf::from(record.ssh_key_path),
-            ));
+            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
         }
     }
     bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
 }
 
-async fn exec_in_hermes_container(ip: &str, key: &std::path::Path, args: &str) -> Result<String> {
+async fn exec_hermes(ip: &str, key: &std::path::Path, args: &str) -> Result<String> {
     let ip_owned = ip.to_string();
     let key_owned = key.to_path_buf();
     let command = format!(
-        "sudo docker exec -u hermes -e HOME=/opt/data -e HERMES_HOME=/opt/data hermes hermes {args}"
+        "env HOME=/home/ubuntu HERMES_HOME=/home/ubuntu/.hermes /home/ubuntu/.local/bin/hermes {args}"
     );
     let output = tokio::task::spawn_blocking(move || {
         ssh::exec_as(&ip_owned, &key_owned, &command, "ubuntu")
@@ -661,13 +667,17 @@ async fn exec_in_hermes_container(ip: &str, key: &std::path::Path, args: &str) -
     Ok(output)
 }
 
-/// Approve a pending Telegram DM pairing code inside the running Hermes container.
-async fn approve_telegram_pairing(ip: &str, key: &std::path::Path, code: &str) -> Result<String> {
+/// Approve a pending Telegram DM pairing code on the native Hermes host.
+pub(super) async fn approve_telegram_pairing(
+    ip: &str,
+    key: &std::path::Path,
+    code: &str,
+) -> Result<String> {
     validate_telegram_pair_code(code)?;
     let args = format!("pairing approve telegram {}", sh_quote(code.trim()));
     let mut last_error = String::new();
     for attempt in 0..8 {
-        match exec_in_hermes_container(ip, key, &args).await {
+        match exec_hermes(ip, key, &args).await {
             Ok(output) => return Ok(output),
             Err(err) => {
                 last_error = err.to_string();
@@ -693,9 +703,8 @@ pub async fn pair_telegram(instance: &str, code: &str) -> Result<String> {
 /// List pending and approved Telegram pairings for an existing Hermes deployment.
 pub async fn list_telegram_pairings(instance: &str) -> Result<String> {
     let (ip, key) = find_deploy_record(instance)?;
-    exec_in_hermes_container(&ip, &key, "pairing list").await
+    exec_hermes(&ip, &key, "pairing list").await
 }
-
 
 pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     config::ensure_dirs()?;
@@ -731,11 +740,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("hermes-{}", &deploy_id[..8]));
-    let image = if params.image.trim().is_empty() {
-        DEFAULT_HERMES_IMAGE.to_string()
-    } else {
-        params.image.trim().to_string()
-    };
     let telegram_token = params
         .telegram_bot_token
         .as_deref()
@@ -753,7 +757,10 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             return Err(err);
         }
         if params.dry_run {
-            progress::emit(tx, "  Telegram:  bot token format valid (not verified in dry-run)");
+            progress::emit(
+                tx,
+                "  Telegram:  bot token format valid (not verified in dry-run)",
+            );
         } else {
             match verify_telegram_bot_token(token).await {
                 Ok(TelegramVerification::Verified(username)) => {
@@ -820,19 +827,17 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         "# OpenCode CLI install disabled by --no-opencode\n".to_string()
     };
     let user_data = generate_user_data(
-        &image,
         &env_content,
         &config_content,
         &aws_cli_config_content,
         &opencode_install_block,
         params.dashboard,
-        params.mount_docker_socket,
     );
     progress::emit(tx, "  Provider: AWS Lightsail");
     progress::emit(tx, &format!("  Region:   {region}"));
     progress::emit(tx, &format!("  Size:     {size}"));
     progress::emit(tx, &format!("  Hostname: {hostname}"));
-    progress::emit(tx, &format!("  Image:    {image}"));
+    progress::emit(tx, "  Runtime:  native host (terminal backend: local)");
     progress::emit(tx, &format!("  AI Model: {ai_summary}"));
     if params.install_opencode {
         progress::emit(tx, "  OpenCode: CLI v2 will be installed for ubuntu");
@@ -847,7 +852,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "region": region,
                 "size": size,
                 "hostname": hostname,
-                "image": image,
+                "runtime": "native",
                 "ai_provider": match ai_provider {
                     AiProvider::OpenRouter => "openrouter",
                     AiProvider::Bedrock => "bedrock",
@@ -858,7 +863,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "telegram_configured": telegram_token.is_some(),
                 "telegram_pair_code_requested": telegram_pair_code.is_some(),
                 "dashboard": params.dashboard,
-                "mount_docker_socket": params.mount_docker_socket,
                 "user_data": user_data,
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -984,14 +988,17 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         tx,
         "\n[Step 7/8] Waiting for Hermes Agent cloud-init to finish...",
     );
-    ssh::wait_for_cloud_init(
+    if let Err(err) = ssh::wait_for_cloud_init(
         &ip,
         &keypair.private_key_path,
         std::time::Duration::from_secs(1800),
         Some("ubuntu"),
     )
     .await
-    .context("Hermes Agent cloud-init did not complete within 30 minutes")?;
+    {
+        record_step_failed(step_db, &deploy_id, 7, &err.to_string());
+        return Err(err.into());
+    }
     progress::emit(tx, "[Step 7/8] Hermes Agent cloud-init complete");
     record_step_complete(step_db, &deploy_id, 7);
 
@@ -1047,8 +1054,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             &record,
             params.dashboard,
             &ai_summary,
-            params.install_opencode
-                && has_value(params.openrouter_api_key.as_deref()),
+            params.install_opencode && has_value(params.openrouter_api_key.as_deref()),
             telegram_bot_username.as_deref(),
         );
     }
@@ -1068,31 +1074,62 @@ mod tests {
     }
 
     #[test]
-    fn user_data_runs_gateway_and_optional_dashboard() {
+    fn user_data_installs_native_services_without_docker() {
         let user_data = generate_user_data(
-            DEFAULT_HERMES_IMAGE,
             "TELEGRAM_BOT_TOKEN=test\n",
-            &build_bedrock_config_content(DEFAULT_BEDROCK_REGION, DEFAULT_BEDROCK_MODEL),
-            &build_aws_cli_config_content(DEFAULT_BEDROCK_REGION),
+            &build_openrouter_config_content(DEFAULT_OPENROUTER_MODEL),
+            "",
             &build_opencode_install_block(
                 Some("sk-or-test"),
                 &build_opencode_config_content(DEFAULT_OPENROUTER_MODEL),
             ),
             true,
-            true,
         );
-
-        assert!(user_data.contains("docker run -d"));
-        assert!(user_data.contains("AWS_CLI_CONFIG_B64="));
-        assert!(user_data.contains("awscli-exe-linux-${AWSCLI_ARCH}.zip"));
-        assert!(user_data.contains("/opt/hermes-data/.aws/config"));
-        assert!(user_data.contains("\"$HERMES_IMAGE\" gateway run"));
-        assert!(user_data.contains("hermes-dashboard"));
-        assert!(user_data.contains("/var/run/docker.sock:/var/run/docker.sock"));
-        assert!(user_data.contains("https://opencode.ai/install"));
-        assert!(user_data.contains("/home/ubuntu/.config/opencode/opencode.json"));
-        assert!(user_data.contains("DATA_ENV_FILE=/opt/hermes-data/.env"));
+        assert!(user_data.contains("hermes-agent.nousresearch.com/install.sh"));
+        assert!(user_data.contains("--non-interactive"));
+        assert!(user_data.contains("User=ubuntu"));
+        assert!(user_data.contains("/home/ubuntu/.local/bin/hermes gateway run"));
+        assert!(user_data.contains("hermes-dashboard.service"));
+        assert!(user_data.contains("https://opencode.ai/v2/install"));
+        assert!(!user_data.contains("docker"));
         assert!(user_data.contains(config::CLOUD_INIT_SENTINEL));
+        let without_dashboard = generate_user_data("", "", "", "", false);
+        assert!(!without_dashboard.contains("hermes-dashboard.service"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lightsail_sh_wrapper_executes_bash_and_preserves_failures() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        for (body, expected) in [
+            (
+                "set -euo pipefail\nvalues=(native hermes)\nprintf '%s' \"${values[1]}\"",
+                0,
+            ),
+            ("set -euo pipefail\nfalse", 1),
+        ] {
+            let script = format!(
+                "#!/bin/sh\n# Lightsail's prepended initialization\n{}",
+                bash_user_data(body)
+            );
+            let mut child = Command::new("sh")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(script.as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(expected));
+            if expected == 0 {
+                assert_eq!(output.stdout, b"hermes");
+            }
+        }
     }
 
     #[test]
@@ -1105,7 +1142,6 @@ mod tests {
             aws_secret_access_key: String::new(),
             aws_region: "ap-southeast-1".to_string(),
             size: None,
-            image: DEFAULT_HERMES_IMAGE.to_string(),
             env_file: None,
             env_content: Some("NOUS_API_KEY=nous-test".to_string()),
             env_vars: vec!["OPENROUTER_API_KEY=or-test".to_string()],
@@ -1121,7 +1157,6 @@ mod tests {
             telegram_home_channel: None,
             telegram_pair_code: None,
             dashboard: false,
-            mount_docker_socket: false,
             dry_run: true,
             json: false,
             progress_tx: None,
@@ -1163,7 +1198,6 @@ mod tests {
             aws_secret_access_key: String::new(),
             aws_region: "ap-southeast-1".to_string(),
             size: None,
-            image: DEFAULT_HERMES_IMAGE.to_string(),
             env_file: None,
             env_content: None,
             env_vars: Vec::new(),
@@ -1179,7 +1213,6 @@ mod tests {
             telegram_home_channel: None,
             telegram_pair_code: None,
             dashboard: false,
-            mount_docker_socket: false,
             dry_run: true,
             json: false,
             progress_tx: None,
@@ -1190,7 +1223,10 @@ mod tests {
     #[test]
     fn auto_provider_prefers_openrouter_when_key_present() {
         let params = openrouter_params("", Some("sk-or-test"), Some("bedrock-test"));
-        assert_eq!(resolve_ai_provider(&params).unwrap(), AiProvider::OpenRouter);
+        assert_eq!(
+            resolve_ai_provider(&params).unwrap(),
+            AiProvider::OpenRouter
+        );
 
         let params = openrouter_params("", None, Some("bedrock-test"));
         assert_eq!(resolve_ai_provider(&params).unwrap(), AiProvider::Bedrock);
@@ -1223,7 +1259,10 @@ mod tests {
         let config = build_opencode_config_content(DEFAULT_OPENROUTER_MODEL);
         let value: serde_json::Value = serde_json::from_str(&config).unwrap();
         assert_eq!(value["model"], "openrouter/openai/gpt-6-sol");
-        assert_eq!(value["providers"]["openrouter"]["env"][0], "OPENROUTER_API_KEY");
+        assert_eq!(
+            value["providers"]["openrouter"]["env"][0],
+            "OPENROUTER_API_KEY"
+        );
     }
 
     #[test]

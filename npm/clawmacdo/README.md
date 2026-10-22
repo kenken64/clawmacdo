@@ -259,7 +259,7 @@ clawmacdo deploy \
 ### Provision Hermes Agent on AWS Lightsail
 
 Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
-OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled.
+OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled. Hermes runs natively as the `ubuntu` user with the local terminal backend; provisioning does not install Docker.
 
 ```bash
 export AWS_ACCESS_KEY_ID="your_access_key_id"
@@ -278,11 +278,27 @@ clawmacdo hermes-provision \
 The AWS IAM credentials can also be supplied through the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
 environment variables shown above.
 
+The same setup is available in the web UI (`clawmacdo serve --port 3456`):
+
+1. Unlock the UI and select **Hermes Agent**.
+2. Enter your AWS Lightsail credentials, region, and instance size.
+3. Keep **OpenRouter** selected, enter your API key, and choose the model (default `openai/gpt-6-sol`).
+4. Leave **Install OpenCode CLI v2** checked to install it with the same OpenRouter key and model.
+5. Enter your Telegram bot token from @BotFather, then click **Provision Hermes Agent**.
+6. After provisioning, message the bot and enter its code in **Telegram DM Pairing** in the deployment summary.
+   You can also enter allowed user IDs before provisioning to authorize them in advance.
+
+The web UI also accepts an existing pending pairing code and keeps AWS Bedrock available as an alternative AI provider.
+OpenCode uses the official v2 installer and reads its OpenRouter key from a file owned by `ubuntu` with `0600` permissions,
+so authentication also works in noninteractive sessions.
+
 What gets configured:
 
 - The Telegram bot token is validated before provisioning and verified with Telegram's `getMe` API when the network allows.
 - Hermes `config.yaml` uses `provider: openrouter` with `default: openai/gpt-6-sol`.
-- `OPENROUTER_API_KEY` is written to both the Hermes container env and `$HERMES_HOME/.env`.
+- `OPENROUTER_API_KEY` and Telegram settings are written to `/home/ubuntu/.hermes/.env` with `0600` permissions.
+- `hermes-gateway.service` starts Hermes at boot. View logs with `sudo journalctl -u hermes-gateway -f`.
+- `--dashboard` also enables `hermes-dashboard.service` on `127.0.0.1:9119`, accessible through an SSH tunnel.
 - OpenCode CLI v2 is installed for the `ubuntu` user and configured with the **same** `--openrouter-model`
   (`openrouter/openai/gpt-6-sol`) in `~/.config/opencode/opencode.json`.
 - Use `--no-opencode` to skip the OpenCode CLI install.
@@ -1296,7 +1312,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.94.0
+**Current version:** 0.95.0
 
 
 
