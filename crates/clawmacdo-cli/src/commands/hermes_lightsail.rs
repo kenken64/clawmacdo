@@ -48,7 +48,6 @@ pub struct HermesLightsailParams {
     pub telegram_bot_token: Option<String>,
     pub telegram_allowed_users: Option<String>,
     pub telegram_home_channel: Option<String>,
-    pub telegram_pair_code: Option<String>,
     pub dashboard: bool,
     pub cloudflare_tunnel: bool,
     pub dashboard_password: Option<String>,
@@ -181,14 +180,6 @@ fn validate_telegram_bot_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_telegram_pair_code(code: &str) -> Result<()> {
-    let code = code.trim();
-    if !(4..=32).contains(&code.len()) || !code.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        bail!("Invalid Telegram pairing code '{code}'. Expected the alphanumeric code shown by the bot.");
-    }
-    Ok(())
-}
-
 enum TelegramVerification {
     Verified(String),
     Unverified(String),
@@ -287,16 +278,6 @@ pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<(
         .filter(|v| !v.trim().is_empty())
     {
         validate_telegram_bot_token(token)?;
-    }
-    if let Some(code) = params
-        .telegram_pair_code
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        if !has_value(params.telegram_bot_token.as_deref()) {
-            bail!("A Telegram bot token is required to approve a pairing code.");
-        }
-        validate_telegram_pair_code(code)?;
     }
     Ok(())
 }
@@ -740,10 +721,7 @@ fn print_summary(
     println!("  AI model:          {ai_summary}");
     if let Some(bot) = telegram_bot {
         println!("  Telegram bot:      @{bot}");
-        println!(
-            "  Telegram pairing:  DM the bot, then run: clawmacdo hermes-telegram-pair --instance {} --code <CODE>",
-            record.hostname
-        );
+        println!("  Telegram access:   message the bot from an allowed Telegram user ID");
     }
     println!(
         "  Gateway logs:      ssh -i {key} ubuntu@{ip} 'sudo journalctl -u hermes-gateway -f'"
@@ -768,81 +746,6 @@ fn print_summary(
         record.id
     );
     println!("{divider}\n");
-}
-
-fn find_deploy_record(query: &str) -> Result<(String, PathBuf)> {
-    let deploys_dir = config::deploys_dir()?;
-    if !deploys_dir.exists() {
-        bail!("No deploy records found. Provision a Hermes instance first.");
-    }
-    for entry in std::fs::read_dir(&deploys_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_str::<DeployRecord>(&contents) else {
-            continue;
-        };
-        if record.id == query || record.hostname == query || record.ip_address == query {
-            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
-        }
-    }
-    bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
-}
-
-async fn exec_hermes(ip: &str, key: &std::path::Path, args: &str) -> Result<String> {
-    let ip_owned = ip.to_string();
-    let key_owned = key.to_path_buf();
-    let command = format!(
-        "env HOME=/home/ubuntu HERMES_HOME=/home/ubuntu/.hermes /home/ubuntu/.local/bin/hermes {args}"
-    );
-    let output = tokio::task::spawn_blocking(move || {
-        ssh::exec_as(&ip_owned, &key_owned, &command, "ubuntu")
-    })
-    .await??;
-    Ok(output)
-}
-
-/// Approve a pending Telegram DM pairing code on the native Hermes host.
-pub(super) async fn approve_telegram_pairing(
-    ip: &str,
-    key: &std::path::Path,
-    code: &str,
-) -> Result<String> {
-    validate_telegram_pair_code(code)?;
-    let args = format!("pairing approve telegram {}", sh_quote(code.trim()));
-    let mut last_error = String::new();
-    for attempt in 0..8 {
-        match exec_hermes(ip, key, &args).await {
-            Ok(output) => return Ok(output),
-            Err(err) => {
-                last_error = err.to_string();
-                if attempt < 7 {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
-    }
-    bail!(
-        "Failed to approve Telegram pairing code '{code}'. \
-         DM the bot first so it issues a code, then retry. Last error: {last_error}"
-    )
-}
-
-/// Approve a Telegram pairing code for an existing Hermes deployment.
-pub async fn pair_telegram(instance: &str, code: &str) -> Result<String> {
-    validate_telegram_pair_code(code)?;
-    let (ip, key) = find_deploy_record(instance)?;
-    approve_telegram_pairing(&ip, &key, code).await
-}
-
-/// List pending and approved Telegram pairings for an existing Hermes deployment.
-pub async fn list_telegram_pairings(instance: &str) -> Result<String> {
-    let (ip, key) = find_deploy_record(instance)?;
-    exec_hermes(&ip, &key, "pairing list").await
 }
 
 async fn wait_for_hermes_cloud_init(
@@ -934,11 +837,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let telegram_pair_code = params
-        .telegram_pair_code
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let mut telegram_bot_username: Option<String> = None;
     if let Some(token) = telegram_token {
         if let Err(err) = validate_telegram_bot_token(token) {
@@ -970,17 +868,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                     return Err(err);
                 }
             }
-        }
-    }
-    if let Some(code) = telegram_pair_code {
-        if telegram_token.is_none() {
-            let err = "A Telegram bot token is required to approve a pairing code.";
-            record_step_failed(step_db, &deploy_id, 1, err);
-            bail!("{err}");
-        }
-        if let Err(err) = validate_telegram_pair_code(code) {
-            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
-            return Err(err);
         }
     }
     let ai_provider = match resolve_ai_provider(&params) {
@@ -1075,7 +962,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "openrouter_model": openrouter_model,
                 "opencode_installed": params.install_opencode,
                 "telegram_configured": telegram_token.is_some(),
-                "telegram_pair_code_requested": telegram_pair_code.is_some(),
                 "dashboard": dashboard,
                 "dashboard_url": null,
                 "cloudflare_tunnel": tunnel.is_some(),
@@ -1225,28 +1111,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         None
     };
     record_step_complete(step_db, &deploy_id, 7);
-
-    if let Some(code) = telegram_pair_code {
-        progress::emit(tx, "[Step 7/8] Approving Telegram pairing code...");
-        match approve_telegram_pairing(&ip, &keypair.private_key_path, code).await {
-            Ok(output) => {
-                let output = output.trim();
-                if !output.is_empty() {
-                    progress::emit(tx, &format!("  {output}"));
-                }
-                progress::emit(tx, "[Step 7/8] Telegram pairing approved");
-            }
-            Err(err) => {
-                progress::emit(
-                    tx,
-                    &format!(
-                        "  Warning: Telegram pairing was not approved: {err}\n  \
-                         Retry with: clawmacdo hermes-telegram-pair --instance <deploy-id|hostname|ip> --code {code}"
-                    ),
-                );
-            }
-        }
-    }
 
     record_step_start(step_db, &deploy_id, 8, "Saving deploy record");
     progress::emit(tx, "\n[Step 8/8] Saving deploy record...");
@@ -1455,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn build_env_content_adds_telegram_onboarding_fields() {
+    fn build_env_content_authorizes_telegram_users_directly() {
         let params = HermesLightsailParams {
             deploy_id: None,
             customer_email: "test@example.com".to_string(),
@@ -1477,7 +1341,6 @@ mod tests {
             telegram_bot_token: Some("123456:abc".to_string()),
             telegram_allowed_users: Some("111, 222".to_string()),
             telegram_home_channel: None,
-            telegram_pair_code: None,
             dashboard: false,
             cloudflare_tunnel: false,
             dashboard_password: None,
@@ -1535,7 +1398,6 @@ mod tests {
             telegram_bot_token: None,
             telegram_allowed_users: None,
             telegram_home_channel: None,
-            telegram_pair_code: None,
             dashboard: false,
             cloudflare_tunnel: false,
             dashboard_password: None,
@@ -1614,13 +1476,5 @@ mod tests {
         assert!(validate_telegram_bot_token("not-a-token").is_err());
         assert!(validate_telegram_bot_token("abc:secret").is_err());
         assert!(validate_telegram_bot_token("123:bad secret").is_err());
-    }
-
-    #[test]
-    fn validates_telegram_pair_codes() {
-        assert!(validate_telegram_pair_code("XKGH5N7P").is_ok());
-        assert!(validate_telegram_pair_code("abcd1234").is_ok());
-        assert!(validate_telegram_pair_code("abc").is_err());
-        assert!(validate_telegram_pair_code("bad code").is_err());
     }
 }

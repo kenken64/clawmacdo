@@ -187,18 +187,15 @@ enum Commands {
         /// Skip installing the OpenCode CLI v2 on the instance
         #[arg(long)]
         no_opencode: bool,
-        /// Telegram bot token for Hermes gateway onboarding
+        /// Telegram bot token for the Hermes gateway
         #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
         telegram_bot_token: Option<String>,
-        /// Telegram user IDs allowed to use the bot, comma-separated
+        /// Telegram user IDs authorized to chat directly without pairing, comma-separated
         #[arg(long, env = "TELEGRAM_ALLOWED_USERS")]
         telegram_allowed_users: Option<String>,
         /// Telegram home channel/user ID for notifications
         #[arg(long, env = "TELEGRAM_HOME_CHANNEL")]
         telegram_home_channel: Option<String>,
-        /// Approve a pending Telegram DM pairing code after the gateway starts
-        #[arg(long)]
-        telegram_pair_code: Option<String>,
         /// Run the Hermes dashboard on 127.0.0.1:9119; access via SSH tunnel
         #[arg(long)]
         dashboard: bool,
@@ -214,20 +211,6 @@ enum Commands {
         /// Output structured JSON
         #[arg(long)]
         json: bool,
-    },
-    /// Approve or list Telegram DM pairings for a Hermes Agent deployment
-    #[cfg(feature = "lightsail")]
-    #[command(name = "hermes-telegram-pair")]
-    HermesTelegramPair {
-        /// Deploy ID, hostname, or IP address of the Hermes instance
-        #[arg(long)]
-        instance: String,
-        /// Pairing code shown by the bot after sending it a DM
-        #[arg(long)]
-        code: Option<String>,
-        /// List pending and approved pairings instead of approving a code
-        #[arg(long)]
-        list: bool,
     },
     /// Track a deployment's progress
     Track {
@@ -1404,7 +1387,6 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_bot_token,
             telegram_allowed_users,
             telegram_home_channel,
-            telegram_pair_code,
             dashboard,
             cloudflare_tunnel,
             dashboard_password,
@@ -1431,7 +1413,6 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_bot_token,
             telegram_allowed_users,
             telegram_home_channel,
-            telegram_pair_code,
             dashboard,
             cloudflare_tunnel,
             dashboard_password,
@@ -1442,24 +1423,6 @@ async fn async_main() -> anyhow::Result<()> {
         })
         .await
         .map(|_| ()),
-        #[cfg(feature = "lightsail")]
-        Commands::HermesTelegramPair {
-            instance,
-            code,
-            list,
-        } => {
-            if list {
-                let output = commands::hermes_lightsail::list_telegram_pairings(&instance).await?;
-                println!("{output}");
-            } else {
-                let Some(code) = code else {
-                    anyhow::bail!("--code is required unless --list is used");
-                };
-                let output = commands::hermes_lightsail::pair_telegram(&instance, &code).await?;
-                println!("{output}");
-            }
-            Ok(())
-        }
         Commands::Track {
             query,
             follow,

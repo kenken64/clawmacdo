@@ -6,6 +6,9 @@
 - Native Hermes software bundles for Ubuntu 24.04 amd64 and arm64, built from pinned versions on clean CI runners and checked on separate VMs with networking disabled for runtime tests. Bundles include the compiled dashboard, Python runtime/dependencies, OpenCode v2 and cloudflared without customer credentials or sessions.
 - Hermes provisioning downloads and extracts the verified bundle in parallel with OS updates, waits for both jobs before starting services, and streams separate installation phases in the CLI and web UI. Source fallback runs only after package installation has finished; checksum and installation failures stop provisioning.
 
+### Changed
+- Hermes Telegram setup uses the bot token and Allowed User IDs for direct access. Removed the provisioning pairing-code option, dedicated `hermes-telegram-pair` subcommand, and pairing fields/approval form in the web UI. OpenClaw pairing remains available.
+
 ## v0.96.0
 
 ### Added

@@ -22,10 +22,11 @@ async function openHermesForm(page: Page) {
   return card;
 }
 
-test("Hermes OpenRouter deployment configures OpenCode and supports Telegram pairing", async ({ page }) => {
+test("Hermes OpenRouter deployment configures OpenCode and Telegram access without pairing", async ({ page }) => {
   const card = await openHermesForm(page);
   await expect(card.locator('[name="hermes_ai_provider"]')).toHaveValue("openrouter");
   await expect(card.locator('[name="hermes_image"]')).toHaveCount(0);
+  await expect(card.locator('[name="hermes_telegram_pair_code"]')).toHaveCount(0);
   await expect(card.locator('[name="hermes_mount_docker_socket"]')).toHaveCount(0);
   await expect(card).toContainText("Hermes runs directly on the Lightsail host");
   await expect(card.locator('[name="hermes_bedrock_api_key"]')).toBeHidden();
@@ -39,6 +40,7 @@ test("Hermes OpenRouter deployment configures OpenCode and supports Telegram pai
   const requestPromise = page.waitForRequest(req => req.url().endsWith("/api/deploy") && req.method() === "POST");
   await card.locator('.deploy-submit-btn').click();
   const body = (await requestPromise).postDataJSON();
+  expect(body).not.toHaveProperty("hermes_telegram_pair_code");
   expect(body).toMatchObject({
     target: "hermes",
     provider: "hermes-lightsail",
@@ -59,31 +61,15 @@ test("Hermes OpenRouter deployment configures OpenCode and supports Telegram pai
   await expect(card.locator('.deploy-log-area')).toContainText("OpenCode: CLI v2 will be installed");
   await expect(card.locator('.deploy-log-area')).toContainText("prebuilt Hermes bundle alongside OS updates");
 
-  // Dry-run deployments have no SSH server: exercise the UI against simulated approval responses.
-  let attempts = 0;
-  await page.route("**/api/telegram/pairing/approve", async route => {
-    expect(route.request().postDataJSON()).toMatchObject({
-      provider: "hermes-lightsail", pairing_code: "abcd1234", ip: "0.0.0.0",
-    });
-    attempts++;
-    await route.fulfill({
-      status: attempts === 1 ? 502 : 200,
-      json: { ok: attempts > 1, message: attempts === 1 ? "Pairing code expired" : "Telegram pairing approved" },
-    });
-  });
-  await card.locator('.telegram-pairing-code').fill("abcd1234");
-  await card.locator('.telegram-pairing-btn').click();
-  await expect(card.locator('.telegram-pairing-result')).toHaveText("Pairing code expired");
-  await expect(card.locator('.telegram-pairing-btn')).toBeEnabled();
-  await card.locator('.telegram-pairing-btn').click();
-  await expect(card.locator('.telegram-pairing-result')).toHaveText("Telegram pairing approved");
-  await expect(card.locator('.telegram-pairing-code')).toHaveValue("");
+  await expect(card.locator('.telegram-pairing-btn')).toHaveCount(0);
+  await expect(card.locator('.telegram-pairing-code')).toHaveCount(0);
 
   const stored = await page.evaluate(() => JSON.stringify(localStorage));
   expect(stored).not.toContain("sk-or-web-test");
   expect(stored).not.toContain("123456:web-test-token");
   await page.reload();
-  await expect(page.locator('.deploy-summary:visible .telegram-pairing-btn')).toBeVisible();
+  await expect(page.locator('.deploy-summary:visible')).toBeVisible();
+  await expect(page.locator('.deploy-summary:visible .telegram-pairing-btn')).toHaveCount(0);
 });
 
 test("Hermes provider switching validates the selected key and retains Bedrock support", async ({ page }) => {
@@ -108,17 +94,17 @@ test("Hermes provider switching validates the selected key and retains Bedrock s
   await expect(card.locator('.deploy-summary')).toBeVisible({ timeout: 30_000 });
 });
 
-test("Hermes permits skipping OpenCode and submitting a pending Telegram code", async ({ page }) => {
+test("Hermes permits skipping OpenCode without requesting Telegram pairing", async ({ page }) => {
   const card = await openHermesForm(page);
   await card.locator('[name="hermes_openrouter_api_key"]').fill("sk-or-web-test");
   await card.locator('[name="hermes_install_opencode"]').uncheck();
   await card.locator('[name="hermes_telegram_bot_token"]').fill("123456:web-test-token");
-  await card.locator('[name="hermes_telegram_pair_code"]').fill("ABCD1234");
+  await card.locator('[name="hermes_telegram_allowed_users"]').fill("111");
   const requestPromise = page.waitForRequest(req => req.url().endsWith("/api/deploy") && req.method() === "POST");
   await card.locator('.deploy-submit-btn').click();
   expect((await requestPromise).postDataJSON()).toMatchObject({
     hermes_install_opencode: false,
-    hermes_telegram_pair_code: "ABCD1234",
+    hermes_telegram_allowed_users: "111",
   });
   await expect(card.locator('.deploy-summary')).toBeVisible({ timeout: 30_000 });
   await expect(card.locator('.deploy-log-area')).not.toContainText("OpenCode: CLI v2 will be installed");
