@@ -3,13 +3,6 @@ name: Hermes native bundle
 on:
   workflow_dispatch:
   push:
-    branches: ['work/hermes-prebuilt']
-    paths:
-      - '.github/workflows/hermes-bundle.yml'
-      - 'scripts/hermes-bundle/**'
-      - 'crates/clawmacdo-cli/src/commands/hermes_bundle.py'
-      - 'crates/clawmacdo-cli/src/commands/hermes_install.sh'
-      - 'tests/unit/test_hermes_bundle.py'
     tags: ['hermes-bundle-v*']
 
 permissions:
