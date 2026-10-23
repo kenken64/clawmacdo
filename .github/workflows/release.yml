@@ -159,6 +159,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Check Hermes Quick Tunnel startup
+        run: python3 tests/unit/test_hermes_cloudflare.py
+
       - name: Check formatting
         run: cargo fmt --check
 

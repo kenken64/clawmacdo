@@ -1,5 +1,10 @@
 import { test, expect, Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }, testInfo) => {
+  // Each isolated browser gets its own rate-limit bucket on the shared test server.
+  await page.setExtraHTTPHeaders({ "x-forwarded-for": `192.0.2.${testInfo.line % 254 + 1}` });
+});
+
 async function openHermesForm(page: Page) {
   await page.goto("/login");
   const pin = page.locator('input[name="pin"]');
@@ -116,4 +121,70 @@ test("Hermes permits skipping OpenCode and submitting a pending Telegram code", 
   });
   await expect(card.locator('.deploy-summary')).toBeVisible({ timeout: 30_000 });
   await expect(card.locator('.deploy-log-area')).not.toContainText("OpenCode: CLI v2 will be installed");
+});
+
+test("Hermes Quick Tunnel needs no Cloudflare credentials and preserves the generated link", async ({ page }) => {
+  const card = await openHermesForm(page);
+  await card.locator('[name="hermes_openrouter_api_key"]').fill("sk-or-web-test");
+  await expect(card.locator('.hermes-tunnel-config')).toBeHidden();
+  await card.locator('[name="hermes_dashboard"]').uncheck();
+  await card.locator('[name="hermes_cloudflare_tunnel"]').check();
+  await expect(card.locator('[name="hermes_dashboard"]')).toBeChecked();
+  await expect(card.locator('[name="hermes_dashboard"]')).toBeDisabled();
+  await card.locator('.deploy-submit-btn').click();
+  await expect(card.locator('.field-error')).toHaveCount(1);
+  await expect(card.locator('[name="hermes_cloudflare_tunnel_token"]')).toHaveCount(0);
+  await expect(card.locator('[name="hermes_dashboard_hostname"]')).toHaveCount(0);
+  await card.locator('[name="hermes_dashboard_password"]').fill("test-private-dashboard-password");
+  // No real tunnel exists in dry-run mode: simulate the URL returned over SSH after cloud-init.
+  await page.route("**/api/deploy/*/events", route => route.fulfill({
+    contentType: "text/event-stream",
+    body: 'data: DEPLOY_COMPLETE_JSON:' + JSON.stringify({
+      ip: '0.0.0.0', ssh_key_path: '(dry-run)', hostname: 'hermes-test',
+      dashboard_enabled: true, dashboard_url: 'https://hermes-web-test.trycloudflare.com',
+    }) + '\n\n',
+  }));
+  const requestPromise = page.waitForRequest(req => req.url().endsWith("/api/deploy") && req.method() === "POST");
+  await card.locator('.deploy-submit-btn').click();
+  const body = (await requestPromise).postDataJSON();
+  expect(body).not.toHaveProperty("hermes_cloudflare_tunnel_token");
+  expect(body).not.toHaveProperty("hermes_dashboard_hostname");
+  expect(body).toMatchObject({
+    hermes_dashboard: true,
+    hermes_cloudflare_tunnel: true,
+    hermes_dashboard_password: "test-private-dashboard-password",
+  });
+  const summary = card.locator('.deploy-summary');
+  await expect(summary).toBeVisible({ timeout: 30_000 });
+  await expect(summary.getByRole('link', { name: 'https://hermes-web-test.trycloudflare.com' })).toHaveAttribute('href', 'https://hermes-web-test.trycloudflare.com');
+  await expect(summary).toContainText('Dashboard login: admin');
+  const stored = await page.evaluate(() => JSON.stringify(localStorage));
+  expect(stored).toContain('https://hermes-web-test.trycloudflare.com');
+  expect(stored).not.toContain('test-private-tunnel-token');
+  expect(stored).not.toContain('test-private-dashboard-password');
+  await expect(card.locator('.deploy-log-area')).not.toContainText('test-private-tunnel-token');
+  await expect(card.locator('.deploy-log-area')).not.toContainText('test-private-dashboard-password');
+  await page.reload();
+  await expect(page.locator('.deploy-summary:visible').getByRole('link', { name: 'https://hermes-web-test.trycloudflare.com' })).toBeVisible();
+});
+
+test("Hermes omits disabled tunnel credentials and dashboard instructions", async ({ page }) => {
+  const card = await openHermesForm(page);
+  await card.locator('[name="hermes_openrouter_api_key"]').fill("sk-or-web-test");
+  await card.locator('[name="hermes_cloudflare_tunnel"]').check();
+  await card.locator('[name="hermes_dashboard_password"]').fill("unused-password");
+  await card.locator('[name="hermes_cloudflare_tunnel"]').uncheck();
+  await expect(card.locator('[name="hermes_dashboard"]')).toBeEnabled();
+  await card.locator('[name="hermes_dashboard"]').uncheck();
+  const requestPromise = page.waitForRequest(req => req.url().endsWith("/api/deploy") && req.method() === "POST");
+  await card.locator('.deploy-submit-btn').click();
+  expect((await requestPromise).postDataJSON()).toMatchObject({
+    hermes_dashboard: false,
+    hermes_cloudflare_tunnel: false,
+    hermes_dashboard_password: '',
+  });
+  await expect(card.locator('.deploy-summary')).toBeVisible({ timeout: 30_000 });
+  await expect(card.locator('.deploy-summary')).not.toContainText('9119');
+  await page.reload();
+  await expect(page.locator('.deploy-summary:visible')).not.toContainText('9119');
 });

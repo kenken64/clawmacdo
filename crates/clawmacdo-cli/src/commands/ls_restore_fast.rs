@@ -535,6 +535,7 @@ fn save_deploy_record(
         ssh_key_id: None,
         resource_group: None,
         backup_restored: None,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     record.save()?;

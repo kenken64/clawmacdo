@@ -303,6 +303,37 @@ What gets configured:
   (`openrouter/openai/gpt-6-sol`) in `~/.config/opencode/opencode.json`.
 - Use `--no-opencode` to skip the OpenCode CLI install.
 
+To give the dashboard an HTTPS address, enable **Cloudflare Quick Tunnel for the dashboard** in the
+web UI. No Cloudflare account, tunnel token, custom hostname, or DNS setup is needed. Enter a dashboard
+password of at least 12 characters; sign in to Hermes as **admin** using that password.
+
+For the CLI, add `--cloudflare-tunnel` to your provisioning command. This also enables the dashboard.
+AWS and OpenRouter credentials are read from the environment as above:
+
+```bash
+export HERMES_DASHBOARD_PASSWORD="your_long_dashboard_password"
+clawmacdo hermes-provision --cloudflare-tunnel
+```
+
+The password can also be supplied with `--dashboard-password`. It protects the Hermes dashboard;
+Cloudflare Quick Tunnel itself needs no credentials. Provisioning installs native `cloudflared` and runs
+`cloudflared tunnel --url http://127.0.0.1:9119` as `hermes-cloudflared.service` at boot. Hermes stays on
+localhost with no new inbound firewall ports, and its password is stored as a scrypt hash.
+
+The generated `https://<random>.trycloudflare.com` link appears in the completed deployment summary and
+saved record. **The URL changes when the tunnel restarts.** Each connector start updates Hermes with the
+new hostname, restarts the dashboard, and checks authentication and the Cloudflare connection before saving
+the current URL. The web UI retains the last reported link; retrieve the current link after a restart with:
+
+```bash
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'cat /var/lib/hermes-cloudflared/dashboard-url'
+```
+
+View connector logs with `sudo journalctl -u hermes-cloudflared -f`. The web UI does not save the dashboard
+password in browser storage. `--dry-run` redacts the password and leaves the dashboard URL empty because
+no tunnel is created. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+are temporary, have no uptime guarantee, and do not support Server-Sent Events (SSE).
+
 To pair a Telegram user after provisioning, DM the bot. It replies with a pairing code, then approve it:
 
 ```bash
@@ -1312,7 +1343,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.95.1
+**Current version:** 0.96.0
 
 
 

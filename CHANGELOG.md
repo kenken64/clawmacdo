@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.96.0
+
+### Added
+- Hermes Lightsail provisioning can install a native Cloudflare Quick Tunnel for the dashboard from the CLI or web UI. Supply only a dashboard password; no Cloudflare account, token, or domain is needed. The generated trycloudflare.com link appears in the deployment summary and saved record.
+- Tunneled dashboards require an authenticated Hermes login, keep the origin on localhost, update the dashboard hostname whenever the tunnel restarts, and verify dashboard authentication plus tunnel connectivity before declaring provisioning complete.
+
+### Fixed
+- Hermes deployment summaries now respect the dashboard checkbox, including after a web UI reload.
+
 ## v0.95.1
 
 ### Fixed

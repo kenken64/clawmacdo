@@ -205,6 +205,7 @@ pub async fn run(params: DoRestoreParams) -> Result<RestoreResult> {
         ssh_key_id: None,
         resource_group: None,
         backup_restored: None,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;

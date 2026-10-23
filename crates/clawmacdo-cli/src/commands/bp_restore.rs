@@ -197,6 +197,7 @@ pub async fn run(params: BpRestoreParams) -> Result<RestoreResult> {
         ssh_key_id: Some(key_info.id),
         resource_group: None,
         backup_restored: None,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;

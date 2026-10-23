@@ -49,6 +49,8 @@ pub struct HermesLightsailParams {
     pub telegram_home_channel: Option<String>,
     pub telegram_pair_code: Option<String>,
     pub dashboard: bool,
+    pub cloudflare_tunnel: bool,
+    pub dashboard_password: Option<String>,
     pub dry_run: bool,
     pub json: bool,
     pub progress_tx: Option<mpsc::UnboundedSender<String>>,
@@ -277,6 +279,7 @@ fn resolve_ai_provider(params: &HermesLightsailParams) -> Result<AiProvider> {
 /// Validate web requests before a deployment job or cloud resource is created.
 pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<()> {
     resolve_ai_provider(params)?;
+    dashboard_tunnel(params)?;
     if let Some(token) = params
         .telegram_bot_token
         .as_deref()
@@ -295,6 +298,60 @@ pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<(
         validate_telegram_pair_code(code)?;
     }
     Ok(())
+}
+
+struct DashboardTunnel {
+    password: String,
+}
+
+fn dashboard_tunnel(params: &HermesLightsailParams) -> Result<Option<DashboardTunnel>> {
+    if !params.cloudflare_tunnel {
+        return Ok(None);
+    }
+    let password = params.dashboard_password.as_deref().unwrap_or("");
+    if password.trim().is_empty()
+        || password.chars().count() < 12
+        || password.chars().any(char::is_control)
+    {
+        bail!("Quick Tunnel requires a dashboard password of at least 12 characters and no control characters.");
+    }
+    Ok(Some(DashboardTunnel {
+        password: password.to_string(),
+    }))
+}
+
+fn parse_quick_tunnel_url(value: &str) -> Result<String> {
+    let value = value.trim();
+    let label = value
+        .strip_prefix("https://")
+        .and_then(|url| url.strip_suffix(".trycloudflare.com"));
+    if !label.is_some_and(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    }) {
+        bail!("The Hermes host did not return a valid Quick Tunnel URL.");
+    }
+    Ok(value.to_string())
+}
+
+async fn read_dashboard_url(ip: &str, key: &std::path::Path) -> Result<String> {
+    let ip = ip.to_string();
+    let key = key.to_path_buf();
+    let output = tokio::task::spawn_blocking(move || {
+        ssh::exec_as(
+            &ip,
+            &key,
+            "cat /var/lib/hermes-cloudflared/dashboard-url",
+            "ubuntu",
+        )
+    })
+    .await??;
+    parse_quick_tunnel_url(&output)
 }
 
 fn bedrock_mantle_base_url(region: &str) -> String {
@@ -500,6 +557,7 @@ fn generate_user_data(
     aws_cli_config_content: &str,
     opencode_install_block: &str,
     dashboard: bool,
+    tunnel: Option<&DashboardTunnel>,
 ) -> String {
     let sentinel = config::CLOUD_INIT_SENTINEL;
     let env_b64 = base64::engine::general_purpose::STANDARD.encode(env_content.as_bytes());
@@ -507,11 +565,39 @@ fn generate_user_data(
     let aws_cli_config_b64 =
         base64::engine::general_purpose::STANDARD.encode(aws_cli_config_content.as_bytes());
     let gateway_unit = hermes_service("Hermes Agent gateway", "gateway run");
+    let tunnel_block = tunnel
+        .map(|tunnel| {
+            let settings = serde_json::json!({
+                "password": tunnel.password,
+            });
+            include_str!("hermes_cloudflare.sh")
+                .replace(
+                    "__TUNNEL_CONFIG_B64__",
+                    &base64::engine::general_purpose::STANDARD.encode(settings.to_string()),
+                )
+                .replace(
+                    "__TUNNEL_READY_B64__",
+                    &base64::engine::general_purpose::STANDARD
+                        .encode(include_str!("hermes_cloudflare_ready.py")),
+                )
+        })
+        .unwrap_or_default();
+    let tunnel_start = if tunnel.is_some() {
+        include_str!("hermes_cloudflare_start.sh")
+    } else {
+        ""
+    };
     let dashboard_block = if dashboard {
-        let unit = hermes_service(
+        let mut unit = hermes_service(
             "Hermes Agent dashboard",
             "dashboard --host 127.0.0.1 --port 9119 --no-open",
         );
+        if tunnel.is_some() {
+            unit = unit.replace(
+                "[Service]\n",
+                "[Service]\nEnvironmentFile=/etc/hermes-cloudflared/dashboard.env\n",
+            );
+        }
         format!("cat > /etc/systemd/system/hermes-dashboard.service <<'UNIT'\n{unit}UNIT\nsystemctl daemon-reload\nsystemctl enable --now hermes-dashboard.service\n")
     } else {
         String::new()
@@ -531,7 +617,7 @@ AWS_CLI_CONFIG_B64='{aws_cli_config_b64}'
 echo "[clawmacdo] Installing native Hermes Agent on Lightsail"
 apt-get update -y
 apt-get upgrade -y
-apt-get install -y ca-certificates curl git unzip ufw fail2ban unattended-upgrades
+apt-get install -y ca-certificates curl git unzip python3 ufw fail2ban unattended-upgrades
 
 ufw default deny incoming
 ufw default allow outgoing
@@ -558,6 +644,7 @@ if [ -n "$AWS_CLI_CONFIG_B64" ]; then
 fi
 
 {opencode_install_block}
+{tunnel_block}
 echo "[clawmacdo] Starting native Hermes services"
 cat > /etc/systemd/system/hermes-gateway.service <<'UNIT'
 {gateway_unit}UNIT
@@ -568,6 +655,7 @@ systemctl enable --now hermes-gateway.service
 sleep 10
 systemctl is-active --quiet hermes-gateway.service
 {dashboard_check}
+{tunnel_start}
 touch {sentinel}
 echo "[clawmacdo] Native Hermes Agent bootstrap complete"
 "#,
@@ -623,6 +711,13 @@ fn print_summary(
     if dashboard {
         println!("  Dashboard tunnel:  ssh -i {key} -L 9119:127.0.0.1:9119 ubuntu@{ip}");
         println!("                     then open http://127.0.0.1:9119");
+    }
+    if let Some(url) = &record.dashboard_url {
+        println!("  Dashboard HTTPS:   {url}");
+        println!("  Quick Tunnel:      URL changes when the tunnel restarts");
+        println!("  Current URL:       ssh -i {key} ubuntu@{ip} 'cat /var/lib/hermes-cloudflared/dashboard-url'");
+        println!("  Dashboard login:   admin (use the password supplied when provisioning)");
+        println!("  Tunnel logs:       ssh -i {key} ubuntu@{ip} 'sudo journalctl -u hermes-cloudflared -f'");
     }
     println!(
         "  Deploy Record:     ~/.clawmacdo/deploys/{}.json",
@@ -725,6 +820,15 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         tx,
         "\n[Step 1/8] Resolving Hermes Agent Lightsail parameters...",
     );
+    let tunnel = match dashboard_tunnel(&params) {
+        Ok(tunnel) => tunnel,
+        Err(err) => {
+            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
+            return Err(err);
+        }
+    };
+    let dashboard = params.dashboard || tunnel.is_some();
+
     let region = if params.aws_region.trim().is_empty() {
         "ap-southeast-1".to_string()
     } else {
@@ -826,12 +930,21 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     } else {
         "# OpenCode CLI install disabled by --no-opencode\n".to_string()
     };
+    // Preview scripts must not reveal the new tunnel credentials, even base64-encoded.
+    let preview_tunnel = tunnel.as_ref().map(|_| DashboardTunnel {
+        password: "REDACTED".into(),
+    });
     let user_data = generate_user_data(
         &env_content,
         &config_content,
         &aws_cli_config_content,
         &opencode_install_block,
-        params.dashboard,
+        dashboard,
+        if params.dry_run {
+            preview_tunnel.as_ref()
+        } else {
+            tunnel.as_ref()
+        },
     );
     progress::emit(tx, "  Provider: AWS Lightsail");
     progress::emit(tx, &format!("  Region:   {region}"));
@@ -839,6 +952,12 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     progress::emit(tx, &format!("  Hostname: {hostname}"));
     progress::emit(tx, "  Runtime:  native host (terminal backend: local)");
     progress::emit(tx, &format!("  AI Model: {ai_summary}"));
+    if tunnel.is_some() {
+        progress::emit(
+            tx,
+            "  Dashboard: Cloudflare Quick Tunnel (URL assigned at startup, login: admin)",
+        );
+    }
     if params.install_opencode {
         progress::emit(tx, "  OpenCode: CLI v2 will be installed for ubuntu");
     }
@@ -862,7 +981,9 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "opencode_installed": params.install_opencode,
                 "telegram_configured": telegram_token.is_some(),
                 "telegram_pair_code_requested": telegram_pair_code.is_some(),
-                "dashboard": params.dashboard,
+                "dashboard": dashboard,
+                "dashboard_url": null,
+                "cloudflare_tunnel": tunnel.is_some(),
                 "user_data": user_data,
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -897,6 +1018,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             ssh_key_id: Some("(dry-run)".to_string()),
             resource_group: None,
             backup_restored: None,
+            dashboard_url: None,
             created_at: Utc::now(),
         });
     }
@@ -1000,6 +1122,20 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         return Err(err.into());
     }
     progress::emit(tx, "[Step 7/8] Hermes Agent cloud-init complete");
+    let dashboard_url = if tunnel.is_some() {
+        match read_dashboard_url(&ip, &keypair.private_key_path).await {
+            Ok(url) => {
+                progress::emit(tx, &format!("  Dashboard HTTPS: {url}"));
+                Some(url)
+            }
+            Err(err) => {
+                record_step_failed(step_db, &deploy_id, 7, &err.to_string());
+                return Err(err.context("Failed to read the generated Hermes Quick Tunnel URL"));
+            }
+        }
+    } else {
+        None
+    };
     record_step_complete(step_db, &deploy_id, 7);
 
     if let Some(code) = telegram_pair_code {
@@ -1040,6 +1176,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         ssh_key_id: Some(key_info.id),
         resource_group: None,
         backup_restored: None,
+        dashboard_url,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;
@@ -1052,7 +1189,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     } else {
         print_summary(
             &record,
-            params.dashboard,
+            dashboard,
             &ai_summary,
             params.install_opencode && has_value(params.openrouter_api_key.as_deref()),
             telegram_bot_username.as_deref(),
@@ -1084,6 +1221,7 @@ mod tests {
                 &build_opencode_config_content(DEFAULT_OPENROUTER_MODEL),
             ),
             true,
+            None,
         );
         assert!(user_data.contains("hermes-agent.nousresearch.com/install.sh"));
         assert!(user_data.contains("--non-interactive"));
@@ -1093,8 +1231,101 @@ mod tests {
         assert!(user_data.contains("https://opencode.ai/v2/install"));
         assert!(!user_data.contains("docker"));
         assert!(user_data.contains(config::CLOUD_INIT_SENTINEL));
-        let without_dashboard = generate_user_data("", "", "", "", false);
+        let without_dashboard = generate_user_data("", "", "", "", false, None);
         assert!(!without_dashboard.contains("hermes-dashboard.service"));
+        assert!(!without_dashboard.contains("cloudflared"));
+    }
+
+    #[test]
+    fn quick_tunnel_requires_only_a_dashboard_password() {
+        let mut params = openrouter_params("openrouter", Some("sk-or-test"), None);
+        assert!(dashboard_tunnel(&params).unwrap().is_none());
+        params.cloudflare_tunnel = true;
+        assert!(dashboard_tunnel(&params).is_err());
+        for password in ["short", "long-but\ninvalid", "                "] {
+            params.dashboard_password = Some(password.into());
+            assert!(dashboard_tunnel(&params).is_err());
+        }
+        params.dashboard_password = Some("correct horse battery staple".into());
+        assert_eq!(
+            dashboard_tunnel(&params).unwrap().unwrap().password,
+            "correct horse battery staple"
+        );
+        params.cloudflare_tunnel = false;
+        assert!(dashboard_tunnel(&params).unwrap().is_none());
+    }
+
+    #[test]
+    fn quick_tunnel_url_rejects_unexpected_or_unsafe_output() {
+        assert_eq!(
+            parse_quick_tunnel_url("https://test-123.trycloudflare.com\n").unwrap(),
+            "https://test-123.trycloudflare.com"
+        );
+        for url in [
+            "",
+            "http://test.trycloudflare.com",
+            "https://test.trycloudflare.com.evil.com",
+            "https://trycloudflare.com",
+            "https://-test.trycloudflare.com",
+            "https://test.trycloudflare.com/path",
+            "https://test.trycloudflare.com:443",
+            "https://user@test.trycloudflare.com",
+            "https://test.trycloudflare.com\ninjected",
+        ] {
+            assert!(parse_quick_tunnel_url(url).is_err(), "accepted {url:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tunnel_bootstrap_is_valid_bash_and_checks_auth_before_exposure() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let tunnel = DashboardTunnel {
+            password: "quoted ' password $()".into(),
+        };
+        let script = generate_user_data(
+            "",
+            "terminal:\n  backend: local\n",
+            "",
+            "",
+            true,
+            Some(&tunnel),
+        );
+        assert!(!script.contains(&tunnel.password));
+        assert!(!script.contains("docker"));
+        assert!(!script.contains("--host 0.0.0.0"));
+        assert!(script.contains("--url http://127.0.0.1:9119"));
+        assert!(!script.contains("--token"));
+        assert!(!script.contains("LoadCredential="));
+        assert!(script.contains("ExecStartPost=+/usr/bin/python3"));
+        assert!(script.contains("EnvironmentFile=/etc/hermes-cloudflared/dashboard.env"));
+        assert!(
+            script
+                .find("'public_url': 'https://pending.invalid'")
+                .unwrap()
+                < script
+                    .find("systemctl enable --now hermes-cloudflared.service")
+                    .unwrap()
+        );
+        // Parse the embedded Bash too: the outer sh heredoc is opaque to bash -n.
+        let body = script
+            .split_once("CLAWMACDO_HERMES_BOOTSTRAP'\n")
+            .unwrap()
+            .1;
+        let body = body.strip_suffix("\nCLAWMACDO_HERMES_BOOTSTRAP\n").unwrap();
+        let mut child = Command::new("bash")
+            .arg("-n")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
     }
 
     #[test]
@@ -1157,6 +1388,8 @@ mod tests {
             telegram_home_channel: None,
             telegram_pair_code: None,
             dashboard: false,
+            cloudflare_tunnel: false,
+            dashboard_password: None,
             dry_run: true,
             json: false,
             progress_tx: None,
@@ -1213,6 +1446,8 @@ mod tests {
             telegram_home_channel: None,
             telegram_pair_code: None,
             dashboard: false,
+            cloudflare_tunnel: false,
+            dashboard_password: None,
             dry_run: true,
             json: false,
             progress_tx: None,

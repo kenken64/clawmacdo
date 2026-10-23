@@ -202,6 +202,12 @@ enum Commands {
         /// Run the Hermes dashboard on 127.0.0.1:9119; access via SSH tunnel
         #[arg(long)]
         dashboard: bool,
+        /// Enable a Cloudflare Quick Tunnel with an automatically generated HTTPS URL
+        #[arg(long)]
+        cloudflare_tunnel: bool,
+        /// Dashboard admin password (at least 12 characters); required with a tunnel
+        #[arg(long, env = "HERMES_DASHBOARD_PASSWORD", hide_env_values = true)]
+        dashboard_password: Option<String>,
         /// Print the Lightsail user-data script without creating resources
         #[arg(long)]
         dry_run: bool,
@@ -1400,6 +1406,8 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_home_channel,
             telegram_pair_code,
             dashboard,
+            cloudflare_tunnel,
+            dashboard_password,
             dry_run,
             json,
         } => commands::hermes_lightsail::run(commands::hermes_lightsail::HermesLightsailParams {
@@ -1425,6 +1433,8 @@ async fn async_main() -> anyhow::Result<()> {
             telegram_home_channel,
             telegram_pair_code,
             dashboard,
+            cloudflare_tunnel,
+            dashboard_password,
             dry_run,
             json,
             progress_tx: None,

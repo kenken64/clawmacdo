@@ -154,6 +154,10 @@ struct DeployRequest {
     hermes_telegram_pair_code: String,
     #[serde(default)]
     hermes_dashboard: bool,
+    #[serde(default)]
+    hermes_cloudflare_tunnel: bool,
+    #[serde(default)]
+    hermes_dashboard_password: String,
 }
 
 #[cfg(feature = "lightsail")]
@@ -188,6 +192,10 @@ impl DeployRequest {
             telegram_home_channel: optional(&self.hermes_telegram_home_channel),
             telegram_pair_code: optional(&self.hermes_telegram_pair_code),
             dashboard: self.hermes_dashboard,
+            cloudflare_tunnel: self.hermes_cloudflare_tunnel,
+            dashboard_password: self
+                .hermes_cloudflare_tunnel
+                .then(|| self.hermes_dashboard_password.clone()),
             dry_run: is_dry_run(),
             json: false,
             progress_tx: None,
@@ -1135,7 +1143,9 @@ async fn start_deploy_handler(
                         let payload = serde_json::json!({
                             "ip": record.ip_address,
                             "ssh_key_path": record.ssh_key_path,
-                            "hostname": record.hostname
+                            "hostname": record.hostname,
+                            "dashboard_enabled": req.hermes_dashboard || req.hermes_cloudflare_tunnel,
+                            "dashboard_url": record.dashboard_url
                         })
                         .to_string();
                         let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
@@ -4041,11 +4051,11 @@ function deployFingerprint(ip, keyPath, hostname) {
   return `${ip}|${keyPath}|${hostname}`;
 }
 
-function persistCompletedDeployment(ip, keyPath, hostname, provider) {
+function persistCompletedDeployment(ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true) {
   const list = loadSavedDeployments();
   const fp = deployFingerprint(ip, keyPath, hostname);
   const next = list.filter(d => deployFingerprint(d.ip, d.keyPath, d.hostname) !== fp);
-  next.push({ ip, keyPath, hostname, provider: provider || '', savedAt: Date.now() });
+  next.push({ ip, keyPath, hostname, provider: provider || '', dashboardUrl, dashboardEnabled, savedAt: Date.now() });
   saveSavedDeployments(next);
 }
 
@@ -4068,7 +4078,7 @@ function resetSavedDeployments() {
 function restoreSavedDeployments() {
   const saved = loadSavedDeployments();
   for (const d of saved) {
-    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, provider: d.provider || '', restored: true });
+    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, provider: d.provider || '', dashboardUrl: d.dashboardUrl || '', dashboardEnabled: d.dashboardEnabled !== false, restored: true });
   }
 }
 
@@ -4292,6 +4302,14 @@ function addDeployCard(initialState) {
             <input type="checkbox" name="hermes_dashboard" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
             <span class="text-sm text-slate-300">Run Hermes dashboard on 127.0.0.1:9119</span>
           </label>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="hermes_cloudflare_tunnel" onchange="syncHermesTunnel(this.form)" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
+            <span class="text-sm text-slate-300">Cloudflare Quick Tunnel for the dashboard</span>
+          </label>
+          <div class="hermes-tunnel-config hidden space-y-3">
+            ${passwordField('hermes_dashboard_password', 'Dashboard Password', 'At least 12 characters', true)}
+            <p class="text-xs text-slate-400">Generates a temporary trycloudflare.com link with no Cloudflare account, token, or domain. Sign in to Hermes as admin with this password. The link changes when the tunnel restarts.</p>
+          </div>
         </div>
       </fieldset>
       <fieldset class="space-y-3 openclaw-only">
@@ -4364,7 +4382,7 @@ function addDeployCard(initialState) {
     progressDiv.classList.remove('hidden');
     panelSetStatus(card, 'completed');
     panelUpdateProgress(card, deploymentTotalSteps(card));
-    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '');
+    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '', initialState.dashboardUrl || '', initialState.dashboardEnabled !== false);
     if (initialState.restored) {
       panelAppendLog(card, 'Recovered completed deployment from local storage.', 'text-slate-400');
     }
@@ -4614,6 +4632,14 @@ function syncHermesProvider(form) {
   const isOpenRouter = readFormValue(form, 'hermes_ai_provider') === 'openrouter';
   form.querySelector('.hermes-openrouter-config').classList.toggle('hidden', !isOpenRouter);
   form.querySelector('.hermes-bedrock-config').classList.toggle('hidden', isOpenRouter);
+}
+
+function syncHermesTunnel(form) {
+  const enabled = form.querySelector('[name="hermes_cloudflare_tunnel"]').checked;
+  form.querySelector('.hermes-tunnel-config').classList.toggle('hidden', !enabled);
+  const dashboard = form.querySelector('[name="hermes_dashboard"]');
+  if (enabled) dashboard.checked = true;
+  dashboard.disabled = enabled;
 }
 
 function toggleProvider(select, n) {
@@ -4874,7 +4900,7 @@ function telegramPairingForm() {
   `;
 }
 
-function panelShowSummary(panel, ip, keyPath, hostname, provider) {
+function panelShowSummary(panel, ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true) {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
   const isHermes = provider === 'hermes-lightsail';
@@ -4891,11 +4917,34 @@ function panelShowSummary(panel, ip, keyPath, hostname, provider) {
       <p><span class="text-slate-500">IP:</span> ${ip}</p>
       <p><span class="text-slate-500">SSH:</span> ssh -i ${keyPath} ubuntu@${ip}</p>
       <p><span class="text-slate-500">Logs:</span> ssh -i ${keyPath} ubuntu@${ip} 'sudo journalctl -u hermes-gateway -f'</p>
-      <p><span class="text-slate-500">Dashboard tunnel:</span> ssh -i ${keyPath} -L 9119:127.0.0.1:9119 ubuntu@${ip}</p>
-      <p><span class="text-slate-500">Dashboard URL:</span> http://127.0.0.1:9119</p>
+      ${dashboardEnabled ? `<p><span class="text-slate-500">Dashboard SSH tunnel:</span> ssh -i ${keyPath} -L 9119:127.0.0.1:9119 ubuntu@${ip}</p>
+      <p><span class="text-slate-500">Local dashboard:</span> http://127.0.0.1:9119</p>` : ''}
       ${telegramPairingForm()}
     `;
-    persistCompletedDeployment(ip, keyPath, hostname, provider || '');
+    let safeDashboardUrl = '';
+    try {
+      const url = new URL(dashboardUrl);
+      if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash && url.pathname === '/') {
+        safeDashboardUrl = url.origin;
+        const p = document.createElement('p');
+        p.textContent = 'Dashboard HTTPS: ';
+        const link = document.createElement('a');
+        link.href = safeDashboardUrl;
+        link.textContent = safeDashboardUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.className = 'text-blue-400 underline';
+        p.appendChild(link);
+        content.prepend(p);
+        const login = document.createElement('p');
+        login.textContent = 'Dashboard login: admin (use the password supplied when provisioning)';
+        p.after(login);
+        const note = document.createElement('p');
+        note.textContent = 'Quick Tunnel URLs change on restart. Current link: ssh -i ' + keyPath + ' ubuntu@' + ip + ' \"cat /var/lib/hermes-cloudflared/dashboard-url\"';
+        login.after(note);
+      }
+    } catch (_) {}
+    persistCompletedDeployment(ip, keyPath, hostname, provider || '', safeDashboardUrl, dashboardEnabled);
     return;
   }
   content.innerHTML = `
@@ -5181,6 +5230,8 @@ async function startDeploy(e, cardNum) {
     hermes_telegram_home_channel: val('hermes_telegram_home_channel'),
     hermes_telegram_pair_code: val('hermes_telegram_pair_code'),
     hermes_dashboard: form.querySelector('[name="hermes_dashboard"]').checked,
+    hermes_cloudflare_tunnel: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked,
+    hermes_dashboard_password: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked ? val('hermes_dashboard_password') : '',
   };
 
   if (target !== 'hermes' && !body.openclaw_version) {
@@ -5224,11 +5275,15 @@ async function startDeploy(e, cardNum) {
         let ip = '';
         let keyPath = '';
         let hostname = '';
+        let dashboardUrl = '';
+        let dashboardEnabled = true;
         try {
           const payload = JSON.parse(msg.substring('DEPLOY_COMPLETE_JSON:'.length));
           ip = payload.ip || '';
           keyPath = payload.ssh_key_path || '';
           hostname = payload.hostname || '';
+          dashboardUrl = payload.dashboard_url || '';
+          dashboardEnabled = payload.dashboard_enabled !== false;
         } catch (_) {}
         if (!ip || !keyPath || !hostname) {
           panelSetStatus(card, 'failed');
@@ -5251,7 +5306,7 @@ async function startDeploy(e, cardNum) {
         if (_ds1) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds1), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
-        panelShowSummary(card, ip, keyPath, hostname, body.provider);
+        panelShowSummary(card, ip, keyPath, hostname, body.provider, dashboardUrl, dashboardEnabled);
         appendStepTimingTable(card, deployId);
         return;
       }
@@ -6691,6 +6746,54 @@ mod tests {
                 "hermes_openrouter_api_key": key,
                 "hermes_telegram_bot_token": token,
                 "hermes_telegram_pair_code": pair_code
+            }))
+            .unwrap();
+            let response = start_deploy_handler(State(state.clone()), Json(req))
+                .await
+                .into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(state.jobs.read().await.is_empty());
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "lightsail")]
+    fn hermes_tunnel_request_preserves_credentials_only_when_enabled() {
+        let mut req: DeployRequest = serde_json::from_value(serde_json::json!({
+            "customer_name": "Test",
+            "customer_email": "test@example.com",
+            "hermes_openrouter_api_key": "sk-or-test",
+            "hermes_cloudflare_tunnel": true,
+            "hermes_dashboard_password": " password with spaces "
+        }))
+        .unwrap();
+        let params = req.hermes_params();
+        assert!(crate::commands::hermes_lightsail::validate_configuration(&params).is_ok());
+        assert!(params.cloudflare_tunnel);
+        assert_eq!(
+            params.dashboard_password.as_deref(),
+            Some(" password with spaces ")
+        );
+        req.hermes_cloudflare_tunnel = false;
+        let params = req.hermes_params();
+        assert!(!params.cloudflare_tunnel);
+        assert!(params.dashboard_password.is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "lightsail")]
+    async fn hermes_invalid_tunnel_is_rejected_before_creating_jobs() {
+        for password in ["", "short", "long-but\ninvalid", "                "] {
+            let state = test_state();
+            let req: DeployRequest = serde_json::from_value(serde_json::json!({
+                "target": "hermes",
+                "customer_name": "Test",
+                "customer_email": "test@example.com",
+                "aws_access_key_id": "test-access",
+                "aws_secret_access_key": "test-secret",
+                "hermes_openrouter_api_key": "sk-or-test",
+                "hermes_cloudflare_tunnel": true,
+                "hermes_dashboard_password": password
             }))
             .unwrap();
             let response = start_deploy_handler(State(state.clone()), Json(req))

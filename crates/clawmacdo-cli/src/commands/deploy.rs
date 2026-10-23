@@ -1004,6 +1004,7 @@ SVCEOF\n\
         ssh_key_id: Some(key_info.id),
         resource_group: None,
         backup_restored,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;
@@ -1410,6 +1411,7 @@ SVCEOF\n\
         ssh_key_id: Some(key_info.id),
         resource_group: None,
         backup_restored,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;
@@ -1686,6 +1688,7 @@ fs.writeFileSync(p,JSON.stringify(cfg,null,2)+\"\\n\");' && echo ok"
         ssh_key_id: None,
         resource_group: None,
         backup_restored,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;
@@ -2066,6 +2069,7 @@ SVCEOF\n\
         ssh_key_id: Some(key_name),
         resource_group: None,
         backup_restored,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;
@@ -2493,6 +2497,7 @@ SVCEOF\n\
         ssh_key_id: None,
         resource_group: Some(resource_group),
         backup_restored,
+        dashboard_url: None,
         created_at: Utc::now(),
     };
     let record_path = record.save()?;

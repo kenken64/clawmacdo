@@ -242,6 +242,9 @@ pub struct DeployRecord {
     #[serde(default)]
     pub resource_group: Option<String>,
     pub backup_restored: Option<String>,
+    /// Public Hermes dashboard URL, when provisioned with a Cloudflare Tunnel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dashboard_url: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
