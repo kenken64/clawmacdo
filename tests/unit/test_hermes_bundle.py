@@ -19,10 +19,29 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("hermes_bundle", ROOT / "crates/clawmacdo-cli/src/commands/hermes_bundle.py")
 bundle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bundle)
+spec = importlib.util.spec_from_file_location("hermes_package", ROOT / "scripts/hermes-bundle/package.py")
+package = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(package)
 config = json.loads((ROOT / "scripts/hermes-bundle/bundle.json").read_text())
 
 
 class BundleTests(unittest.TestCase):
+    def test_package_keeps_npm_fetch_runtime_but_omits_tool_download_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            runtime = home / ".hermes/tools/node/lib/node_modules/npm/node_modules/minipass-fetch/lib/fetch-error.js"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_text("module.exports = FetchError")
+            cache = home / ".hermes/tools/fetch-abc/download.tar.gz"
+            cache.parent.mkdir()
+            cache.write_text("download cache")
+            output = home / "test.tar.gz"
+            with tarfile.open(output, "w:gz") as archive:
+                archive.add(home / ".hermes/tools", arcname=".hermes/tools", filter=package.include_software)
+            with tarfile.open(output) as archive:
+                self.assertEqual(archive.extractfile(runtime.relative_to(home).as_posix()).read(), b"module.exports = FetchError")
+                self.assertNotIn(cache.relative_to(home).as_posix(), archive.getnames())
+
     def archive(self, directory, extra=None):
         path = Path(directory) / "bundle.tar.gz"
         with tarfile.open(path, "w:gz") as archive:

@@ -18,6 +18,22 @@ def permitted_path(name):
     return any(name == root or name.startswith(root + "/") for root in ROOTS)
 
 
+def include_software(member):
+    # Only direct tool-store children are download caches. npm's runtime includes
+    # minipass-fetch/lib/fetch-error.js, which must not be filtered by its basename.
+    path = Path(member.name)
+    if path.parent == Path(".hermes/tools") and path.name.startswith((".staging-", "fetch-")):
+        return None
+    if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+        raise ValueError(f"Unexpected special file: {member.name}")
+    if not permitted_path(member.name):
+        raise ValueError(f"Not a software path: {member.name}")
+    member.uid = member.gid = 0
+    member.uname = member.gname = ""
+    member.mode &= 0o777  # Never ship setuid/setgid bits.
+    return member
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -36,22 +52,9 @@ def main():
     filename = f"hermes-ubuntu-24.04-{args.arch}.tar.gz"
     archive = args.output / filename
 
-    def include(member):
-        # Download caches and transient locks are not runtime dependencies.
-        if any(part.startswith((".staging-", "fetch-")) for part in Path(member.name).parts):
-            return None
-        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
-            raise ValueError(f"Unexpected special file: {member.name}")
-        if not permitted_path(member.name):
-            raise ValueError(f"Not a software path: {member.name}")
-        member.uid = member.gid = 0
-        member.uname = member.gname = ""
-        member.mode &= 0o777  # Never ship setuid/setgid bits.
-        return member
-
     with tarfile.open(archive, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tar:
         for root in ROOTS:
-            tar.add(home / root, arcname=root, filter=include)
+            tar.add(home / root, arcname=root, filter=include_software)
     with archive.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     manifest = {
