@@ -19,7 +19,7 @@ jobs:
         id: notes
         run: |
           # Get the previous tag (if any)
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          PREV_TAG=$(git describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || echo "")
           COMMIT_SHA=$(git rev-parse --short HEAD)
           COMMIT_MSG=$(git log -1 --pretty=%s)
           COMMIT_AUTHOR=$(git log -1 --pretty=%an)
