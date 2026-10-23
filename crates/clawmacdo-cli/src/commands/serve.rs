@@ -151,8 +151,6 @@ struct DeployRequest {
     #[serde(default)]
     hermes_telegram_home_channel: String,
     #[serde(default)]
-    hermes_telegram_pair_code: String,
-    #[serde(default)]
     hermes_dashboard: bool,
     #[serde(default)]
     hermes_cloudflare_tunnel: bool,
@@ -190,7 +188,6 @@ impl DeployRequest {
             telegram_bot_token: optional(&self.hermes_telegram_bot_token),
             telegram_allowed_users: optional(&self.hermes_telegram_allowed_users),
             telegram_home_channel: optional(&self.hermes_telegram_home_channel),
-            telegram_pair_code: optional(&self.hermes_telegram_pair_code),
             dashboard: self.hermes_dashboard,
             cloudflare_tunnel: self.hermes_cloudflare_tunnel,
             dashboard_password: self
@@ -1565,18 +1562,7 @@ async fn approve_telegram_pairing_handler(
     );
 
     let ssh_user = ssh_user_for_provider(req.provider.as_deref());
-    let result = if req.provider.as_deref() == Some("hermes-lightsail") {
-        #[cfg(feature = "lightsail")]
-        {
-            crate::commands::hermes_lightsail::approve_telegram_pairing(&ip, &key, &code).await
-        }
-        #[cfg(not(feature = "lightsail"))]
-        {
-            Err(anyhow::anyhow!(
-                "Hermes pairing requires the lightsail feature."
-            ))
-        }
-    } else if ssh_user == "root" {
+    let result = if ssh_user == "root" {
         ssh_as_openclaw_async(&ip, &key, &cmd)
             .await
             .map_err(anyhow::Error::from)
@@ -3329,13 +3315,7 @@ fn normalize_pairing_code(raw: &str) -> Option<String> {
 
 fn pairing_code_for_provider(raw: &str, provider: Option<&str>) -> anyhow::Result<String> {
     if provider == Some("hermes-lightsail") {
-        #[cfg(feature = "lightsail")]
-        {
-            crate::commands::hermes_lightsail::validate_telegram_pair_code(raw)?;
-            return Ok(raw.trim().to_string());
-        }
-        #[cfg(not(feature = "lightsail"))]
-        anyhow::bail!("Hermes pairing requires the lightsail feature.");
+        anyhow::bail!("Hermes uses Telegram Allowed User IDs configured during provisioning; no pairing step is needed.");
     }
     normalize_pairing_code(raw)
         .ok_or_else(|| anyhow::anyhow!("Invalid pairing code. Use 8 letters/numbers."))
@@ -4287,11 +4267,7 @@ function addDeployCard(initialState) {
             <label class="block text-sm font-medium text-slate-300 mb-1">Home Channel ID <span class="text-slate-500">(optional)</span></label>
             <input type="text" name="hermes_telegram_home_channel" placeholder="Defaults to first allowed user" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 text-sm sm:text-base text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent">
           </div>
-          <div>
-            <label class="block text-sm font-medium text-slate-300 mb-1">Pending Pairing Code <span class="text-slate-500">(optional)</span></label>
-            <input type="text" name="hermes_telegram_pair_code" maxlength="32" placeholder="If the bot has already issued a code" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
-          </div>
-          <p class="text-xs text-slate-400">Enter the bot token from @BotFather. After provisioning, message your bot and approve its pairing code below. Allowed user IDs can be supplied to authorize users in advance.</p>
+          <p class="text-xs text-slate-400">Enter the bot token from @BotFather and your numeric Telegram user ID in Allowed User IDs to chat directly after provisioning. No pairing code is needed for allowed users. Home Channel ID only controls where notifications are sent.</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Hermes .env <span class="text-slate-500">(optional)</span></label>
@@ -4919,7 +4895,6 @@ function panelShowSummary(panel, ip, keyPath, hostname, provider, dashboardUrl =
       <p><span class="text-slate-500">Logs:</span> ssh -i ${keyPath} ubuntu@${ip} 'sudo journalctl -u hermes-gateway -f'</p>
       ${dashboardEnabled ? `<p><span class="text-slate-500">Dashboard SSH tunnel:</span> ssh -i ${keyPath} -L 9119:127.0.0.1:9119 ubuntu@${ip}</p>
       <p><span class="text-slate-500">Local dashboard:</span> http://127.0.0.1:9119</p>` : ''}
-      ${telegramPairingForm()}
     `;
     let safeDashboardUrl = '';
     try {
@@ -5228,7 +5203,6 @@ async function startDeploy(e, cardNum) {
     hermes_telegram_bot_token: val('hermes_telegram_bot_token'),
     hermes_telegram_allowed_users: val('hermes_telegram_allowed_users'),
     hermes_telegram_home_channel: val('hermes_telegram_home_channel'),
-    hermes_telegram_pair_code: val('hermes_telegram_pair_code'),
     hermes_dashboard: form.querySelector('[name="hermes_dashboard"]').checked,
     hermes_cloudflare_tunnel: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked,
     hermes_dashboard_password: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked ? val('hermes_dashboard_password') : '',
@@ -6684,8 +6658,7 @@ mod tests {
             "hermes_openrouter_model": "openai/custom-model",
             "hermes_telegram_bot_token": "123456:test-token",
             "hermes_telegram_allowed_users": "111,222",
-            "hermes_telegram_home_channel": "111",
-            "hermes_telegram_pair_code": "abcd1234"
+            "hermes_telegram_home_channel": "111"
         }))
         .unwrap();
         let params = req.hermes_params();
@@ -6702,7 +6675,6 @@ mod tests {
         );
         assert_eq!(params.telegram_allowed_users.as_deref(), Some("111,222"));
         assert_eq!(params.telegram_home_channel.as_deref(), Some("111"));
-        assert_eq!(params.telegram_pair_code.as_deref(), Some("abcd1234"));
     }
 
     #[test]
@@ -6727,13 +6699,11 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "lightsail")]
     async fn hermes_invalid_credentials_are_rejected_before_creating_jobs() {
-        for (key, token, provider, pair_code) in [
-            ("", "", "openrouter", ""),
-            ("sk-or-test", "invalid-token", "openrouter", ""),
-            ("sk-or-test", "", "unknown", ""),
-            ("sk-or-test", "", "bedrock", ""),
-            ("sk-or-test", "", "openrouter", "ABCD1234"),
-            ("sk-or-test", "123456:token", "openrouter", "bad-code"),
+        for (key, token, provider) in [
+            ("", "", "openrouter"),
+            ("sk-or-test", "invalid-token", "openrouter"),
+            ("sk-or-test", "", "unknown"),
+            ("sk-or-test", "", "bedrock"),
         ] {
             let state = test_state();
             let req: DeployRequest = serde_json::from_value(serde_json::json!({
@@ -6744,8 +6714,7 @@ mod tests {
                 "aws_secret_access_key": "test-secret",
                 "hermes_ai_provider": provider,
                 "hermes_openrouter_api_key": key,
-                "hermes_telegram_bot_token": token,
-                "hermes_telegram_pair_code": pair_code
+                "hermes_telegram_bot_token": token
             }))
             .unwrap();
             let response = start_deploy_handler(State(state.clone()), Json(req))
@@ -6806,13 +6775,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "lightsail")]
-    fn hermes_pairing_uses_hermes_code_rules_without_changing_openclaw() {
+    fn hermes_pairing_is_rejected_without_changing_openclaw() {
         let hermes = Some("hermes-lightsail");
-        assert_eq!(
-            pairing_code_for_provider(" abcd1234 ", hermes).unwrap(),
-            "abcd1234"
-        );
-        assert!(pairing_code_for_provider("AB12", hermes).is_ok());
+        assert!(pairing_code_for_provider("abcd1234", hermes)
+            .unwrap_err()
+            .to_string()
+            .contains("Allowed User IDs"));
         assert!(pairing_code_for_provider("AB12", Some("lightsail")).is_err());
         assert!(pairing_code_for_provider("bad-code", hermes).is_err());
         assert_eq!(

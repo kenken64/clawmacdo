@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "release": "hermes-bundle-v0.22.5-1",
+  "repository": "kenken64/clawmacdo",
+  "hermes_version": "0.22.5",
+  "hermes_commit": "bf0203a794a07aac3ff764972ab9087baa4e4f4e",
+  "installer_sha256": "99cb3691d55019c6973a7acb775a915648666cc24e483ca827a1cdbb3531a674",
+  "opencode_version": "2.1.3",
+  "opencode_installer_sha256": "bfa0e5cd55b0447acdb1becbd3be1854277b5f8025742bd23ebf91bc01aa8ee8",
+  "cloudflared_version": "2026.10.3",
+  "cloudflared_sha256": {
+    "amd64": "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
+    "arm64": "89297ebfb9e8c99c0dc013a1140601453cf3798d8306c5591651f4a3f5210be8"
+  },
+  "os": "ubuntu",
+  "os_version": "24.04",
+  "runtime_packages": [
+    "libatomic1", "libxi6", "libxtst6", "libnss3", "libnspr4",
+    "libatk1.0-0t64", "libatk-bridge2.0-0t64", "libcups2t64",
+    "libdrm2", "libxkbcommon0", "libxcomposite1", "libxdamage1",
+    "libxfixes3", "libxrandr2", "libgbm1", "libasound2t64",
+    "libpango-1.0-0", "libcairo2", "libxshmfence1", "fonts-liberation"
+  ]
+}

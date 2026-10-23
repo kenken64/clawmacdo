@@ -261,6 +261,18 @@ clawmacdo deploy \
 Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
 OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled. Hermes runs natively as the `ubuntu` user with the local terminal backend; provisioning does not install Docker.
 
+On Ubuntu 24.04 amd64/arm64, provisioning downloads a pinned prebuilt software bundle while OS
+updates and runtime-library installation run in parallel. It verifies the archive's SHA-256 and
+platform before installation, then waits for both jobs before configuring and starting services.
+Step 7 streams separate OS and bundle progress in the CLI and web UI. Each user deploys into their
+own AWS account; no shared Lightsail snapshot is required.
+
+The bundle includes Hermes, its compiled dashboard, Python dependencies and native tools, plus
+OpenCode and cloudflared binaries. API keys, Telegram settings, dashboard passwords and user sessions
+are configured separately and are never included in the published bundle. If a release asset is
+unavailable, provisioning reports the fallback and installs pinned Hermes source after OS setup.
+Checksum failures stop provisioning. An unavailable bundle therefore retains the longer source-install time.
+
 ```bash
 export AWS_ACCESS_KEY_ID="your_access_key_id"
 export AWS_SECRET_ACCESS_KEY="your_secret_access_key"
@@ -272,7 +284,8 @@ clawmacdo hermes-provision \
   --aws-region ap-southeast-1 \
   --openrouter-api-key "$OPENROUTER_API_KEY" \
   --openrouter-model openai/gpt-6-sol \
-  --telegram-bot-token "$TELEGRAM_BOT_TOKEN"
+  --telegram-bot-token "$TELEGRAM_BOT_TOKEN" \
+  --telegram-allowed-users 123456789
 ```
 
 The AWS IAM credentials can also be supplied through the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
@@ -284,12 +297,11 @@ The same setup is available in the web UI (`clawmacdo serve --port 3456`):
 2. Enter your AWS Lightsail credentials, region, and instance size.
 3. Keep **OpenRouter** selected, enter your API key, and choose the model (default `openai/gpt-6-sol`).
 4. Leave **Install OpenCode CLI v2** checked to install it with the same OpenRouter key and model.
-5. Enter your Telegram bot token from @BotFather, then click **Provision Hermes Agent**.
-6. After provisioning, message the bot and enter its code in **Telegram DM Pairing** in the deployment summary.
-   You can also enter allowed user IDs before provisioning to authorize them in advance.
+5. Enter your Telegram bot token from @BotFather and your numeric Telegram user ID in **Allowed User IDs**, then click **Provision Hermes Agent**.
+6. After provisioning, message the bot from an allowed account. No pairing code or approval step is needed.
 
-The web UI also accepts an existing pending pairing code and keeps AWS Bedrock available as an alternative AI provider.
-OpenCode uses the official v2 installer and reads its OpenRouter key from a file owned by `ubuntu` with `0600` permissions,
+The web UI keeps AWS Bedrock available as an alternative AI provider.
+OpenCode uses the bundled v2 binary when available, or the official v2 installer, and reads its OpenRouter key from a file owned by `ubuntu` with `0600` permissions,
 so authentication also works in noninteractive sessions.
 
 What gets configured:
@@ -334,18 +346,12 @@ password in browser storage. `--dry-run` redacts the password and leaves the das
 no tunnel is created. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 are temporary, have no uptime guarantee, and do not support Server-Sent Events (SSE).
 
-To pair a Telegram user after provisioning, DM the bot. It replies with a pairing code, then approve it:
-
-```bash
-clawmacdo hermes-telegram-pair --instance my-hermes-host --code XKGH5N7P
-
-# View pending and approved pairings
-clawmacdo hermes-telegram-pair --instance my-hermes-host --list
-```
-
-Alternatively, pre-authorize users with `--telegram-allowed-users 123456789,987654321` and optionally set
-`--telegram-home-channel`. If you already have a pending code while running `hermes-provision`, pass
-`--telegram-pair-code`; the code is approved automatically once the gateway is up.
+Telegram access is configured with `--telegram-allowed-users 123456789,987654321` (or
+`TELEGRAM_ALLOWED_USERS`). These users can message the bot directly once provisioning finishes.
+Use `--telegram-home-channel` to choose the notification destination; it defaults to the first allowed
+user and does not grant access by itself. Omitting allowed users leaves Hermes' own access controls in
+place. Clawmacdo no longer asks for a pairing code in `hermes-provision` or the web UI, and the
+`hermes-telegram-pair` subcommand has been removed.
 
 The AI provider is selected automatically: an OpenRouter key takes precedence, otherwise the command falls back to
 AWS Bedrock. Override with `--ai-provider openrouter` or `--ai-provider bedrock`. Bedrock still accepts
