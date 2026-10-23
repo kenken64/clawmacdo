@@ -33,6 +33,7 @@ sudo runuser -u ubuntu -- env -i HOME=/home/ubuntu PATH=/usr/local/bin:/usr/bin:
   bash /tmp/hermes-bundle-opencode.sh --version "$(read_config opencode_version)" --no-modify-path
 
 sudo install -d -o ubuntu -g ubuntu /home/ubuntu/.local/lib/clawmacdo
+sudo install -o ubuntu -g ubuntu -m 755 /home/ubuntu/.opencode/bin/opencode /home/ubuntu/.local/lib/clawmacdo/opencode
 curl -fSL --retry 3 "https://github.com/cloudflare/cloudflared/releases/download/$(read_config cloudflared_version)/cloudflared-linux-$arch" -o /tmp/hermes-bundle-cloudflared
 cf_hash=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cloudflared_sha256"][sys.argv[2]])' "$config" "$arch")
 printf '%s  %s\n' "$cf_hash" /tmp/hermes-bundle-cloudflared | sha256sum -c -

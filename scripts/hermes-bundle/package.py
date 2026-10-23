@@ -10,7 +10,7 @@ import tarfile
 ROOTS = (
     ".hermes/hermes-agent", ".hermes/tools", ".hermes/installs", ".hermes/skills",
     ".local/bin/hermes", ".local/bin/hermes-acp", ".local/bin/hermes-agent",
-    ".local/share/uv/python", ".local/lib/clawmacdo/cloudflared", ".opencode/bin/opencode",
+    ".local/share/uv/python", ".local/lib/clawmacdo/cloudflared", ".local/lib/clawmacdo/opencode",
 )
 
 
@@ -52,7 +52,8 @@ def main():
     with tarfile.open(archive, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tar:
         for root in ROOTS:
             tar.add(home / root, arcname=root, filter=include)
-    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
+    with archive.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
     manifest = {
         "schema": 1, "release": config["release"], "os": "ubuntu", "os_version": "24.04",
         "arch": args.arch, "filename": filename, "sha256": digest,

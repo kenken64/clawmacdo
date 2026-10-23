@@ -8,8 +8,8 @@ import urllib.request
 
 home = Path("/home/ubuntu")
 hermes = str(home / ".local/bin/hermes")
-for args in [[hermes, "--version"], [hermes, "tools", "list"],
-             [str(home / ".opencode/bin/opencode"), "--version"],
+for args in [[hermes, "--version"], [hermes, "tools", "list"], [hermes, "pm", "doctor"],
+             [str(home / ".local/lib/clawmacdo/opencode"), "--version"],
              [str(home / ".local/lib/clawmacdo/cloudflared"), "--version"]]:
     subprocess.run(args, check=True, timeout=120)
 # No provider keys or Telegram token are required to serve the local dashboard.

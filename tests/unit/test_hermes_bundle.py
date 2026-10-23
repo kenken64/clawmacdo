@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -107,6 +109,63 @@ class BundleTests(unittest.TestCase):
                 expected = bundle.BundleUnavailable if code == 404 else urllib.error.HTTPError
                 with self.subTest(code=code), patch.object(bundle.urllib.request, "urlopen", side_effect=error), patch.object(bundle.time, "sleep"), self.assertRaises(expected):
                     bundle.download("https://example.com", Path(directory) / "download", 123)
+
+
+class ParallelInstallTests(unittest.TestCase):
+    def run_setup(self, os_status=0, bundle_status=0):
+        with tempfile.TemporaryDirectory() as directory:
+            # A serial implementation deadlocks: each job waits for the other to start.
+            script = r'''
+set -euo pipefail
+source "$HERMES_HELPER"
+hermes_os_setup() {
+  touch "$TEST_DIR/os-started"
+  while [ ! -f "$TEST_DIR/bundle-started" ]; do sleep 0.01; done
+  sleep 0.05
+  touch "$TEST_DIR/os-finished"
+  return "$OS_RESULT"
+}
+hermes_bundle_install() {
+  touch "$TEST_DIR/bundle-started"
+  while [ ! -f "$TEST_DIR/os-started" ]; do sleep 0.01; done
+  touch "$TEST_DIR/bundle-finished"
+  return "$BUNDLE_RESULT"
+}
+hermes_source_install() {
+  test -f "$TEST_DIR/os-finished"
+  echo source-fallback
+}
+hermes_parallel_setup
+test -f "$TEST_DIR/os-finished"
+test -f "$TEST_DIR/bundle-finished"
+echo ready-for-services
+'''
+            environment = dict(os.environ, TEST_DIR=directory, OS_RESULT=str(os_status), BUNDLE_RESULT=str(bundle_status),
+                               HERMES_HELPER=str(ROOT / "crates/clawmacdo-cli/src/commands/hermes_install.sh"))
+            result = subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True, timeout=5)
+            self.assertTrue((Path(directory) / "os-finished").exists())
+            self.assertTrue((Path(directory) / "bundle-finished").exists())
+            return result
+
+    def test_os_and_bundle_overlap_and_join_before_services(self):
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ready-for-services", result.stdout)
+        self.assertNotIn("source-fallback", result.stdout)
+
+    def test_failure_of_either_job_blocks_service_startup(self):
+        for os_status, bundle_status in [(17, 0), (0, 18), (17, 42)]:
+            with self.subTest(os_status=os_status, bundle_status=bundle_status):
+                result = self.run_setup(os_status, bundle_status)
+                self.assertEqual(result.returncode, os_status or bundle_status)
+                self.assertNotIn("ready-for-services", result.stdout)
+                self.assertNotIn("source-fallback", result.stdout)
+
+    def test_source_fallback_waits_for_os_package_manager(self):
+        result = self.run_setup(bundle_status=42)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("source-fallback", result.stdout)
+        self.assertIn("ready-for-services", result.stdout)
 
 
 if __name__ == "__main__":

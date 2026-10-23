@@ -261,6 +261,18 @@ clawmacdo deploy \
 Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
 OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled. Hermes runs natively as the `ubuntu` user with the local terminal backend; provisioning does not install Docker.
 
+On Ubuntu 24.04 amd64/arm64, provisioning downloads a pinned prebuilt software bundle while OS
+updates and runtime-library installation run in parallel. It verifies the archive's SHA-256 and
+platform before installation, then waits for both jobs before configuring and starting services.
+Step 7 streams separate OS and bundle progress in the CLI and web UI. Each user deploys into their
+own AWS account; no shared Lightsail snapshot is required.
+
+The bundle includes Hermes, its compiled dashboard, Python dependencies and native tools, plus
+OpenCode and cloudflared binaries. API keys, Telegram settings, dashboard passwords and user sessions
+are configured separately and are never included in the published bundle. If a release asset is
+unavailable, provisioning reports the fallback and installs pinned Hermes source after OS setup.
+Checksum failures stop provisioning. An unavailable bundle therefore retains the longer source-install time.
+
 ```bash
 export AWS_ACCESS_KEY_ID="your_access_key_id"
 export AWS_SECRET_ACCESS_KEY="your_secret_access_key"
@@ -289,7 +301,7 @@ The same setup is available in the web UI (`clawmacdo serve --port 3456`):
    You can also enter allowed user IDs before provisioning to authorize them in advance.
 
 The web UI also accepts an existing pending pairing code and keeps AWS Bedrock available as an alternative AI provider.
-OpenCode uses the official v2 installer and reads its OpenRouter key from a file owned by `ubuntu` with `0600` permissions,
+OpenCode uses the bundled v2 binary when available, or the official v2 installer, and reads its OpenRouter key from a file owned by `ubuntu` with `0600` permissions,
 so authentication also works in noninteractive sessions.
 
 What gets configured:

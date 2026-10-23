@@ -57,6 +57,7 @@ test("Hermes OpenRouter deployment configures OpenCode and supports Telegram pai
   await expect(card.locator('.deploy-summary')).not.toContainText("docker");
   await expect(card.locator('.deploy-log-area')).toContainText("OpenRouter openai/custom-test-model");
   await expect(card.locator('.deploy-log-area')).toContainText("OpenCode: CLI v2 will be installed");
+  await expect(card.locator('.deploy-log-area')).toContainText("prebuilt Hermes bundle alongside OS updates");
 
   // Dry-run deployments have no SSH server: exercise the UI against simulated approval responses.
   let attempts = 0;

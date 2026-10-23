@@ -17,7 +17,7 @@ import urllib.request
 SOFTWARE_ROOTS = (
     ".hermes/hermes-agent", ".hermes/tools", ".hermes/installs", ".hermes/skills",
     ".local/bin/hermes", ".local/bin/hermes-acp", ".local/bin/hermes-agent",
-    ".local/share/uv/python", ".local/lib/clawmacdo/cloudflared", ".opencode/bin/opencode",
+    ".local/share/uv/python", ".local/lib/clawmacdo/cloudflared", ".local/lib/clawmacdo/opencode",
 )
 PROGRESS = Path("/var/lib/clawmacdo/hermes-progress/bundle.status")
 
@@ -87,6 +87,8 @@ def extract_bundle(archive, manifest, home):
         raise ValueError("Bundle checksum or size verification failed")
     for root in SOFTWARE_ROOTS:
         destination = home / root
+        if not destination.parent.resolve().is_relative_to(home.resolve()):
+            raise ValueError(f"Install directory escapes the ubuntu home: {root}")
         if destination.exists() or destination.is_symlink():
             raise ValueError(f"Refusing to overwrite an existing install: {root}")
 

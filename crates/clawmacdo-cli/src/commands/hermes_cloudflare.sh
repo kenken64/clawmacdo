@@ -5,11 +5,15 @@ case "$CF_ARCH" in
   amd64|arm64) ;;
   *) echo "Unsupported cloudflared architecture: $CF_ARCH"; exit 1 ;;
 esac
-curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 180 \
+if [ -f /home/ubuntu/.clawmacdo-hermes-bundle.json ] && [ -x /home/ubuntu/.local/lib/clawmacdo/cloudflared ]; then
+  install -m 755 /home/ubuntu/.local/lib/clawmacdo/cloudflared /usr/bin/cloudflared
+else
+  curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 180 \
   "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" \
   -o /tmp/clawmacdo-cloudflared.deb
 dpkg -i /tmp/clawmacdo-cloudflared.deb
 rm -f /tmp/clawmacdo-cloudflared.deb
+fi
 install -d -m 700 /etc/hermes-cloudflared
 install -d -m 755 /var/lib/hermes-cloudflared /usr/local/lib/clawmacdo
 printf '%s' '__TUNNEL_READY_B64__' | base64 -d > /usr/local/lib/clawmacdo/hermes-cloudflare-ready.py
