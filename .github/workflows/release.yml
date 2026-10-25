@@ -162,6 +162,9 @@ jobs:
       - name: Check Hermes Quick Tunnel startup
         run: python3 tests/unit/test_hermes_cloudflare.py
 
+      - name: Check native bundle installation and parallel OS setup
+        run: python3 tests/unit/test_hermes_bundle.py
+
       - name: Check formatting
         run: cargo fmt --check
 

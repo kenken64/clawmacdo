@@ -8,6 +8,7 @@ use clawmacdo_core::config::{self, CloudProviderType, DeployRecord};
 use clawmacdo_db as db;
 use clawmacdo_ssh as ssh;
 use clawmacdo_ui::progress;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -47,7 +48,6 @@ pub struct HermesLightsailParams {
     pub telegram_bot_token: Option<String>,
     pub telegram_allowed_users: Option<String>,
     pub telegram_home_channel: Option<String>,
-    pub telegram_pair_code: Option<String>,
     pub dashboard: bool,
     pub cloudflare_tunnel: bool,
     pub dashboard_password: Option<String>,
@@ -180,14 +180,6 @@ fn validate_telegram_bot_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_telegram_pair_code(code: &str) -> Result<()> {
-    let code = code.trim();
-    if !(4..=32).contains(&code.len()) || !code.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        bail!("Invalid Telegram pairing code '{code}'. Expected the alphanumeric code shown by the bot.");
-    }
-    Ok(())
-}
-
 enum TelegramVerification {
     Verified(String),
     Unverified(String),
@@ -286,16 +278,6 @@ pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<(
         .filter(|v| !v.trim().is_empty())
     {
         validate_telegram_bot_token(token)?;
-    }
-    if let Some(code) = params
-        .telegram_pair_code
-        .as_deref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        if !has_value(params.telegram_bot_token.as_deref()) {
-            bail!("A Telegram bot token is required to approve a pairing code.");
-        }
-        validate_telegram_pair_code(code)?;
     }
     Ok(())
 }
@@ -496,7 +478,11 @@ if [ -n "$OPENCODE_CONFIG_B64" ]; then
 fi
 chown -R ubuntu:ubuntu "$OC_HOME/.config"
 
-if runuser -u ubuntu -- env HOME="$OC_HOME" bash -o pipefail -c 'curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path'; then
+if [ -f "$OC_HOME/.clawmacdo-hermes-bundle.json" ] && [ -x "$OC_HOME/.local/lib/clawmacdo/opencode" ]; then
+  install -d -o ubuntu -g ubuntu "$OC_HOME/.opencode/bin"
+  ln -sf "$OC_HOME/.local/lib/clawmacdo/opencode" "$OC_HOME/.opencode/bin/opencode"
+  echo "[clawmacdo] Using prebuilt OpenCode CLI"
+elif runuser -u ubuntu -- env HOME="$OC_HOME" bash -o pipefail -c 'curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path'; then
   echo "[clawmacdo] OpenCode CLI installed"
 else
   echo "[clawmacdo] OpenCode CLI v2 install failed" >&2
@@ -522,6 +508,19 @@ chmod 600 "$OC_HOME/.bashrc"
 /// Lightsail prepends a /bin/sh script, so an embedded shebang alone is ignored.
 fn bash_user_data(body: &str) -> String {
     format!("#!/bin/sh\nexec /bin/bash <<'CLAWMACDO_HERMES_BOOTSTRAP'\n{body}\nCLAWMACDO_HERMES_BOOTSTRAP\n")
+}
+
+/// Keep launch data small while retaining a readable script in dry-run output.
+fn compact_user_data(script: &str) -> String {
+    let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    compressed
+        .write_all(script.as_bytes())
+        .expect("compress launch data");
+    let payload = base64::engine::general_purpose::STANDARD
+        .encode(compressed.finish().expect("finish launch data"));
+    format!(
+        "#!/bin/sh\nexec python3 - <<'CLAWMACDO_HERMES_PAYLOAD'\nimport base64, os, zlib\nscript = zlib.decompress(base64.b64decode('{payload}')).decode('utf-8')\nos.execv('/bin/sh', ['sh', '-c', script])\nCLAWMACDO_HERMES_PAYLOAD\n"
+    )
 }
 
 fn hermes_service(description: &str, command: &str) -> String {
@@ -559,6 +558,39 @@ fn generate_user_data(
     dashboard: bool,
     tunnel: Option<&DashboardTunnel>,
 ) -> String {
+    let bundle_config: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../scripts/hermes-bundle/bundle.json"
+    ))
+    .expect("bundled runtime configuration is valid JSON");
+    let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    compressed
+        .write_all(include_bytes!("hermes_bundle.py"))
+        .expect("compress embedded bundle loader");
+    let native_install = include_str!("hermes_install.sh")
+        .replace("__BUNDLE_CONFIG__", &bundle_config.to_string())
+        .replace(
+            "__BUNDLE_LOADER_ZLIB__",
+            &base64::engine::general_purpose::STANDARD
+                .encode(compressed.finish().expect("finish bundle loader")),
+        )
+        .replace(
+            "__RUNTIME_PACKAGES__",
+            &bundle_config["runtime_packages"]
+                .as_array()
+                .expect("runtime package list")
+                .iter()
+                .map(|value| sh_quote(value.as_str().expect("package name")))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .replace(
+            "__HERMES_COMMIT__",
+            bundle_config["hermes_commit"].as_str().unwrap(),
+        )
+        .replace(
+            "__INSTALLER_SHA256__",
+            bundle_config["installer_sha256"].as_str().unwrap(),
+        );
     let sentinel = config::CLOUD_INIT_SENTINEL;
     let env_b64 = base64::engine::general_purpose::STANDARD.encode(env_content.as_bytes());
     let config_b64 = base64::engine::general_purpose::STANDARD.encode(config_content.as_bytes());
@@ -615,20 +647,13 @@ CONFIG_B64='{config_b64}'
 AWS_CLI_CONFIG_B64='{aws_cli_config_b64}'
 
 echo "[clawmacdo] Installing native Hermes Agent on Lightsail"
-apt-get update -y
-apt-get upgrade -y
-apt-get install -y ca-certificates curl git unzip python3 ufw fail2ban unattended-upgrades
+{native_install}
+hermes_install_native
 
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp
 ufw --force enable
-
-echo "[clawmacdo] Installing Hermes for ubuntu"
-install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.hermes
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o /tmp/clawmacdo-hermes-install.sh
-runuser -u ubuntu -- env HOME=/home/ubuntu HERMES_HOME=/home/ubuntu/.hermes \
-  bash /tmp/clawmacdo-hermes-install.sh --non-interactive
 
 echo "[clawmacdo] Configuring Hermes AI provider and Telegram"
 printf '%s' "$ENV_B64" | base64 -d > /home/ubuntu/.hermes/.env
@@ -696,10 +721,7 @@ fn print_summary(
     println!("  AI model:          {ai_summary}");
     if let Some(bot) = telegram_bot {
         println!("  Telegram bot:      @{bot}");
-        println!(
-            "  Telegram pairing:  DM the bot, then run: clawmacdo hermes-telegram-pair --instance {} --code <CODE>",
-            record.hostname
-        );
+        println!("  Telegram access:   message the bot from an allowed Telegram user ID");
     }
     println!(
         "  Gateway logs:      ssh -i {key} ubuntu@{ip} 'sudo journalctl -u hermes-gateway -f'"
@@ -726,79 +748,45 @@ fn print_summary(
     println!("{divider}\n");
 }
 
-fn find_deploy_record(query: &str) -> Result<(String, PathBuf)> {
-    let deploys_dir = config::deploys_dir()?;
-    if !deploys_dir.exists() {
-        bail!("No deploy records found. Provision a Hermes instance first.");
-    }
-    for entry in std::fs::read_dir(&deploys_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(contents) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(record) = serde_json::from_str::<DeployRecord>(&contents) else {
-            continue;
-        };
-        if record.id == query || record.hostname == query || record.ip_address == query {
-            return Ok((record.ip_address, PathBuf::from(record.ssh_key_path)));
-        }
-    }
-    bail!("No deploy record found for '{query}'. Use a deploy ID, hostname, or IP address.");
-}
-
-async fn exec_hermes(ip: &str, key: &std::path::Path, args: &str) -> Result<String> {
-    let ip_owned = ip.to_string();
-    let key_owned = key.to_path_buf();
-    let command = format!(
-        "env HOME=/home/ubuntu HERMES_HOME=/home/ubuntu/.hermes /home/ubuntu/.local/bin/hermes {args}"
-    );
-    let output = tokio::task::spawn_blocking(move || {
-        ssh::exec_as(&ip_owned, &key_owned, &command, "ubuntu")
-    })
-    .await??;
-    Ok(output)
-}
-
-/// Approve a pending Telegram DM pairing code on the native Hermes host.
-pub(super) async fn approve_telegram_pairing(
+async fn wait_for_hermes_cloud_init(
     ip: &str,
     key: &std::path::Path,
-    code: &str,
-) -> Result<String> {
-    validate_telegram_pair_code(code)?;
-    let args = format!("pairing approve telegram {}", sh_quote(code.trim()));
-    let mut last_error = String::new();
-    for attempt in 0..8 {
-        match exec_hermes(ip, key, &args).await {
-            Ok(output) => return Ok(output),
-            Err(err) => {
-                last_error = err.to_string();
-                if attempt < 7 {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    tx: &Option<mpsc::UnboundedSender<String>>,
+) -> Result<()> {
+    let completion = ssh::wait_for_cloud_init(
+        ip,
+        key,
+        std::time::Duration::from_secs(1800),
+        Some("ubuntu"),
+    );
+    tokio::pin!(completion);
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_progress = String::new();
+    loop {
+        tokio::select! {
+            result = &mut completion => return result.map_err(Into::into),
+            _ = interval.tick() => {
+                let ip = ip.to_string();
+                let key = key.to_path_buf();
+                // Dedicated status files contain only installation phases, never credentials.
+                let status = tokio::task::spawn_blocking(move || ssh::exec_as(
+                    &ip, &key,
+                    "cat /var/lib/clawmacdo/hermes-progress/os.status /var/lib/clawmacdo/hermes-progress/bundle.status 2>/dev/null || true",
+                    "ubuntu",
+                )).await;
+                if let Ok(Ok(status)) = status {
+                    if status != last_progress {
+                        for line in status.lines().take(2).filter(|line| !line.is_empty()) {
+                            let line: String = line.chars().filter(|c| !c.is_control()).take(240).collect();
+                            progress::emit(tx, &format!("  {line}"));
+                        }
+                        last_progress = status;
+                    }
                 }
             }
         }
     }
-    bail!(
-        "Failed to approve Telegram pairing code '{code}'. \
-         DM the bot first so it issues a code, then retry. Last error: {last_error}"
-    )
-}
-
-/// Approve a Telegram pairing code for an existing Hermes deployment.
-pub async fn pair_telegram(instance: &str, code: &str) -> Result<String> {
-    validate_telegram_pair_code(code)?;
-    let (ip, key) = find_deploy_record(instance)?;
-    approve_telegram_pairing(&ip, &key, code).await
-}
-
-/// List pending and approved Telegram pairings for an existing Hermes deployment.
-pub async fn list_telegram_pairings(instance: &str) -> Result<String> {
-    let (ip, key) = find_deploy_record(instance)?;
-    exec_hermes(&ip, &key, "pairing list").await
 }
 
 pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
@@ -849,11 +837,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let telegram_pair_code = params
-        .telegram_pair_code
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
     let mut telegram_bot_username: Option<String> = None;
     if let Some(token) = telegram_token {
         if let Err(err) = validate_telegram_bot_token(token) {
@@ -885,17 +868,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                     return Err(err);
                 }
             }
-        }
-    }
-    if let Some(code) = telegram_pair_code {
-        if telegram_token.is_none() {
-            let err = "A Telegram bot token is required to approve a pairing code.";
-            record_step_failed(step_db, &deploy_id, 1, err);
-            bail!("{err}");
-        }
-        if let Err(err) = validate_telegram_pair_code(code) {
-            record_step_failed(step_db, &deploy_id, 1, &err.to_string());
-            return Err(err);
         }
     }
     let ai_provider = match resolve_ai_provider(&params) {
@@ -946,11 +918,21 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             tunnel.as_ref()
         },
     );
+    let launch_data = compact_user_data(&user_data);
+    if launch_data.len() > 16_000 {
+        let err = "Hermes launch data is too large; reduce the supplied environment configuration";
+        record_step_failed(step_db, &deploy_id, 1, err);
+        bail!("{err}");
+    }
     progress::emit(tx, "  Provider: AWS Lightsail");
     progress::emit(tx, &format!("  Region:   {region}"));
     progress::emit(tx, &format!("  Size:     {size}"));
     progress::emit(tx, &format!("  Hostname: {hostname}"));
     progress::emit(tx, "  Runtime:  native host (terminal backend: local)");
+    progress::emit(
+        tx,
+        "  Setup:    prebuilt Hermes bundle alongside OS updates",
+    );
     progress::emit(tx, &format!("  AI Model: {ai_summary}"));
     if tunnel.is_some() {
         progress::emit(
@@ -980,7 +962,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "openrouter_model": openrouter_model,
                 "opencode_installed": params.install_opencode,
                 "telegram_configured": telegram_token.is_some(),
-                "telegram_pair_code_requested": telegram_pair_code.is_some(),
                 "dashboard": dashboard,
                 "dashboard_url": null,
                 "cloudflare_tunnel": tunnel.is_some(),
@@ -1068,7 +1049,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             size: size.clone(),
             image: "ubuntu_24_04".to_string(),
             ssh_key_id: key_name.clone(),
-            user_data,
+            user_data: launch_data,
             tags: vec!["app=hermes-agent".to_string()],
             customer_email: params.customer_email.clone(),
         })
@@ -1110,16 +1091,9 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         tx,
         "\n[Step 7/8] Waiting for Hermes Agent cloud-init to finish...",
     );
-    if let Err(err) = ssh::wait_for_cloud_init(
-        &ip,
-        &keypair.private_key_path,
-        std::time::Duration::from_secs(1800),
-        Some("ubuntu"),
-    )
-    .await
-    {
+    if let Err(err) = wait_for_hermes_cloud_init(&ip, &keypair.private_key_path, tx).await {
         record_step_failed(step_db, &deploy_id, 7, &err.to_string());
-        return Err(err.into());
+        return Err(err);
     }
     progress::emit(tx, "[Step 7/8] Hermes Agent cloud-init complete");
     let dashboard_url = if tunnel.is_some() {
@@ -1137,28 +1111,6 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
         None
     };
     record_step_complete(step_db, &deploy_id, 7);
-
-    if let Some(code) = telegram_pair_code {
-        progress::emit(tx, "[Step 7/8] Approving Telegram pairing code...");
-        match approve_telegram_pairing(&ip, &keypair.private_key_path, code).await {
-            Ok(output) => {
-                let output = output.trim();
-                if !output.is_empty() {
-                    progress::emit(tx, &format!("  {output}"));
-                }
-                progress::emit(tx, "[Step 7/8] Telegram pairing approved");
-            }
-            Err(err) => {
-                progress::emit(
-                    tx,
-                    &format!(
-                        "  Warning: Telegram pairing was not approved: {err}\n  \
-                         Retry with: clawmacdo hermes-telegram-pair --instance <deploy-id|hostname|ip> --code {code}"
-                    ),
-                );
-            }
-        }
-    }
 
     record_step_start(step_db, &deploy_id, 8, "Saving deploy record");
     progress::emit(tx, "\n[Step 8/8] Saving deploy record...");
@@ -1223,7 +1175,9 @@ mod tests {
             true,
             None,
         );
-        assert!(user_data.contains("hermes-agent.nousresearch.com/install.sh"));
+        assert!(user_data.contains("raw.githubusercontent.com/NousResearch/hermes-agent/"));
+        assert!(user_data.contains("hermes_parallel_setup"));
+        assert!(user_data.contains("Using prebuilt OpenCode CLI"));
         assert!(user_data.contains("--non-interactive"));
         assert!(user_data.contains("User=ubuntu"));
         assert!(user_data.contains("/home/ubuntu/.local/bin/hermes gateway run"));
@@ -1233,7 +1187,7 @@ mod tests {
         assert!(user_data.contains(config::CLOUD_INIT_SENTINEL));
         let without_dashboard = generate_user_data("", "", "", "", false, None);
         assert!(!without_dashboard.contains("hermes-dashboard.service"));
-        assert!(!without_dashboard.contains("cloudflared"));
+        assert!(!without_dashboard.contains("hermes-cloudflared.service"));
     }
 
     #[test]
@@ -1292,6 +1246,7 @@ mod tests {
             true,
             Some(&tunnel),
         );
+        assert!(compact_user_data(&script).len() < 16_000);
         assert!(!script.contains(&tunnel.password));
         assert!(!script.contains("docker"));
         assert!(!script.contains("--host 0.0.0.0"));
@@ -1342,7 +1297,7 @@ mod tests {
         ] {
             let script = format!(
                 "#!/bin/sh\n# Lightsail's prepended initialization\n{}",
-                bash_user_data(body)
+                compact_user_data(&bash_user_data(body))
             );
             let mut child = Command::new("sh")
                 .stdin(Stdio::piped())
@@ -1364,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn build_env_content_adds_telegram_onboarding_fields() {
+    fn build_env_content_authorizes_telegram_users_directly() {
         let params = HermesLightsailParams {
             deploy_id: None,
             customer_email: "test@example.com".to_string(),
@@ -1386,7 +1341,6 @@ mod tests {
             telegram_bot_token: Some("123456:abc".to_string()),
             telegram_allowed_users: Some("111, 222".to_string()),
             telegram_home_channel: None,
-            telegram_pair_code: None,
             dashboard: false,
             cloudflare_tunnel: false,
             dashboard_password: None,
@@ -1444,7 +1398,6 @@ mod tests {
             telegram_bot_token: None,
             telegram_allowed_users: None,
             telegram_home_channel: None,
-            telegram_pair_code: None,
             dashboard: false,
             cloudflare_tunnel: false,
             dashboard_password: None,
@@ -1523,13 +1476,5 @@ mod tests {
         assert!(validate_telegram_bot_token("not-a-token").is_err());
         assert!(validate_telegram_bot_token("abc:secret").is_err());
         assert!(validate_telegram_bot_token("123:bad secret").is_err());
-    }
-
-    #[test]
-    fn validates_telegram_pair_codes() {
-        assert!(validate_telegram_pair_code("XKGH5N7P").is_ok());
-        assert!(validate_telegram_pair_code("abcd1234").is_ok());
-        assert!(validate_telegram_pair_code("abc").is_err());
-        assert!(validate_telegram_pair_code("bad code").is_err());
     }
 }
