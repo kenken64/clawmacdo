@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.97.0
 
 ### Added
 - Native Hermes software bundles for Ubuntu 24.04 amd64 and arm64, built from pinned versions on clean CI runners and checked on separate VMs with networking disabled for runtime tests. Bundles include the compiled dashboard, Python runtime/dependencies, OpenCode v2 and cloudflared without customer credentials or sessions.
