@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Hermes step 7 refreshes apt indexes and installs required runtime packages alongside the prebuilt bundle. The full `apt-get upgrade` is queued through SSH only after step 8 saves the deployment record, so Hermes is ready to use while OS patching continues independently under systemd.
+- CLI and web summaries distinguish a queued OS upgrade from an unconfirmed launch, include status/log commands and retry guidance, and retain the notice after a browser reload. An upgrade launch failure does not turn a ready Hermes deployment into a failed deployment; dry runs do not start upgrades.
+- The background upgrade waits for package-manager locks, preserves existing configuration files, asks needrestart to report service restarts rather than perform them, and reports completion, failure, or a required reboot. It does not automatically reboot the instance.
+
 ## v0.97.0
 
 ### Added

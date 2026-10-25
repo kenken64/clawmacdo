@@ -45,10 +45,19 @@ outside the allowed directories. A missing asset (HTTP 404) or unsupported platf
 fallback; integrity errors and other download failures do not. The source installer runs after OS
 updates to keep all package-manager operations serialized.
 
-OS updates are still enabled. The expected total duration is the slower of OS setup and bundle
-download/extraction, plus service configuration and readiness checks. Compare measured timings on
-the same Lightsail plan and region before claiming a speed improvement; CI runner times are not
-Lightsail provisioning benchmarks.
+In the next CLI release, foreground OS setup refreshes apt indexes and installs required runtime
+libraries. After step 8 saves the deployment record, SSH queues
+`clawmacdo-hermes-os-upgrade.service` with `systemctl start --no-block`. Full OS upgrades continue
+independently while Hermes is usable; v0.97.0 still upgrades packages during foreground setup.
+The worker reports status in `/var/lib/clawmacdo/hermes-os-upgrade/status` and logs to the systemd
+journal. Launch failures are reported separately from deployment success, and dry runs never queue
+the job. The worker preserves existing package configuration, uses needrestart's list-only mode,
+and reports a required reboot without performing one automatically.
+
+The expected foreground duration is the slower of required OS setup and bundle download/extraction,
+plus service configuration and readiness checks. Compare measured timings on the same Lightsail
+plan and region before claiming a speed improvement; CI runner times are not Lightsail provisioning
+benchmarks.
 
 ## Local checks
 

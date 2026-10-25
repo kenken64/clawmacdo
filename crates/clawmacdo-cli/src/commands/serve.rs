@@ -1127,7 +1127,8 @@ async fn start_deploy_handler(
                 let result = crate::commands::hermes_lightsail::run(params).await;
 
                 let final_status = match &result {
-                    Ok(record) => {
+                    Ok(result) => {
+                        let record = &result.record;
                         if let Ok(conn) = db_clone.lock() {
                             let _ = db::update_deployment_status(
                                 &conn,
@@ -1142,7 +1143,8 @@ async fn start_deploy_handler(
                             "ssh_key_path": record.ssh_key_path,
                             "hostname": record.hostname,
                             "dashboard_enabled": req.hermes_dashboard || req.hermes_cloudflare_tunnel,
-                            "dashboard_url": record.dashboard_url
+                            "dashboard_url": record.dashboard_url,
+                            "os_upgrade": result.os_upgrade
                         })
                         .to_string();
                         let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
@@ -4031,11 +4033,11 @@ function deployFingerprint(ip, keyPath, hostname) {
   return `${ip}|${keyPath}|${hostname}`;
 }
 
-function persistCompletedDeployment(ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true) {
+function persistCompletedDeployment(ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true, osUpgrade = '') {
   const list = loadSavedDeployments();
   const fp = deployFingerprint(ip, keyPath, hostname);
   const next = list.filter(d => deployFingerprint(d.ip, d.keyPath, d.hostname) !== fp);
-  next.push({ ip, keyPath, hostname, provider: provider || '', dashboardUrl, dashboardEnabled, savedAt: Date.now() });
+  next.push({ ip, keyPath, hostname, provider: provider || '', dashboardUrl, dashboardEnabled, osUpgrade, savedAt: Date.now() });
   saveSavedDeployments(next);
 }
 
@@ -4058,7 +4060,7 @@ function resetSavedDeployments() {
 function restoreSavedDeployments() {
   const saved = loadSavedDeployments();
   for (const d of saved) {
-    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, provider: d.provider || '', dashboardUrl: d.dashboardUrl || '', dashboardEnabled: d.dashboardEnabled !== false, restored: true });
+    addDeployCard({ completed: true, ip: d.ip, keyPath: d.keyPath, hostname: d.hostname, provider: d.provider || '', dashboardUrl: d.dashboardUrl || '', dashboardEnabled: d.dashboardEnabled !== false, osUpgrade: d.osUpgrade || '', restored: true });
   }
 }
 
@@ -4358,7 +4360,7 @@ function addDeployCard(initialState) {
     progressDiv.classList.remove('hidden');
     panelSetStatus(card, 'completed');
     panelUpdateProgress(card, deploymentTotalSteps(card));
-    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '', initialState.dashboardUrl || '', initialState.dashboardEnabled !== false);
+    panelShowSummary(card, initialState.ip, initialState.keyPath, initialState.hostname, initialState.provider || '', initialState.dashboardUrl || '', initialState.dashboardEnabled !== false, initialState.osUpgrade || '');
     if (initialState.restored) {
       panelAppendLog(card, 'Recovered completed deployment from local storage.', 'text-slate-400');
     }
@@ -4876,7 +4878,7 @@ function telegramPairingForm() {
   `;
 }
 
-function panelShowSummary(panel, ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true) {
+function panelShowSummary(panel, ip, keyPath, hostname, provider, dashboardUrl = '', dashboardEnabled = true, osUpgrade = '') {
   const card = panel.querySelector('.deploy-summary');
   const content = panel.querySelector('.deploy-summary-content');
   const isHermes = provider === 'hermes-lightsail';
@@ -4919,7 +4921,35 @@ function panelShowSummary(panel, ip, keyPath, hostname, provider, dashboardUrl =
         login.after(note);
       }
     } catch (_) {}
-    persistCompletedDeployment(ip, keyPath, hostname, provider || '', safeDashboardUrl, dashboardEnabled);
+    const upgradeMessages = {
+      queued: 'Hermes is ready to use. The OS upgrade was queued after deployment and runs independently. Check its current status below.',
+      launch_failed: 'Hermes is ready to use. The OS upgrade launch could not be confirmed. Check its status and retry if needed.',
+      dry_run: 'OS upgrade not run (dry-run).',
+    };
+    if (Object.prototype.hasOwnProperty.call(upgradeMessages, osUpgrade)) {
+      const upgrade = document.createElement('div');
+      upgrade.className = 'hermes-os-upgrade mt-3 border border-slate-700 rounded-lg p-3';
+      const message = document.createElement('p');
+      message.className = osUpgrade === 'launch_failed' ? 'text-amber-300' : 'text-slate-300';
+      message.textContent = upgradeMessages[osUpgrade];
+      upgrade.appendChild(message);
+      if (osUpgrade !== 'dry_run') {
+        const commands = [
+          "Status: ssh -i " + keyPath + " ubuntu@" + ip + " 'cat /var/lib/clawmacdo/hermes-os-upgrade/status'",
+          "Logs: ssh -i " + keyPath + " ubuntu@" + ip + " 'sudo journalctl -u clawmacdo-hermes-os-upgrade -f'",
+        ];
+        if (osUpgrade === 'launch_failed') {
+          commands.push("Retry: ssh -i " + keyPath + " ubuntu@" + ip + " 'sudo systemctl start --no-block clawmacdo-hermes-os-upgrade.service'");
+        }
+        for (const command of commands) {
+          const line = document.createElement('p');
+          line.textContent = command;
+          upgrade.appendChild(line);
+        }
+      }
+      content.appendChild(upgrade);
+    }
+    persistCompletedDeployment(ip, keyPath, hostname, provider || '', safeDashboardUrl, dashboardEnabled, osUpgrade);
     return;
   }
   content.innerHTML = `
@@ -5251,6 +5281,7 @@ async function startDeploy(e, cardNum) {
         let hostname = '';
         let dashboardUrl = '';
         let dashboardEnabled = true;
+        let osUpgrade = '';
         try {
           const payload = JSON.parse(msg.substring('DEPLOY_COMPLETE_JSON:'.length));
           ip = payload.ip || '';
@@ -5258,6 +5289,7 @@ async function startDeploy(e, cardNum) {
           hostname = payload.hostname || '';
           dashboardUrl = payload.dashboard_url || '';
           dashboardEnabled = payload.dashboard_enabled !== false;
+          osUpgrade = payload.os_upgrade || '';
         } catch (_) {}
         if (!ip || !keyPath || !hostname) {
           panelSetStatus(card, 'failed');
@@ -5280,7 +5312,7 @@ async function startDeploy(e, cardNum) {
         if (_ds1) panelAppendLog(card, 'Total deploy time: ' + formatDuration(Date.now() - _ds1), 'text-green-300 font-medium');
         panelAppendLog(card, 'Deploy completed successfully!', 'text-green-400 font-semibold');
         evtSource.close();
-        panelShowSummary(card, ip, keyPath, hostname, body.provider, dashboardUrl, dashboardEnabled);
+        panelShowSummary(card, ip, keyPath, hostname, body.provider, dashboardUrl, dashboardEnabled, osUpgrade);
         appendStepTimingTable(card, deployId);
         return;
       }

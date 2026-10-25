@@ -20,6 +20,23 @@ pub const DEFAULT_BEDROCK_REGION: &str = "ap-southeast-1";
 pub const DEFAULT_BEDROCK_MODEL: &str = "amazon.nova-pro-v1:0";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6-sol";
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const OS_UPGRADE_START_COMMAND: &str =
+    "sudo -n systemctl start --no-block clawmacdo-hermes-os-upgrade.service";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OsUpgradeLaunch {
+    Queued,
+    LaunchFailed,
+    DryRun,
+}
+
+#[derive(serde::Serialize)]
+pub struct HermesProvisionResult {
+    #[serde(flatten)]
+    pub record: DeployRecord,
+    pub os_upgrade: OsUpgradeLaunch,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiProvider {
@@ -334,6 +351,73 @@ async fn read_dashboard_url(ip: &str, key: &std::path::Path) -> Result<String> {
     })
     .await??;
     parse_quick_tunnel_url(&output)
+}
+
+fn report_os_upgrade_launch(
+    result: Result<String>,
+    tx: &Option<mpsc::UnboundedSender<String>>,
+) -> OsUpgradeLaunch {
+    match result {
+        Ok(_) => {
+            progress::emit(tx, "  OS upgrade: queued in the background. Hermes is ready to use; OS patching finishes separately.");
+            OsUpgradeLaunch::Queued
+        }
+        Err(error) => {
+            progress::emit(tx, &format!("  WARNING: Could not confirm the background OS upgrade was queued ({error}). Hermes is ready to use. Check the upgrade status and retry with: {OS_UPGRADE_START_COMMAND}"));
+            OsUpgradeLaunch::LaunchFailed
+        }
+    }
+}
+
+async fn queue_os_upgrade(
+    record: &DeployRecord,
+    tx: &Option<mpsc::UnboundedSender<String>>,
+) -> OsUpgradeLaunch {
+    let ip = record.ip_address.clone();
+    let key = PathBuf::from(&record.ssh_key_path);
+    // Wait only for systemd to accept the job. The upgrade owns no SSH channel
+    // and continues after the CLI, web server, or browser exits.
+    let result = tokio::task::spawn_blocking(move || {
+        ssh::exec_as_with_timeout(
+            &ip,
+            &key,
+            OS_UPGRADE_START_COMMAND,
+            "ubuntu",
+            std::time::Duration::from_secs(10),
+        )
+    })
+    .await
+    .context("OS upgrade SSH task failed")
+    .and_then(|result| result.map_err(anyhow::Error::from));
+    report_os_upgrade_launch(result, tx)
+}
+
+fn os_upgrade_setup() -> String {
+    let worker =
+        base64::engine::general_purpose::STANDARD.encode(include_bytes!("hermes_os_upgrade.sh"));
+    format!(
+        r#"install -d -m 755 /usr/local/lib/clawmacdo /var/lib/clawmacdo/hermes-os-upgrade
+printf '%s' '{worker}' | base64 -d > /usr/local/lib/clawmacdo/hermes-os-upgrade.sh
+chmod 700 /usr/local/lib/clawmacdo/hermes-os-upgrade.sh
+printf '%s\n' 'pending; waiting for deployment completion' > /var/lib/clawmacdo/hermes-os-upgrade/status
+cat > /etc/systemd/system/clawmacdo-hermes-os-upgrade.service <<'UNIT'
+[Unit]
+Description=Clawmacdo Hermes post-deployment OS upgrade
+After=cloud-final.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/local/lib/clawmacdo/hermes-os-upgrade.sh
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+UNIT
+systemctl daemon-reload
+"#
+    )
 }
 
 fn bedrock_mantle_base_url(region: &str) -> String {
@@ -681,6 +765,7 @@ sleep 10
 systemctl is-active --quiet hermes-gateway.service
 {dashboard_check}
 {tunnel_start}
+{os_upgrade_setup}
 touch {sentinel}
 echo "[clawmacdo] Native Hermes Agent bootstrap complete"
 "#,
@@ -689,6 +774,7 @@ echo "[clawmacdo] Native Hermes Agent bootstrap complete"
         } else {
             ""
         },
+        os_upgrade_setup = os_upgrade_setup(),
     );
     bash_user_data(&body)
 }
@@ -699,6 +785,7 @@ fn print_summary(
     ai_summary: &str,
     opencode: bool,
     telegram_bot: Option<&str>,
+    os_upgrade: OsUpgradeLaunch,
 ) {
     let divider = "=".repeat(60);
     let ip = &record.ip_address;
@@ -719,6 +806,19 @@ fn print_summary(
     println!("  Hermes env:        /home/ubuntu/.hermes/.env on server");
     println!("  AWS CLI config:    /home/ubuntu/.aws/config (Bedrock only)");
     println!("  AI model:          {ai_summary}");
+    println!(
+        "  OS upgrade:        {}",
+        match os_upgrade {
+            OsUpgradeLaunch::Queued => "queued after deployment; Hermes is ready to use",
+            OsUpgradeLaunch::LaunchFailed => "launch unconfirmed; check status and retry",
+            OsUpgradeLaunch::DryRun => "not run (dry-run)",
+        }
+    );
+    println!("  Upgrade status:    ssh -i {key} ubuntu@{ip} 'cat /var/lib/clawmacdo/hermes-os-upgrade/status'");
+    println!("  Upgrade logs:      ssh -i {key} ubuntu@{ip} 'sudo journalctl -u clawmacdo-hermes-os-upgrade -f'");
+    if os_upgrade == OsUpgradeLaunch::LaunchFailed {
+        println!("  Retry upgrade:     ssh -i {key} ubuntu@{ip} '{OS_UPGRADE_START_COMMAND}'");
+    }
     if let Some(bot) = telegram_bot {
         println!("  Telegram bot:      @{bot}");
         println!("  Telegram access:   message the bot from an allowed Telegram user ID");
@@ -789,7 +889,7 @@ async fn wait_for_hermes_cloud_init(
     }
 }
 
-pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
+pub async fn run(params: HermesLightsailParams) -> Result<HermesProvisionResult> {
     config::ensure_dirs()?;
     let deploy_id = params
         .deploy_id
@@ -931,7 +1031,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     progress::emit(tx, "  Runtime:  native host (terminal backend: local)");
     progress::emit(
         tx,
-        "  Setup:    prebuilt Hermes bundle alongside OS updates",
+        "  Setup:    prebuilt Hermes bundle alongside OS prerequisites; full OS upgrade runs in the background after step 8",
     );
     progress::emit(tx, &format!("  AI Model: {ai_summary}"));
     if tunnel.is_some() {
@@ -965,6 +1065,7 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
                 "dashboard": dashboard,
                 "dashboard_url": null,
                 "cloudflare_tunnel": tunnel.is_some(),
+                "os_upgrade": OsUpgradeLaunch::DryRun,
                 "user_data": user_data,
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -985,22 +1086,25 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
             record_step_start(step_db, &deploy_id, step, label);
             record_step_skipped(step_db, &deploy_id, step);
         }
-        return Ok(DeployRecord {
-            id: deploy_id,
-            provider: Some(CloudProviderType::Lightsail),
-            droplet_id: 0,
-            instance_id: Some("(dry-run)".to_string()),
-            hostname,
-            ip_address: "0.0.0.0".to_string(),
-            region,
-            size,
-            ssh_key_path: "(dry-run)".to_string(),
-            ssh_key_fingerprint: String::new(),
-            ssh_key_id: Some("(dry-run)".to_string()),
-            resource_group: None,
-            backup_restored: None,
-            dashboard_url: None,
-            created_at: Utc::now(),
+        return Ok(HermesProvisionResult {
+            os_upgrade: OsUpgradeLaunch::DryRun,
+            record: DeployRecord {
+                id: deploy_id,
+                provider: Some(CloudProviderType::Lightsail),
+                droplet_id: 0,
+                instance_id: Some("(dry-run)".to_string()),
+                hostname,
+                ip_address: "0.0.0.0".to_string(),
+                region,
+                size,
+                ssh_key_path: "(dry-run)".to_string(),
+                ssh_key_fingerprint: String::new(),
+                ssh_key_id: Some("(dry-run)".to_string()),
+                resource_group: None,
+                backup_restored: None,
+                dashboard_url: None,
+                created_at: Utc::now(),
+            },
         });
     }
 
@@ -1135,24 +1239,73 @@ pub async fn run(params: HermesLightsailParams) -> Result<DeployRecord> {
     progress::emit(tx, &format!("  Saved: {}", record_path.display()));
     progress::emit(tx, "\n[Step 8/8] Done!");
     record_step_complete(step_db, &record.id, 8);
+    let os_upgrade = queue_os_upgrade(&record, tx).await;
     progress::emit(tx, "\n[Done] Hermes Agent Lightsail provision complete!");
+    let result = HermesProvisionResult { record, os_upgrade };
     if params.json {
-        println!("{}", serde_json::to_string_pretty(&record)?);
+        println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print_summary(
-            &record,
+            &result.record,
             dashboard,
             &ai_summary,
             params.install_opencode && has_value(params.openrouter_api_key.as_deref()),
             telegram_bot_username.as_deref(),
+            os_upgrade,
         );
     }
-    Ok(record)
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_upgrade_is_prepared_without_starting_during_bootstrap() {
+        let script = generate_user_data("", "", "", "", false, None);
+        assert!(script.contains("After=cloud-final.service network-online.target"));
+        assert!(script.contains("Type=oneshot"));
+        assert!(script.contains("RemainAfterExit=yes"));
+        assert!(!script.contains(OS_UPGRADE_START_COMMAND));
+        assert!(!script.contains("enable --now clawmacdo-hermes-os-upgrade"));
+        assert!(
+            script.find("clawmacdo-hermes-os-upgrade.service").unwrap()
+                < script
+                    .find(&format!("touch {}", config::CLOUD_INIT_SENTINEL))
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn background_upgrade_launch_reports_failure_without_failing_deployment() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert_eq!(
+            report_os_upgrade_launch(Err(anyhow::anyhow!("SSH unavailable")), &Some(tx)),
+            OsUpgradeLaunch::LaunchFailed
+        );
+        let message = rx.try_recv().unwrap();
+        assert!(message.contains("Hermes is ready to use"));
+        assert!(message.contains(OS_UPGRADE_START_COMMAND));
+        assert!(!message.contains("DEPLOY_ERROR"));
+    }
+
+    #[test]
+    fn background_upgrade_acknowledgement_is_queued_not_completed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        assert_eq!(
+            report_os_upgrade_launch(Ok(String::new()), &Some(tx)),
+            OsUpgradeLaunch::Queued
+        );
+        assert!(rx
+            .try_recv()
+            .unwrap()
+            .contains("patching finishes separately"));
+        assert_eq!(
+            serde_json::to_value(OsUpgradeLaunch::Queued).unwrap(),
+            "queued"
+        );
+    }
 
     #[test]
     fn validates_repeated_env_assignments() {

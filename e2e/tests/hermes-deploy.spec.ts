@@ -59,7 +59,8 @@ test("Hermes OpenRouter deployment configures OpenCode and Telegram access witho
   await expect(card.locator('.deploy-summary')).not.toContainText("docker");
   await expect(card.locator('.deploy-log-area')).toContainText("OpenRouter openai/custom-test-model");
   await expect(card.locator('.deploy-log-area')).toContainText("OpenCode: CLI v2 will be installed");
-  await expect(card.locator('.deploy-log-area')).toContainText("prebuilt Hermes bundle alongside OS updates");
+  await expect(card.locator('.deploy-log-area')).toContainText("prebuilt Hermes bundle alongside OS prerequisites");
+  await expect(card.locator('.hermes-os-upgrade')).toContainText("OS upgrade not run (dry-run)");
 
   await expect(card.locator('.telegram-pairing-btn')).toHaveCount(0);
   await expect(card.locator('.telegram-pairing-code')).toHaveCount(0);
@@ -70,7 +71,33 @@ test("Hermes OpenRouter deployment configures OpenCode and Telegram access witho
   await page.reload();
   await expect(page.locator('.deploy-summary:visible')).toBeVisible();
   await expect(page.locator('.deploy-summary:visible .telegram-pairing-btn')).toHaveCount(0);
+  await expect(page.locator('.deploy-summary:visible .hermes-os-upgrade')).toContainText("OS upgrade not run (dry-run)");
 });
+
+for (const osUpgrade of ['queued', 'launch_failed']) {
+  test(`Hermes remains ready with OS upgrade ${osUpgrade} and preserves the notice after reload`, async ({ page }) => {
+    const card = await openHermesForm(page);
+    await card.locator('[name="hermes_openrouter_api_key"]').fill('sk-or-web-test');
+    await page.route('**/api/deploy/*/events', route => route.fulfill({
+      contentType: 'text/event-stream',
+      body: 'data: DEPLOY_COMPLETE_JSON:' + JSON.stringify({
+        ip: '192.0.2.10', ssh_key_path: '/tmp/test-key', hostname: 'hermes-background-test',
+        dashboard_enabled: false, os_upgrade: osUpgrade,
+      }) + '\n\n',
+    }));
+    await card.locator('.deploy-submit-btn').click();
+    await expect(card.locator('.deploy-summary')).toBeVisible();
+    await expect(card.locator('.hermes-os-upgrade')).toContainText('Hermes is ready to use');
+    await expect(card.locator('.hermes-os-upgrade')).toContainText('/hermes-os-upgrade/status');
+    const message = osUpgrade === 'queued' ? 'queued after deployment' : 'launch could not be confirmed';
+    await expect(card.locator('.hermes-os-upgrade')).toContainText(message);
+    if (osUpgrade === 'launch_failed') {
+      await expect(card.locator('.hermes-os-upgrade')).toContainText('systemctl start --no-block');
+    }
+    await page.reload();
+    await expect(page.locator('.deploy-summary:visible .hermes-os-upgrade')).toContainText(message);
+  });
+}
 
 test("Hermes provider switching validates the selected key and retains Bedrock support", async ({ page }) => {
   const card = await openHermesForm(page);

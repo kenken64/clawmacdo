@@ -10,8 +10,6 @@ hermes_os_setup() {
   local started=$SECONDS
   hermes_status os 'OS: refreshing package indexes'
   apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update -y
-  hermes_status os 'OS: upgrading installed packages'
-  apt-get -o DPkg::Lock::Timeout=300 upgrade -y
   hermes_status os 'OS: installing runtime libraries'
   apt-get -o DPkg::Lock::Timeout=300 install -y ca-certificates curl git unzip python3 ufw fail2ban unattended-upgrades __RUNTIME_PACKAGES__
   hermes_status os "OS: ready in $((SECONDS - started))s"
@@ -44,7 +42,7 @@ hermes_parallel_setup() {
   bundle_pid=$!
   wait "$os_pid" || os_rc=$?
   wait "$bundle_pid" || bundle_rc=$?
-  # Always join both jobs. A failed OS update must never proceed to service startup.
+  # Always join both jobs. Missing runtime libraries must block service startup.
   if [ "$os_rc" -ne 0 ]; then
     echo "[clawmacdo] OS setup failed (exit $os_rc)" >&2
     return "$os_rc"
@@ -70,7 +68,7 @@ from pathlib import Path
 Path('/tmp/clawmacdo-hermes-bundle.py').write_bytes(zlib.decompress(base64.b64decode('__BUNDLE_LOADER_ZLIB__')))
 BUNDLE_LOADER
   chmod 644 /tmp/clawmacdo-hermes-bundle.json /tmp/clawmacdo-hermes-bundle.py
-  echo '[clawmacdo] Installing native bundle and OS updates in parallel'
+  echo '[clawmacdo] Installing native bundle and OS prerequisites in parallel; full upgrade follows deployment'
   hermes_parallel_setup
   test -x /home/ubuntu/.local/bin/hermes
 }

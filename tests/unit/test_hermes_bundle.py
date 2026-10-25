@@ -131,6 +131,23 @@ class BundleTests(unittest.TestCase):
 
 
 class ParallelInstallTests(unittest.TestCase):
+    def test_foreground_refreshes_indexes_and_installs_runtime_without_full_upgrade(self):
+        script = r'''
+set -euo pipefail
+source "$HERMES_HELPER"
+hermes_status() { printf '%s\n' "$2"; }
+apt-get() { printf 'APT:'; printf ' %s' "$@"; printf '\n'; }
+hermes_os_setup
+'''
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True, timeout=5,
+                                env=dict(os.environ, HERMES_HELPER=str(ROOT / "crates/clawmacdo-cli/src/commands/hermes_install.sh")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [line.split() for line in result.stdout.splitlines() if line.startswith("APT:")]
+        self.assertEqual(len(commands), 2)
+        self.assertIn("update", commands[0])
+        self.assertIn("install", commands[1])
+        self.assertTrue(all("upgrade" not in command for command in commands))
+
     def run_setup(self, os_status=0, bundle_status=0):
         with tempfile.TemporaryDirectory() as directory:
             # A serial implementation deadlocks: each job waits for the other to start.
@@ -185,6 +202,59 @@ echo ready-for-services
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("source-fallback", result.stdout)
         self.assertIn("ready-for-services", result.stdout)
+
+
+class BackgroundUpgradeTests(unittest.TestCase):
+    def run_upgrade(self, apt_status=0, reboot_required=False):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            state = directory / "state"
+            reboot = directory / "reboot-required"
+            if reboot_required:
+                reboot.touch()
+            # Fail safely if a regression tries to reboot or manage live services.
+            for command in ["reboot", "shutdown", "systemctl", "sudo"]:
+                stub = directory / command
+                stub.write_text("#!/bin/sh\nexit 99\n")
+                stub.chmod(0o755)
+            binary = directory / "apt-get"
+            binary.write_text('''#!/bin/bash
+set -euo pipefail
+test "$DEBIAN_FRONTEND" = noninteractive
+test "$NEEDRESTART_MODE" = l
+test "$(cat "$TEST_STATE/status")" = running
+printf '%s\\n' "$@" > "$TEST_ARGS"
+exit "$APT_RESULT"
+''')
+            binary.chmod(0o755)
+            script = (ROOT / "crates/clawmacdo-cli/src/commands/hermes_os_upgrade.sh").read_text()
+            script = script.replace("/var/lib/clawmacdo/hermes-os-upgrade", str(state))
+            script = script.replace("/var/run/reboot-required", str(reboot))
+            result = subprocess.run(["bash", "-c", script], text=True, capture_output=True, timeout=5,
+                                    env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                                             TEST_STATE=str(state), TEST_ARGS=str(directory / "args"), APT_RESULT=str(apt_status)))
+            args = (directory / "args").read_text().splitlines()
+            self.assertIn("upgrade", args)
+            self.assertIn("DPkg::Lock::Timeout=300", args)
+            self.assertIn("Dpkg::Options::=--force-confold", args)
+            self.assertFalse((state / "status.tmp").exists())
+            return result, (state / "status").read_text().strip()
+
+    def test_upgrade_reports_completion(self):
+        result, status = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(status, "completed")
+
+    def test_upgrade_failure_is_recorded_and_returns_nonzero(self):
+        result, status = self.run_upgrade(apt_status=42)
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("failed (exit 42)", status)
+        self.assertNotIn("completed", result.stdout)
+
+    def test_required_reboot_is_reported_without_rebooting(self):
+        result, status = self.run_upgrade(reboot_required=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(status, "completed; reboot required (not performed automatically)")
 
 
 if __name__ == "__main__":

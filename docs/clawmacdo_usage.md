@@ -464,17 +464,39 @@ Hermes runs as `ubuntu` with the local terminal backend and systemd services.
 
 Since v0.97.0, Ubuntu 24.04 amd64/arm64 deployments automatically download the pinned
 [`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1)
-while OS updates and runtime-library installation run. The bundle includes Hermes 0.22.5, the
+while OS prerequisites are installed. The bundle includes Hermes 0.22.5, the
 compiled dashboard, Python runtime/dependencies, OpenCode 2.1.3, and cloudflared 2026.10.3.
 
 Step 7 reports separate `OS:` and `Bundle:` phases in the CLI and web UI. Both jobs finish before
 services are configured and started. Your API keys, Telegram settings, dashboard password, and
 sessions are separate from the published software bundle.
 
+In the next release, step 7 runs `apt-get update` and installs required runtime packages, while the
+full `apt-get upgrade` moves to a background job queued through SSH after step 8 saves the deployment.
+Hermes is ready to use before that upgrade completes. The instance runs the job through systemd,
+so it continues after the CLI or browser closes. Version 0.97.0 still performs the full upgrade
+during step 7.
+
+The CLI JSON result and web completion payload include `os_upgrade`: `queued`, `launch_failed`,
+or `dry_run`. This describes the launch attempt, not the current patching state. A failed or
+unconfirmed launch leaves Hermes available and displays retry instructions. Check the current
+state or retry on the instance:
+
+```bash
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'cat /var/lib/clawmacdo/hermes-os-upgrade/status'
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'sudo journalctl -u clawmacdo-hermes-os-upgrade -f'
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'sudo systemctl start --no-block clawmacdo-hermes-os-upgrade.service'
+```
+
+The job waits for package-manager locks, preserves existing package configuration, and asks
+needrestart to list services needing restart. It reports failures and required reboots without
+automatically rebooting; package installation scripts can still restart their own services.
+
 The installer verifies the pinned release, source commit, platform, archive size, SHA-256, and paths.
 Missing assets (HTTP 404) or an unsupported bundle platform allow source installation after OS
-setup completes. Other download, integrity, or installation failures stop provisioning. OS updates
-remain enabled; actual Lightsail deployment time has not yet been benchmarked.
+setup completes. Other download, integrity, or installation failures stop provisioning. Bundle
+download and extraction still affect readiness; the background-upgrade flow has not yet been
+benchmarked on a fresh Lightsail deployment.
 
 ### Options
 

@@ -189,6 +189,20 @@ fn connect_as(ip: &str, private_key_path: &Path, username: &str) -> Result<Sessi
 }
 
 fn try_connect(ip: &str, private_key_path: &Path, username: &str) -> Result<Session, AppError> {
+    try_connect_with_timeout(
+        ip,
+        private_key_path,
+        username,
+        std::time::Duration::from_secs(300),
+    )
+}
+
+fn try_connect_with_timeout(
+    ip: &str,
+    private_key_path: &Path,
+    username: &str,
+    timeout: std::time::Duration,
+) -> Result<Session, AppError> {
     let addr = format!("{ip}:22");
     let sock_addr: std::net::SocketAddr = addr
         .parse()
@@ -206,12 +220,12 @@ fn try_connect(ip: &str, private_key_path: &Path, username: &str) -> Result<Sess
         .with_interval(std::time::Duration::from_secs(5));
     let _ = sock.set_tcp_keepalive(&keepalive);
 
-    // Keep command I/O timeout long enough for package installs and service setup.
-    let _ = tcp.set_read_timeout(Some(std::time::Duration::from_secs(300)));
-    let _ = tcp.set_write_timeout(Some(std::time::Duration::from_secs(300)));
+    // Normal provisioning uses 300s; short background-job handoffs use less.
+    let _ = tcp.set_read_timeout(Some(timeout));
+    let _ = tcp.set_write_timeout(Some(timeout));
 
     let mut sess = Session::new().map_err(|e| AppError::Ssh(format!("Session::new: {e}")))?;
-    sess.set_timeout(300_000); // 5 min timeout for SSH-level operations
+    sess.set_timeout(timeout.as_millis().clamp(1, u32::MAX as u128) as u32);
     sess.set_tcp_stream(tcp);
 
     // Prefer faster authenticated-encryption ciphers; libssh2 falls back if unsupported.
@@ -317,6 +331,25 @@ pub fn exec_as(
         .exec(&format!("{{ {command}\n}} 2>&1"))
         .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
 
+    read_command_output(channel)
+}
+
+/// One connection attempt for a short command, with a timeout per SSH operation.
+/// Use this to enqueue background work without the long package-install timeout.
+pub fn exec_as_with_timeout(
+    ip: &str,
+    private_key_path: &Path,
+    command: &str,
+    username: &str,
+    timeout: std::time::Duration,
+) -> Result<String, AppError> {
+    let sess = try_connect_with_timeout(ip, private_key_path, username, timeout)?;
+    let mut channel = sess
+        .channel_session()
+        .map_err(|e| AppError::Ssh(format!("Open channel: {e}")))?;
+    channel
+        .exec(&format!("{{ {command}\n}} 2>&1"))
+        .map_err(|e| AppError::Ssh(format!("Exec command: {e}")))?;
     read_command_output(channel)
 }
 

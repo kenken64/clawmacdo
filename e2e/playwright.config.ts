@@ -18,20 +18,22 @@ if (fs.existsSync(envFile)) {
   }
 }
 
+const port = Number(process.env.CLAWMACDO_E2E_PORT || "3456");
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 120_000,
   retries: 0,
   workers: 1, // sequential — single server
   use: {
-    baseURL: "http://localhost:3456",
+    baseURL: `http://localhost:${port}`,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
   webServer: {
     command:
-      `CLAWMACDO_DRY_RUN=true CLAWMACDO_PIN=${process.env.CLAWMACDO_E2E_PIN || "111111"} cargo run --bin clawmacdo -- serve --port 3456`,
-    url: "http://localhost:3456",
+      `CLAWMACDO_DRY_RUN=true CLAWMACDO_PIN=${process.env.CLAWMACDO_E2E_PIN || "111111"} cargo run --bin clawmacdo -- serve --port ${port}`,
+    url: `http://localhost:${port}`,
     timeout: 300_000, // 5 min for Rust compile + startup
     reuseExistingServer: !process.env.CI,
     cwd: path.resolve(__dirname, ".."),

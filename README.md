@@ -12,7 +12,7 @@ Rust CLI and web UI for deploying [OpenClaw](https://openclaw.ai) to **DigitalOc
 ## Features
 
 - **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
-- **Hermes Agent on Lightsail**: `hermes-provision` or the web UI installs a verified native Ubuntu 24.04 bundle in parallel with OS updates, then configures credentials and starts services
+- **Hermes Agent on Lightsail**: `hermes-provision` or the web UI installs a verified native Ubuntu 24.04 bundle alongside required OS packages, starts Hermes, and queues the full OS upgrade after deployment
 - **Hermes messaging and dashboard**: authorize Telegram users by ID and optionally expose the password-protected dashboard through a Cloudflare Quick Tunnel
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI + OpenCode, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
@@ -279,13 +279,16 @@ You do not need a shared Lightsail snapshot or an extra CLI flag.
 | OpenCode CLI | `2.1.3` |
 | cloudflared | `2026.10.3` |
 
-1. OS package updates and runtime-library installation run alongside bundle download, verification,
+1. `apt-get update` and required runtime-library installation run alongside bundle download, verification,
    and extraction. The archive includes the Python runtime, dependencies, and native tools, so a
    successful bundle install avoids building Hermes and its dashboard on every instance.
 2. Both jobs must finish successfully before service setup. Step 7 streams separate `OS:` and
    `Bundle:` progress messages in the CLI and web UI.
 3. Provisioning writes your credentials and settings, configures the selected services, and checks
    readiness. OpenCode and cloudflared are activated only when their options are enabled.
+4. After step 8 saves the deployment record, a short SSH call queues the full `apt-get upgrade`
+   as a background systemd job. **Hermes is ready to use while the OS upgrade runs.** The upgrade
+   continues if you close the CLI or browser; deployment does not wait for it to finish.
 
 Bundles are built on clean CI runners and verified on separate fresh amd64/arm64 VMs with external
 networking disabled for runtime tests. They contain software only: API keys, Telegram settings,
@@ -296,9 +299,27 @@ extraction paths. Only a missing release asset (**HTTP 404**) or an unsupported 
 fallback to pinned Hermes source, after OS setup finishes. Checksum mismatches, invalid manifests,
 unsafe archives, and other download or installation failures stop provisioning.
 
-OS updates remain enabled, and download time depends on the connection. End-to-end Lightsail
-provisioning time has not yet been benchmarked; a source fallback still incurs the longer install.
+Full OS upgrades remain enabled but finish separately from deployment. The summary reports whether
+the upgrade was queued and provides status/log commands. If the SSH handoff cannot be confirmed,
+Hermes remains ready and the summary explains how to check and retry the job. This background-upgrade
+behavior is in the next release; v0.97.0 waits for the full upgrade during step 7.
+
+Download and extraction time still depend on the connection and instance size; source fallback
+still incurs the longer install. Deferring the OS upgrade does not eliminate bundle installation time.
 See the [bundle build and verification guide](scripts/hermes-bundle/README.md) for release details.
+
+To check background OS patching on a deployment using the new flow:
+
+```bash
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'cat /var/lib/clawmacdo/hermes-os-upgrade/status'
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'sudo journalctl -u clawmacdo-hermes-os-upgrade -f'
+# Retry an upgrade whose launch or execution failed:
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'sudo systemctl start --no-block clawmacdo-hermes-os-upgrade.service'
+```
+
+The job reports `running`, `completed`, a required reboot, or failure. It preserves existing package
+configuration files and uses needrestart's list-only mode. No automatic reboot is performed;
+package installation scripts can still restart their own services.
 
 #### CLI and web UI setup
 
