@@ -7,7 +7,7 @@ external connectivity, so missing dependencies cannot be downloaded silently.
 
 ## Current published bundle
 
-Clawmacdo **v0.97.0** automatically uses
+Clawmacdo **v0.98.0** automatically uses
 [`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1)
 on Ubuntu 24.04 amd64/arm64. It includes Hermes **0.22.5** at commit
 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`, OpenCode **2.1.3**, and cloudflared **2026.10.3**.
@@ -43,12 +43,12 @@ The client accepts only the matching platform, release and source commit. It ver
 archive before extracting it as the `ubuntu` user and refuses existing software or archive paths
 outside the allowed directories. A missing asset (HTTP 404) or unsupported platform enables source
 fallback; integrity errors and other download failures do not. The source installer runs after OS
-updates to keep all package-manager operations serialized.
+prerequisites are installed to keep all package-manager operations serialized.
 
-In the next CLI release, foreground OS setup refreshes apt indexes and installs required runtime
+Starting with CLI v0.98.0, foreground OS setup refreshes apt indexes and installs required runtime
 libraries. After step 8 saves the deployment record, SSH queues
 `clawmacdo-hermes-os-upgrade.service` with `systemctl start --no-block`. Full OS upgrades continue
-independently while Hermes is usable; v0.97.0 still upgrades packages during foreground setup.
+independently while Hermes is usable; v0.97.0 upgraded packages during foreground setup.
 The worker reports status in `/var/lib/clawmacdo/hermes-os-upgrade/status` and logs to the systemd
 journal. Launch failures are reported separately from deployment success, and dry runs never queue
 the job. The worker preserves existing package configuration, uses needrestart's list-only mode,

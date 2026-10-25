@@ -265,7 +265,7 @@ clawmacdo deploy \
 Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
 OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled. Hermes runs natively as the `ubuntu` user with the local terminal backend; provisioning does not install Docker.
 
-#### Prebuilt installation in v0.97.0
+#### Prebuilt installation
 
 Prebuilt installation is automatic on **Ubuntu 24.04 amd64 and arm64**. Each deployment creates an
 instance in your own AWS account and downloads the matching software archive from the published
@@ -301,8 +301,8 @@ unsafe archives, and other download or installation failures stop provisioning.
 
 Full OS upgrades remain enabled but finish separately from deployment. The summary reports whether
 the upgrade was queued and provides status/log commands. If the SSH handoff cannot be confirmed,
-Hermes remains ready and the summary explains how to check and retry the job. This background-upgrade
-behavior is in the next release; v0.97.0 waits for the full upgrade during step 7.
+Hermes remains ready and the summary explains how to check and retry the job. Background OS upgrades
+are available starting with **v0.98.0**.
 
 Download and extraction time still depend on the connection and instance size; source fallback
 still incurs the longer install. Deferring the OS upgrade does not eliminate bundle installation time.
@@ -1404,7 +1404,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.97.0
+**Current version:** 0.98.0
 
 
 

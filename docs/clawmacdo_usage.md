@@ -471,10 +471,10 @@ Step 7 reports separate `OS:` and `Bundle:` phases in the CLI and web UI. Both j
 services are configured and started. Your API keys, Telegram settings, dashboard password, and
 sessions are separate from the published software bundle.
 
-In the next release, step 7 runs `apt-get update` and installs required runtime packages, while the
+Starting with v0.98.0, step 7 runs `apt-get update` and installs required runtime packages, while the
 full `apt-get upgrade` moves to a background job queued through SSH after step 8 saves the deployment.
 Hermes is ready to use before that upgrade completes. The instance runs the job through systemd,
-so it continues after the CLI or browser closes. Version 0.97.0 still performs the full upgrade
+so it continues after the CLI or browser closes. Version 0.97.0 performed the full upgrade
 during step 7.
 
 The CLI JSON result and web completion payload include `os_upgrade`: `queued`, `launch_failed`,

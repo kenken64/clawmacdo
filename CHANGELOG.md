@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.98.0
 
 ### Changed
 - Hermes step 7 refreshes apt indexes and installs required runtime packages alongside the prebuilt bundle. The full `apt-get upgrade` is queued through SSH only after step 8 saves the deployment record, so Hermes is ready to use while OS patching continues independently under systemd.
