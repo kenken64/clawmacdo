@@ -9,6 +9,7 @@ Complete reference for all `clawmacdo` subcommands with examples, equivalent cur
 ## Table of Contents
 
 - [deploy](#deploy) — Deploy a new OpenClaw instance
+- [hermes-provision](#hermes-provision) — Provision native Hermes Agent on AWS Lightsail
 - [track](#track) — Track deployment progress
 - [destroy](#destroy) — Destroy a deployed instance
 - [telegram-setup](#telegram-setup) — Configure Telegram bot on an instance
@@ -434,6 +435,96 @@ clawmacdo deploy \
   --detach \
   --json
 ```
+
+---
+
+## hermes-provision
+
+Provision Hermes Agent natively on an Ubuntu 24.04 AWS Lightsail instance. The command is also
+available as `provision-hermes`. Install the AWS CLI locally before provisioning.
+
+```bash
+export AWS_ACCESS_KEY_ID="<YOUR_AWS_ACCESS_KEY_ID>"
+export AWS_SECRET_ACCESS_KEY="<YOUR_AWS_SECRET_ACCESS_KEY>"
+export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
+export TELEGRAM_BOT_TOKEN="<YOUR_TELEGRAM_BOT_TOKEN>"
+
+clawmacdo hermes-provision \
+  --name my-hermes \
+  --aws-region ap-southeast-1 \
+  --size s-2vcpu-4gb \
+  --openrouter-model openai/gpt-6-sol \
+  --telegram-allowed-users 123456789
+```
+
+Defaults: region `ap-southeast-1`, size `s-2vcpu-4gb`, and a generated `hermes-<deploy-id>` name.
+Hermes runs as `ubuntu` with the local terminal backend and systemd services.
+
+### Prebuilt runtime and progress
+
+Since v0.97.0, Ubuntu 24.04 amd64/arm64 deployments automatically download the pinned
+[`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1)
+while OS updates and runtime-library installation run. The bundle includes Hermes 0.22.5, the
+compiled dashboard, Python runtime/dependencies, OpenCode 2.1.3, and cloudflared 2026.10.3.
+
+Step 7 reports separate `OS:` and `Bundle:` phases in the CLI and web UI. Both jobs finish before
+services are configured and started. Your API keys, Telegram settings, dashboard password, and
+sessions are separate from the published software bundle.
+
+The installer verifies the pinned release, source commit, platform, archive size, SHA-256, and paths.
+Missing assets (HTTP 404) or an unsupported bundle platform allow source installation after OS
+setup completes. Other download, integrity, or installation failures stop provisioning. OS updates
+remain enabled; actual Lightsail deployment time has not yet been benchmarked.
+
+### Options
+
+| Flag | Purpose |
+|------|---------|
+| `--aws-access-key-id`, `--aws-secret-access-key` | AWS credentials; also read from the environment shown above |
+| `--aws-region`, `--size`, `--name` | Lightsail region, instance size, and optional name |
+| `--ai-provider openrouter\|bedrock` | Select the AI provider; auto-selection prefers an OpenRouter key |
+| `--openrouter-api-key`, `--openrouter-model` | Configure Hermes and OpenCode with the same key and model |
+| `--bedrock-api-key`, `--bedrock-region`, `--bedrock-model` | Configure Bedrock; default model `amazon.nova-pro-v1:0`, region `ap-southeast-1` |
+| `--no-opencode` | Skip OpenCode setup; it is enabled by default for OpenRouter |
+| `--telegram-bot-token` | Telegram bot token from @BotFather |
+| `--telegram-allowed-users` | Comma-separated numeric user IDs authorized to chat directly |
+| `--telegram-home-channel` | Notification destination; defaults to the first allowed user |
+| `--dashboard` | Start the dashboard on `127.0.0.1:9119` for access through SSH |
+| `--cloudflare-tunnel` | Enable the dashboard and generate a public HTTPS Quick Tunnel URL |
+| `--dashboard-password` | Dashboard admin password, at least 12 characters; required for a tunnel |
+| `--env-file`, `--env KEY=VALUE` | Load a Hermes environment file or append repeatable settings |
+| `--dry-run` | Print the generated user-data script without creating resources |
+| `--json` | Return structured output |
+
+### Dashboard and Telegram
+
+With the AWS and OpenRouter environment variables above, enable a password-protected dashboard:
+
+```bash
+export HERMES_DASHBOARD_PASSWORD="<YOUR_PASSWORD_AT_LEAST_12_CHARACTERS>"
+clawmacdo hermes-provision --cloudflare-tunnel --telegram-allowed-users 123456789
+```
+
+Sign in as `admin` at the generated `https://<random>.trycloudflare.com` URL in the deployment
+summary. Cloudflare credentials or a domain are not required. The URL changes when the tunnel
+restarts; retrieve the current address with:
+
+```bash
+ssh -i <ssh-key-path> ubuntu@<instance-ip> 'cat /var/lib/hermes-cloudflared/dashboard-url'
+```
+
+Allowed Telegram users can message the bot directly. Clawmacdo no longer accepts a Hermes pairing
+code or provides `hermes-telegram-pair`; the `telegram-pair` command elsewhere in this guide is for
+OpenClaw. The home channel selects where notifications go and does not authorize users by itself.
+If allowed users are omitted, Hermes retains its own access controls.
+
+In the web UI, select **Hermes Agent**, enter AWS and AI-provider credentials, configure Telegram
+**Allowed User IDs**, and choose the OpenCode/dashboard options before provisioning. Monitor
+services over SSH with `sudo journalctl -u hermes-gateway -f`, `sudo journalctl -u hermes-dashboard -f`,
+or `sudo journalctl -u hermes-cloudflared -f` when enabled.
+
+See the [README walkthrough](../README.md#provision-hermes-agent-on-aws-lightsail) and
+[bundle build guide](../scripts/hermes-bundle/README.md) for setup and release details.
 
 ---
 
@@ -2721,8 +2812,8 @@ All credentials can be set via environment variables instead of CLI flags.
 | `DO_TOKEN` | deploy, destroy | DigitalOcean API token |
 | `TENCENT_SECRET_ID` | deploy, destroy | Tencent Cloud Secret ID |
 | `TENCENT_SECRET_KEY` | deploy, destroy | Tencent Cloud Secret Key |
-| `AWS_ACCESS_KEY_ID` | deploy | AWS IAM access key ID |
-| `AWS_SECRET_ACCESS_KEY` | deploy | AWS IAM secret access key |
+| `AWS_ACCESS_KEY_ID` | deploy, hermes-provision | AWS IAM access key ID |
+| `AWS_SECRET_ACCESS_KEY` | deploy, hermes-provision | AWS IAM secret access key |
 | `AZURE_TENANT_ID` | deploy, destroy | Azure AD tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | deploy, destroy | Azure subscription ID |
 | `AZURE_CLIENT_ID` | deploy, destroy | Azure service principal client ID |
@@ -2738,6 +2829,17 @@ All credentials can be set via environment variables instead of CLI flags.
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `GEMINI_API_KEY` | Google Gemini API key |
+
+### Hermes Agent
+
+| Variable | Description |
+|----------|-------------|
+| `OPENROUTER_API_KEY` | OpenRouter key for Hermes and OpenCode |
+| `AWS_BEARER_TOKEN_BEDROCK` | Alternative Bedrock API key for Hermes |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for the Hermes gateway |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated user IDs authorized to chat directly |
+| `TELEGRAM_HOME_CHANNEL` | Notification destination; does not grant chat access |
+| `HERMES_DASHBOARD_PASSWORD` | Dashboard admin password; required with `--cloudflare-tunnel` |
 
 ### ARK Inference
 

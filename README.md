@@ -7,11 +7,13 @@
 [![Release](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/release.yml)
 [![Changelog](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml/badge.svg)](https://github.com/kenken64/clawmacdo/actions/workflows/changelog.yml)
 
-Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud** — with Claude Code, Codex, and Gemini CLI pre-installed.
+Rust CLI and web UI for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**, **AWS Lightsail**, **Tencent Cloud**, **Microsoft Azure**, or **BytePlus Cloud**, and [Hermes Agent](https://hermes-agent.nousresearch.com/) natively to **AWS Lightsail**. OpenClaw deployments include Claude Code, Codex, and Gemini CLI; Hermes supports OpenRouter or AWS Bedrock, OpenCode CLI v2, Telegram, and an optional dashboard.
 
 ## Features
 
 - **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
+- **Hermes Agent on Lightsail**: `hermes-provision` or the web UI installs a verified native Ubuntu 24.04 bundle in parallel with OS updates, then configures credentials and starts services
+- **Hermes messaging and dashboard**: authorize Telegram users by ID and optionally expose the password-protected dashboard through a Cloudflare Quick Tunnel
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI + OpenCode, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
 - **Snapshot & restore**: create and restore named snapshots for DigitalOcean, BytePlus, and AWS Lightsail
@@ -22,6 +24,8 @@ Rust CLI tool for deploying [OpenClaw](https://openclaw.ai) to **DigitalOcean**,
 - **Security groups**: auto-create firewall rules on Tencent Cloud and BytePlus (SSH + HTTP/HTTPS + Gateway)
 
 ## Supported Cloud Providers
+
+The provider flags below apply to OpenClaw. For Hermes Agent, use [`hermes-provision`](#provision-hermes-agent-on-aws-lightsail) or select **Hermes Agent** in the web UI; Hermes provisioning currently targets AWS Lightsail.
 
 | Provider | Flag | Credentials | Prerequisite |
 |----------|------|-------------|-------------|
@@ -261,17 +265,42 @@ clawmacdo deploy \
 Provision a Lightsail instance and bootstrap [Hermes Agent](https://hermes-agent.nousresearch.com/) with OpenRouter,
 OpenAI GPT-6 Sol, and the OpenCode CLI v2 preinstalled. Hermes runs natively as the `ubuntu` user with the local terminal backend; provisioning does not install Docker.
 
-On Ubuntu 24.04 amd64/arm64, provisioning downloads a pinned prebuilt software bundle while OS
-updates and runtime-library installation run in parallel. It verifies the archive's SHA-256 and
-platform before installation, then waits for both jobs before configuring and starting services.
-Step 7 streams separate OS and bundle progress in the CLI and web UI. Each user deploys into their
-own AWS account; no shared Lightsail snapshot is required.
+#### Prebuilt installation in v0.97.0
 
-The bundle includes Hermes, its compiled dashboard, Python dependencies and native tools, plus
-OpenCode and cloudflared binaries. API keys, Telegram settings, dashboard passwords and user sessions
-are configured separately and are never included in the published bundle. If a release asset is
-unavailable, provisioning reports the fallback and installs pinned Hermes source after OS setup.
-Checksum failures stop provisioning. An unavailable bundle therefore retains the longer source-install time.
+Prebuilt installation is automatic on **Ubuntu 24.04 amd64 and arm64**. Each deployment creates an
+instance in your own AWS account and downloads the matching software archive from the published
+[Hermes runtime bundle](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1).
+You do not need a shared Lightsail snapshot or an extra CLI flag.
+
+| Bundled component | Pinned version |
+|-------------------|----------------|
+| Runtime bundle | `hermes-bundle-v0.22.5-1` |
+| Hermes Agent and compiled dashboard | `0.22.5` |
+| OpenCode CLI | `2.1.3` |
+| cloudflared | `2026.10.3` |
+
+1. OS package updates and runtime-library installation run alongside bundle download, verification,
+   and extraction. The archive includes the Python runtime, dependencies, and native tools, so a
+   successful bundle install avoids building Hermes and its dashboard on every instance.
+2. Both jobs must finish successfully before service setup. Step 7 streams separate `OS:` and
+   `Bundle:` progress messages in the CLI and web UI.
+3. Provisioning writes your credentials and settings, configures the selected services, and checks
+   readiness. OpenCode and cloudflared are activated only when their options are enabled.
+
+Bundles are built on clean CI runners and verified on separate fresh amd64/arm64 VMs with external
+networking disabled for runtime tests. They contain software only: API keys, Telegram settings,
+dashboard passwords, SSH keys, and user sessions are configured separately.
+
+The installer checks the platform, pinned release and source commit, archive size, SHA-256, and
+extraction paths. Only a missing release asset (**HTTP 404**) or an unsupported bundle platform allows
+fallback to pinned Hermes source, after OS setup finishes. Checksum mismatches, invalid manifests,
+unsafe archives, and other download or installation failures stop provisioning.
+
+OS updates remain enabled, and download time depends on the connection. End-to-end Lightsail
+provisioning time has not yet been benchmarked; a source fallback still incurs the longer install.
+See the [bundle build and verification guide](scripts/hermes-bundle/README.md) for release details.
+
+#### CLI and web UI setup
 
 ```bash
 export AWS_ACCESS_KEY_ID="your_access_key_id"
@@ -315,6 +344,8 @@ What gets configured:
   (`openrouter/openai/gpt-6-sol`) in `~/.config/opencode/opencode.json`.
 - Use `--no-opencode` to skip the OpenCode CLI install.
 
+#### Dashboard and Cloudflare Quick Tunnel
+
 To give the dashboard an HTTPS address, enable **Cloudflare Quick Tunnel for the dashboard** in the
 web UI. No Cloudflare account, tunnel token, custom hostname, or DNS setup is needed. Enter a dashboard
 password of at least 12 characters; sign in to Hermes as **admin** using that password.
@@ -345,6 +376,8 @@ View connector logs with `sudo journalctl -u hermes-cloudflared -f`. The web UI 
 password in browser storage. `--dry-run` redacts the password and leaves the dashboard URL empty because
 no tunnel is created. [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 are temporary, have no uptime guarantee, and do not support Server-Sent Events (SSE).
+
+#### Telegram access and AI providers
 
 Telegram access is configured with `--telegram-allowed-users 123456789,987654321` (or
 `TELEGRAM_ALLOWED_USERS`). These users can message the bot directly once provisioning finishes.
@@ -1333,6 +1366,7 @@ For licensing inquiries, contact: bunnyppl@gmail.com
 | Document | Description |
 |----------|-------------|
 | [CLI Usage Guide](docs/clawmacdo_usage.md) | Complete reference for all subcommands with examples and sample responses |
+| [Hermes Native Bundles](scripts/hermes-bundle/README.md) | Pinned runtime versions, clean builds, verification, and bundle publishing |
 | [Deployment Architecture](docs/DEPLOYMENT_ARCHITECTURE_RESEARCH.md) | Cloud provider architecture research and design decisions |
 | [Codebase Logic & Data Flow](docs/CODEBASE_LOGIC_AND_DATA_FLOW.md) | End-to-end logic flow, module boundaries, and data structures |
 | [Tracking Architecture](docs/TRACKING_ARCHITECTURE.md) | Deploy/snapshot/restore progress tracking system design |

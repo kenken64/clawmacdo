@@ -3,11 +3,18 @@
 ## v0.97.0
 
 ### Added
-- Native Hermes software bundles for Ubuntu 24.04 amd64 and arm64, built from pinned versions on clean CI runners and checked on separate VMs with networking disabled for runtime tests. Bundles include the compiled dashboard, Python runtime/dependencies, OpenCode v2 and cloudflared without customer credentials or sessions.
-- Hermes provisioning downloads and extracts the verified bundle in parallel with OS updates, waits for both jobs before starting services, and streams separate installation phases in the CLI and web UI. Source fallback runs only after package installation has finished; checksum and installation failures stop provisioning.
+- **Prebuilt native Hermes installation** for Ubuntu 24.04 amd64 and arm64. The published [`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1) contains Hermes `0.22.5`, its compiled dashboard, Python runtime/dependencies, OpenCode `2.1.3`, and cloudflared `2026.10.3`. Clean CI builds exclude customer credentials, configuration, SSH keys, and sessions; separate fresh VMs verify both architectures with external networking disabled for runtime tests.
+- **Parallel provisioning** downloads, verifies, and extracts the bundle while OS updates and runtime-library installation run. Both jobs finish before service setup, with separate `OS:` and `Bundle:` progress in the CLI and web UI. Prebuilt installation is automatic and requires no shared AWS snapshot.
+- **Bundle integrity checks** enforce the pinned release, source commit, platform, size, SHA-256, and allowed extraction paths. Only missing assets (HTTP 404) or an unsupported bundle platform permit a pinned Hermes source fallback after OS setup; integrity failures and other download or installation errors stop provisioning.
 
 ### Changed
 - Hermes Telegram setup uses the bot token and Allowed User IDs for direct access. Removed the provisioning pairing-code option, dedicated `hermes-telegram-pair` subcommand, and pairing fields/approval form in the web UI. OpenClaw pairing remains available.
+- Runtime bundles use separate `hermes-bundle-v…` releases and do not replace the latest CLI release or trigger npm publishing. Native bundle CI runs on manual dispatch and bundle tags.
+
+### Fixed
+- Native archives retain npm runtime dependencies while excluding tool download caches, allowing the packaged tools to run without downloading missing files.
+
+OS updates remain enabled. End-to-end Lightsail provisioning time has not yet been benchmarked.
 
 ## v0.96.0
 
