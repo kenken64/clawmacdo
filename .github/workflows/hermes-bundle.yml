@@ -2,6 +2,12 @@ name: Hermes native bundle
 
 on:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: Bundles to build and verify (tag pushes always build all)
+        type: choice
+        options: [all, ubuntu, local]
+        default: all
   push:
     tags: ['hermes-bundle-v*']
 
@@ -10,6 +16,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.targets != 'local'
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +60,43 @@ jobs:
           path: ${{ runner.temp }}/hermes-artifacts
       - name: Verify install on a fresh VM with networking disabled for Hermes
         run: sudo --preserve-env=GITHUB_ACTIONS bash scripts/hermes-bundle/verify.sh "$RUNNER_TEMP/hermes-artifacts"
+
+  build-local:
+    if: github.event_name != 'workflow_dispatch' || inputs.targets != 'ubuntu'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: macos-arm64
+          - runner: windows-latest
+            platform: windows-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build pinned native software on a clean macOS runner
+        if: runner.os == 'macOS'
+        run: bash scripts/hermes-bundle/build-local.sh "$RUNNER_TEMP/hermes-artifacts" "$RUNNER_TEMP/hermes-report/paths.txt"
+      - name: Build pinned native software on a clean Windows runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/hermes-bundle/build-local.ps1 -Output "$env:RUNNER_TEMP/hermes-artifacts" -Report "$env:RUNNER_TEMP/hermes-report/paths.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hermes-${{ matrix.platform }}
+          path: ${{ runner.temp }}/hermes-artifacts/*
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-${{ matrix.platform }}
+          path: ${{ runner.temp }}/hermes-report
+          if-no-files-found: ignore
 
   publish:
     if: startsWith(github.ref, 'refs/tags/hermes-bundle-v')
