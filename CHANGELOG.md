@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Pre-built local Hermes bundles**: the `hermes-bundle` release now also contains `hermes-macos-arm64.tar.gz` and `hermes-windows-x64.tar.gz`. CI builds them with upstream's installer on clean macOS and Windows runners, then verifies each one by installing it into a different home folder with compilers and package downloads disabled. The verification checks the CLI, `hermes pm doctor`, the dashboard and uninstall. The packager lists every file that names the build machine's paths; text files are rewritten on install.
+- `hermes-local-install --from-source` and a web UI **Build from source instead** option run upstream's installer, which compiles on your computer. `--computer-use` now requires `--from-source`, because the bundle is built without upstream's computer-use driver.
+
+### Changed
+- `hermes-local-install` and the web UI's **Hermes Agent — This computer** target now install the pre-built bundle by default, so nothing compiles on your computer.
+  - **Integrity checks:** the manifest must match this clawmacdo version's pinned release, platform and Hermes commit, and the archive's size and SHA-256 must match before anything is extracted. Only the `hermes-agent`, `tools` and `installs` folders are extracted, and links must stay inside them.
+  - **Relocation:** clawmacdo renames upstream's per-install state folder for the new checkout path, rewrites the listed files, and runs upstream's completion step to publish the `hermes` command.
+  - **Missing bundle:** the install stops with nothing changed instead of compiling.
+  - **Existing software:** with `--force`, the existing Hermes software folders are moved to `~/.clawmacdo/hermes-local/backup-<time>/software` and restored if the install fails.
+- Install records, the CLI summary and the web UI summary show whether Hermes was installed from the bundle or from source. Older records read as source installs.
+- The npm cache ownership check now runs only for `--from-source` installs, since the bundle never runs npm.
+- Bundle release bumped to `hermes-bundle-v0.22.5-2`, which also republishes the Ubuntu assets used by `hermes-provision`.
+
 ## v0.99.0
 
 ### Added
