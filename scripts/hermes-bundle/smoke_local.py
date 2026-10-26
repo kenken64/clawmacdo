@@ -9,7 +9,8 @@ import time
 import urllib.error
 import urllib.request
 
-ROOTS = ("hermes-agent", "tools", "installs")
+# The tool store is digest-verified and never rewritten (see package.py: split_tool_store).
+ROOTS = ("hermes-agent", "installs")
 
 
 def leftover_build_paths(hermes_home, manifest):

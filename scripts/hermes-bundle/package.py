@@ -151,6 +151,14 @@ def stale_pm_runtimes(hermes_home, key):
     )
 
 
+def split_tool_store(names):
+    """PM verifies the tool store against recorded digests, so its files are never
+    rewritten. uv records the install path in Python's build-time sysconfig, which only
+    matters when compiling extensions against it."""
+    store = [name for name in names if permitted_path(name, ("tools",))]
+    return [name for name in names if name not in store], store
+
+
 def find_store_python(hermes_home, windows):
     pattern = LOCAL_PLATFORMS["windows-x64" if windows else "macos-arm64"]["store_python"]
     matches = sorted(
@@ -216,11 +224,14 @@ def package_local(config, output, platform, report):
     needles = path_needles(str(hermes_home), windows) + path_needles(str(home) + os.sep + ".", windows)
     excluded = LOCAL_EXCLUDED + stale_pm_runtimes(hermes_home, key)
     relocate, binary = find_path_references(hermes_home, LOCAL_ROOTS, needles, windows, excluded)
+    relocate, store = split_tool_store(relocate)
     report.write_text(
         "Text files rewritten on install:\n" + "".join(f"  {name}\n" for name in relocate)
+        + "Tool store files naming a build path (digest-verified, not rewritten):\n"
+        + "".join(f"  {name}\n" for name in store)
         + "Binary files naming a build path (not rewritten):\n" + "".join(f"  {name}\n" for name in binary)
     )
-    print(f"{len(relocate)} text and {len(binary)} binary files name a build path; see {report}")
+    print(f"{len(relocate)} text, {len(store)} tool store and {len(binary)} binary files name a build path; see {report}")
 
     filename = f"hermes-{platform}.tar.gz"
     archive = output / filename

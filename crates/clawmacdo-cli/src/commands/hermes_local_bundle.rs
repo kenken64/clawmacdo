@@ -103,7 +103,10 @@ pub(super) fn validate_manifest(
         );
     }
     for path in &manifest.relocate {
-        software_path(path)?;
+        // Upstream verifies the tool store against recorded digests; rewriting it breaks them.
+        if software_path(path)?.starts_with("tools") {
+            bail!("The Hermes bundle manifest asks to rewrite the tool store ({path})");
+        }
     }
     Ok(())
 }
@@ -789,6 +792,11 @@ mod tests {
             Box::new(|m| m.store_python = "hermes-agent/python3".into()),
             Box::new(|m| m.relocate = vec!["/etc/passwd".into()]),
             Box::new(|m| m.relocate = vec![".ssh/config".into()]),
+            Box::new(|m| {
+                m.relocate = vec![
+                    "tools/python-3.14.9/lib/python3.14/_sysconfig_vars__darwin_darwin.json".into(),
+                ]
+            }),
         ];
         for change in cases {
             let mut bad = manifest();

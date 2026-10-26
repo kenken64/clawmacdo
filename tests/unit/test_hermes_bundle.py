@@ -167,6 +167,14 @@ class LocalPackageTests(unittest.TestCase):
             text, _ = package.find_path_references(home, package.LOCAL_ROOTS, ["/Users/runner/.hermes"], windows=True)
             self.assertIn("installs/abc/facts.json", text)
 
+    def test_tool_store_files_are_never_listed_for_rewriting(self):
+        names = ["installs/abc/facts.json",
+                 "tools/python-3.14.9/lib/python3.14/_sysconfig_vars__darwin_darwin.json",
+                 "hermes-agent/hermes_cli/web_dist/hermes-build.json"]
+        rewrite, store = package.split_tool_store(names)
+        self.assertEqual(rewrite, ["installs/abc/facts.json", "hermes-agent/hermes_cli/web_dist/hermes-build.json"])
+        self.assertEqual(store, ["tools/python-3.14.9/lib/python3.14/_sysconfig_vars__darwin_darwin.json"])
+
     def test_only_the_selected_pm_runtime_on_the_tool_store_python_is_packaged(self):
         with tempfile.TemporaryDirectory() as directory:
             hermes_home = Path(directory).resolve()
