@@ -8,7 +8,7 @@
   - It writes the same AI provider, model, Telegram, and `.env` settings as `hermes-provision`, installs the OpenCode CLI on macOS, and registers the gateway as a launchd LaunchAgent or Windows Scheduled Task that starts at login.
   - The local terminal backend prints a warning. `--terminal-backend docker` sandboxes agent commands, and the computer-use driver is skipped unless `--computer-use` is passed.
   - Existing Hermes installs are detected and left untouched unless `--force` is passed; overwritten files are backed up first.
-- **Local Hermes uninstall**: `hermes-local-uninstall` removes a clawmacdo-made local install. It runs upstream's `hermes uninstall`, removes the OpenCode files clawmacdo added, and deletes the Hermes data folder after confirmation unless `--keep-data` is passed. It refuses to act on installs clawmacdo did not create unless `--force` is passed.
+- **Local Hermes uninstall**: `hermes-local-uninstall` removes a clawmacdo-made local install. It runs upstream's `hermes uninstall`, removes the OpenCode files clawmacdo added, and deletes the Hermes data folder after confirmation unless `--keep-data` is passed. On Windows, upstream's uninstall can exit successfully while leaving read-only git files and the running launcher behind; clawmacdo deletes those leftovers itself and reports any it cannot remove instead of reporting a clean removal. It refuses to act on installs clawmacdo did not create unless `--force` is passed.
 - A manually triggered `hermes-local-smoke.yml` workflow runs install/uninstall round trips on clean macOS and Windows runners.
 
 ### Changed

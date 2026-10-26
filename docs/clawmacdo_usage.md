@@ -623,6 +623,9 @@ clawmacdo hermes-local-uninstall --yes --json # unattended; --json requires --ye
 
 The command runs `hermes uninstall --yes --full`, or without `--full` when `--keep-data` is given.
 That stops and removes the gateway service, the Hermes code, and its `PATH` entries. It then:
+- deletes anything `hermes uninstall` reported as removed but left behind, such as Windows read-only git
+  files and the renamed running launcher; if a folder still cannot be deleted, it is named in a
+  warning and the summary does not claim the data was removed;
 - removes the OpenCode CLI and configuration clawmacdo installed, restoring any OpenCode
   configuration it replaced;
 - deletes the config backups, except with `--keep-data`;

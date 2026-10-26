@@ -472,7 +472,10 @@ file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`.
 
 **Uninstall** runs upstream's `hermes uninstall --yes --full`, which stops and removes the gateway
 service, the Hermes code, and its `PATH` entries. It also deletes the Hermes data folder unless you
-pass `--keep-data`. It then removes the OpenCode CLI and configuration that clawmacdo installed,
+pass `--keep-data`. On Windows, upstream can report success while files it could not delete remain:
+read-only git files and the launcher that was still running. clawmacdo deletes those once Hermes
+has exited. If any still cannot be deleted, it names the folder instead of reporting a clean
+removal. It then removes the OpenCode CLI and configuration that clawmacdo installed,
 restoring any OpenCode configuration it replaced, along with its install record and backups. Use
 `--yes` to skip the confirmation prompt (required with `--json`). `hermes-local-uninstall` only acts on
 installs that have a clawmacdo record; to remove another Hermes install, run `hermes uninstall`

@@ -95,8 +95,7 @@ jobs:
       - name: Verify full removal (macOS)
         if: runner.os == 'macOS'
         run: |
-          test ! -e "$HOME/.hermes/.env"
-          test ! -e "$HOME/.hermes/config.yaml"
+          test ! -e "$HOME/.hermes"
           test ! -e "$HOME/.local/bin/hermes"
           test ! -e "$HOME/.opencode"
           test ! -e "$HOME/.config/opencode/openrouter-api-key"
@@ -111,8 +110,9 @@ jobs:
         shell: pwsh
         run: |
           $home_dir = Join-Path $env:LOCALAPPDATA 'hermes'
-          foreach ($name in '.env', 'config.yaml', 'hermes-agent') {
-            if (Test-Path (Join-Path $home_dir $name)) { throw "$name still present" }
+          if (Test-Path $home_dir) {
+            Get-ChildItem -Recurse -Force $home_dir | Select-Object -First 20 FullName
+            throw "$home_dir still present"
           }
           schtasks /Query /TN Hermes_Gateway 2>$null
           if (-not $LASTEXITCODE) { throw 'Hermes_Gateway scheduled task still registered' }
@@ -132,4 +132,5 @@ jobs:
             hermes_home="$HOME/.hermes"
           fi
           grep -q '^OPENROUTER_API_KEY=sk-or-ci-dummy-key$' "$hermes_home/.env"
+          test ! -e "$hermes_home/hermes-agent"
           test ! -e "$HOME/.clawmacdo/hermes-local.json"

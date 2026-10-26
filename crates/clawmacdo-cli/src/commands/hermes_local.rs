@@ -284,6 +284,39 @@ fn uninstall_args(keep_data: bool) -> Vec<&'static str> {
     }
 }
 
+/// What `hermes uninstall` should have deleted: the whole Hermes home, or only the
+/// code checkout when data is kept (both installers default it to `<home>/hermes-agent`).
+fn uninstall_target(hermes_home: &Path, keep_data: bool) -> PathBuf {
+    if keep_data {
+        hermes_home.join("hermes-agent")
+    } else {
+        hermes_home.to_path_buf()
+    }
+}
+
+/// Never recursively delete the user's home folder, one of its ancestors, or a root.
+fn safe_to_delete(target: &Path, home: &Path) -> bool {
+    target.parent().is_some() && !home.starts_with(target)
+}
+
+/// Upstream's uninstall can exit 0 but leave files behind on Windows: read-only git
+/// pack files and the renamed launcher that was still running. Once `hermes` has
+/// exited nothing holds them, so finish the removal, retrying briefly for file locks.
+async fn remove_leftovers(target: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_dir_all(target) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if attempt >= 3 => return Err(err),
+            Err(_) => {
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(attempt)).await;
+            }
+        }
+    }
+}
+
 fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     let actual = hex::encode(Sha256::digest(bytes));
     if !actual.eq_ignore_ascii_case(expected.trim()) {
@@ -1094,6 +1127,26 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
                     "`hermes uninstall` failed ({status}). The clawmacdo install record was kept so you can retry."
                 );
             }
+            let target = uninstall_target(&hermes_home, params.keep_data);
+            if target.exists() {
+                if !safe_to_delete(&target, &paths.home) {
+                    warnings.push(format!(
+                        "Refusing to delete {} because it contains your home folder.",
+                        target.display()
+                    ));
+                } else if let Err(err) = remove_leftovers(&target).await {
+                    warnings.push(format!(
+                        "`hermes uninstall` left {} behind and it could not be deleted ({err}). \
+                         Delete it manually{}.",
+                        target.display(),
+                        if params.keep_data {
+                            ""
+                        } else {
+                            "; it may contain API keys"
+                        }
+                    ));
+                }
+            }
         }
         None => warnings.push(format!(
             "Hermes command not found; remove {} manually if it is still present.",
@@ -1136,11 +1189,13 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
     for warning in &warnings {
         say(json, &format!("  WARNING: {warning}"));
     }
+    let data_removed = !params.keep_data && !hermes_home.exists();
     if json {
         let payload = serde_json::json!({
             "uninstalled": true,
             "hermes_home": hermes_home,
             "data_kept": params.keep_data,
+            "data_removed": data_removed,
             "warnings": warnings,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -1149,8 +1204,13 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
             "\nHermes was removed. Its data folder was kept: {}",
             hermes_home.display()
         );
-    } else {
+    } else if data_removed {
         println!("\nHermes and its data were removed from this computer.");
+    } else {
+        println!(
+            "\nHermes was removed, but its data folder is still present: {}",
+            hermes_home.display()
+        );
     }
     Ok(())
 }
@@ -1326,6 +1386,34 @@ mod tests {
     fn uninstall_deletes_data_unless_kept() {
         assert_eq!(uninstall_args(false), ["uninstall", "--yes", "--full"]);
         assert_eq!(uninstall_args(true), ["uninstall", "--yes"]);
+    }
+
+    #[test]
+    fn leftover_cleanup_targets_only_what_hermes_uninstall_removes() {
+        let hermes_home = Path::new("/Users/test/.hermes");
+        assert_eq!(uninstall_target(hermes_home, false), hermes_home);
+        assert_eq!(
+            uninstall_target(hermes_home, true),
+            hermes_home.join("hermes-agent")
+        );
+
+        let home = Path::new("/Users/test");
+        assert!(safe_to_delete(hermes_home, home));
+        assert!(safe_to_delete(Path::new("D:/hermes"), home));
+        assert!(!safe_to_delete(home, home));
+        assert!(!safe_to_delete(Path::new("/Users"), home));
+        assert!(!safe_to_delete(Path::new("/"), home));
+    }
+
+    #[tokio::test]
+    async fn leftover_cleanup_removes_the_tree_and_tolerates_missing_paths() {
+        let dir = TempDir::new();
+        let target = dir.0.join("hermes");
+        write_private(&target.join("hermes-agent/.git/objects/pack/pack.idx"), "x").unwrap();
+        write_private(&target.join(".env"), "OPENROUTER_API_KEY=old\n").unwrap();
+        remove_leftovers(&target).await.unwrap();
+        assert!(!target.exists());
+        remove_leftovers(&target).await.unwrap();
     }
 
     #[test]
