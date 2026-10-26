@@ -70,6 +70,7 @@ test("Hermes on this computer hides cloud settings and runs a dry-run install", 
     hermes_openrouter_api_key: "sk-or-local-test",
     hermes_terminal_backend: "local",
     hermes_local_force: false,
+    hermes_local_from_source: false,
     hermes_cloudflare_tunnel: false,
     hermes_dashboard: false,
   });
@@ -81,6 +82,25 @@ test("Hermes on this computer hides cloud settings and runs a dry-run install", 
   await expect(card.locator('.deploy-log-area')).toContainText("[Step 1/6] Checking this computer");
   await expect(card.locator('.deploy-log-area')).toContainText("[Dry-run] No changes will be made");
   await expect(card.locator('.deploy-badge')).not.toContainText(/fail/i);
+});
+
+test("building from source instead of the pre-built bundle is opt-in", async ({ page }) => {
+  await page.route("**/api/hermes-local/status", route =>
+    route.fulfill({ json: { supported: true, reason: null, installed: false, record: null } }));
+  let deployBody: Record<string, unknown> | null = null;
+  await page.route("**/api/deploy", async route => {
+    deployBody = route.request().postDataJSON();
+    await route.fulfill({ status: 500, json: { error: "stopped by test" } });
+  });
+  const card = await openLocalHermesForm(page);
+  await expect(card.getByText("from a pre-built, checksum-verified bundle")).toBeVisible();
+  const fromSource = card.locator('[name="hermes_local_from_source"]');
+  await expect(fromSource).not.toBeChecked();
+  await fromSource.check();
+  await card.locator('[name="hermes_openrouter_api_key"]').fill("sk-or-local-test");
+  await card.locator('.deploy-submit-btn').click();
+  await expect.poll(() => deployBody).not.toBeNull();
+  expect(deployBody).toMatchObject({ target: "hermes-local", hermes_local_from_source: true });
 });
 
 test("an existing clawmacdo install shows status and can be uninstalled", async ({ page }) => {

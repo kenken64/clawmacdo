@@ -1,8 +1,9 @@
 //! Install Hermes Agent natively on this computer (macOS or Windows) and remove it again.
 //!
-//! The pinned upstream installer does the per-OS work; clawmacdo verifies it, writes the
-//! same AI/Telegram configuration as `hermes-provision`, registers the gateway service
-//! through `hermes gateway install`, and records what it changed so
+//! By default the software comes from clawmacdo's pre-built bundle, so nothing compiles
+//! here; `--from-source` runs the pinned upstream installer instead. Either way clawmacdo
+//! writes the same AI/Telegram configuration as `hermes-provision`, registers the gateway
+//! service through `hermes gateway install`, and records what it changed so
 //! `hermes-local-uninstall` only removes installs it created.
 
 use super::hermes_config::{
@@ -11,6 +12,7 @@ use super::hermes_config::{
     verify_telegram_bot_token, AiProvider, HermesAgentSettings, TelegramVerification,
     TerminalBackend,
 };
+use super::hermes_local_bundle::{self as bundle, BundleManifest, ExpectedBundle};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use clawmacdo_core::config;
@@ -66,11 +68,33 @@ impl LocalPlatform {
             LocalPlatform::Windows => "install.ps1",
         }
     }
+
+    /// The pre-built bundle's platform name (Apple Silicon and x64 builds only).
+    fn bundle_platform(self) -> &'static str {
+        match self {
+            LocalPlatform::MacOs => "macos-arm64",
+            LocalPlatform::Windows => "windows-x64",
+        }
+    }
+}
+
+/// How Hermes got onto this computer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallMethod {
+    /// clawmacdo's pre-built bundle; nothing was compiled here.
+    Bundle,
+    /// Upstream's installer, which builds Hermes from source. Records written before
+    /// bundles existed are source installs.
+    #[default]
+    Source,
 }
 
 /// Upstream versions and checksums pinned in the Hermes bundle manifest.
 #[derive(serde::Deserialize)]
 struct Pins {
+    repository: String,
+    release: String,
     hermes_version: String,
     hermes_commit: String,
     installer_sha256: String,
@@ -100,6 +124,24 @@ impl Pins {
             LocalPlatform::MacOs => &self.installer_sha256,
             LocalPlatform::Windows => &self.installer_ps1_sha256,
         }
+    }
+
+    fn expected_bundle(&self, platform: LocalPlatform) -> ExpectedBundle<'_> {
+        ExpectedBundle {
+            release: &self.release,
+            platform: platform.bundle_platform(),
+            hermes_commit: &self.hermes_commit,
+            hermes_version: &self.hermes_version,
+        }
+    }
+
+    fn bundle_url(&self, platform: LocalPlatform) -> String {
+        format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            self.repository,
+            self.release,
+            self.expected_bundle(platform).filename()
+        )
     }
 }
 
@@ -161,6 +203,11 @@ fn launcher_candidates(platform: LocalPlatform, home: &Path, hermes_home: &Path)
     match platform {
         LocalPlatform::MacOs => vec![
             home.join(".local").join("bin").join("hermes"),
+            hermes_home
+                .join("hermes-agent")
+                .join(".hermes")
+                .join("bin")
+                .join("hermes"),
             hermes_home
                 .join("hermes-agent")
                 .join("venv")
@@ -400,6 +447,11 @@ pub struct LocalInstallRecord {
     pub written_files: Vec<WrittenFile>,
     pub backup_dir: Option<PathBuf>,
     pub installed_at: DateTime<Utc>,
+    #[serde(default)]
+    pub install_method: InstallMethod,
+    /// The pre-built bundle release, for bundle installs.
+    #[serde(default)]
+    pub bundle_release: Option<String>,
 }
 
 fn load_record(path: &Path) -> Result<Option<LocalInstallRecord>> {
@@ -516,6 +568,7 @@ async fn check_prerequisites(
     platform: LocalPlatform,
     backend: TerminalBackend,
     #[cfg_attr(not(unix), allow(unused_variables))] home: &Path,
+    #[cfg_attr(not(unix), allow(unused_variables))] from_source: bool,
 ) -> Result<()> {
     match platform {
         LocalPlatform::MacOs => {
@@ -530,8 +583,9 @@ async fn check_prerequisites(
             }
             // Upstream's installer updates an existing checkout before its `npm ci` step,
             // so a cache npm cannot write to would fail with Hermes half-updated.
+            // The pre-built bundle never runs npm.
             #[cfg(unix)]
-            {
+            if from_source {
                 let cache = npm_cache_dir(
                     home,
                     std::env::var_os("npm_config_cache")
@@ -668,6 +722,10 @@ pub struct HermesLocalInstallParams {
     pub computer_use: bool,
     pub install_service: bool,
     pub force: bool,
+    /// Build with upstream's installer instead of using the pre-built bundle.
+    pub from_source: bool,
+    /// A local bundle archive (with its `.json` manifest beside it), for CI verification.
+    pub bundle_archive: Option<PathBuf>,
     pub dry_run: bool,
     pub json: bool,
     /// Web UI progress channel; when set, the CLI summary is not printed.
@@ -725,6 +783,129 @@ struct OpenCodePlan {
     model: String,
 }
 
+/// Upstream's install tail, run in the relocated checkout: it publishes the `hermes`
+/// command for this location (and on Windows adds it to the user PATH), syncs bundled
+/// skills and migrates config. The bundle's products are already built.
+fn completion_command(hermes_home: &Path, manifest: &BundleManifest) -> Result<CommandSpec> {
+    let python = hermes_home.join(bundle::software_path(&manifest.store_python)?);
+    Ok(CommandSpec {
+        program: python.display().to_string(),
+        args: vec![
+            "-I".into(),
+            "-B".into(),
+            "-X".into(),
+            "utf8".into(),
+            "hermes_cli/source_completion.py".into(),
+            "--source".into(),
+            hermes_home.join("hermes-agent").display().to_string(),
+        ],
+    })
+}
+
+/// Steps 2 and 3 for the pre-built bundle: download and verify it, move any existing
+/// Hermes software aside, extract and relocate the bundle, then publish the command.
+/// A failure restores the previous software.
+async fn install_from_bundle(
+    params: &HermesLocalInstallParams,
+    platform: LocalPlatform,
+    paths: &LocalPaths,
+    pins: &Pins,
+    software_backup: &Path,
+    out: &Reporter,
+) -> Result<()> {
+    out.say(&format!(
+        "\n[Step 2/{TOTAL_STEPS}] Downloading the pre-built Hermes bundle..."
+    ));
+    let expected = pins.expected_bundle(platform);
+    let (archive, manifest, downloaded) = match &params.bundle_archive {
+        Some(archive) => {
+            let manifest = bundle::read_local_manifest(archive)?;
+            bundle::validate_manifest(&manifest, &expected)?;
+            out.say(&format!("  Using {}", archive.display()));
+            (archive.clone(), manifest, false)
+        }
+        None => {
+            let url = pins.bundle_url(platform);
+            let manifest =
+                bundle::fetch_manifest(&format!("{url}.json"), platform.bundle_platform()).await?;
+            bundle::validate_manifest(&manifest, &expected)?;
+            out.say(&format!("  {url} ({} MiB)", manifest.size / (1024 * 1024)));
+            let archive = paths.state_dir.join("downloads").join(expected.filename());
+            let say = |line: &str| out.say(line);
+            bundle::download_archive(&url, &archive, &manifest, &say).await?;
+            (archive, manifest, true)
+        }
+    };
+
+    out.say(&format!(
+        "\n[Step 3/{TOTAL_STEPS}] Installing the pre-built Hermes bundle..."
+    ));
+    let result = place_bundle(platform, paths, &archive, &manifest, software_backup, out).await;
+    if downloaded {
+        let _ = std::fs::remove_file(&archive);
+    }
+    result
+}
+
+async fn place_bundle(
+    platform: LocalPlatform,
+    paths: &LocalPaths,
+    archive: &Path,
+    manifest: &BundleManifest,
+    software_backup: &Path,
+    out: &Reporter,
+) -> Result<()> {
+    let moved = bundle::move_existing_software(&paths.hermes_home, software_backup)?;
+    if !moved.is_empty() {
+        out.say(&format!(
+            "  Moved the existing Hermes software ({}) to {}",
+            moved.join(", "),
+            software_backup.display()
+        ));
+    }
+    out.say("  Verifying the checksum and extracting...");
+    let extracted = {
+        let (archive, manifest) = (archive.to_path_buf(), manifest.clone());
+        let (hermes_home, home) = (paths.hermes_home.clone(), paths.home.clone());
+        let windows = platform == LocalPlatform::Windows;
+        tokio::task::spawn_blocking(move || {
+            bundle::install_bundle(&archive, &manifest, &hermes_home, &home, windows)
+        })
+        .await
+        .context("Hermes bundle extraction stopped unexpectedly")?
+    };
+    let rollback = || {
+        for root in bundle::ROOTS {
+            if !moved.iter().any(|done| done == root) {
+                let _ = std::fs::remove_dir_all(paths.hermes_home.join(root));
+            }
+        }
+        bundle::restore_existing_software(&paths.hermes_home, software_backup, &moved);
+    };
+    if let Err(err) = extracted {
+        bundle::restore_existing_software(&paths.hermes_home, software_backup, &moved);
+        return Err(err);
+    }
+    out.say(&format!(
+        "  Extracted into {} and relocated for this computer.",
+        paths.hermes_home.display()
+    ));
+
+    let completion = completion_command(&paths.hermes_home, manifest)?;
+    let mut command = completion.command();
+    command
+        .current_dir(paths.hermes_home.join("hermes-agent"))
+        .env("HERMES_HOME", &paths.hermes_home)
+        .env("UV_NO_CONFIG", "1");
+    if let Err(err) = run_prepared(command, &completion, out, "Hermes completion step").await {
+        rollback();
+        return Err(
+            err.context("The bundle was removed again; any previous Hermes software was restored")
+        );
+    }
+    Ok(())
+}
+
 pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOutcome> {
     let json = params.json;
     let out = Reporter {
@@ -735,6 +916,15 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
     let paths = LocalPaths::resolve(platform)?;
     let pins = Pins::load()?;
     let settings = &params.settings;
+    if params.computer_use && !params.from_source {
+        bail!(
+            "--computer-use needs --from-source: the pre-built bundle is built without \
+             upstream's computer-use driver."
+        );
+    }
+    if params.from_source && params.bundle_archive.is_some() {
+        bail!("--bundle-archive installs a pre-built bundle and cannot be combined with --from-source.");
+    }
 
     out.say(&format!(
         "\n[Step 1/{TOTAL_STEPS}] Checking this computer..."
@@ -789,6 +979,18 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
         &pins.hermes_commit[..8]
     ));
     out.say(&format!("  Home:      {}", paths.hermes_home.display()));
+    let bundle_source = match &params.bundle_archive {
+        Some(archive) => archive.display().to_string(),
+        None => pins.bundle_url(platform),
+    };
+    if params.from_source {
+        out.say("  Install:   from source with upstream's installer (compiles on this computer)");
+    } else {
+        out.say(&format!(
+            "  Install:   pre-built bundle {} (nothing is compiled here)",
+            pins.release
+        ));
+    }
     out.say(&format!("  AI model:  {ai_summary}"));
     out.say(&format!(
         "  Terminal:  {}",
@@ -817,11 +1019,23 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
             .install_service
             .then(|| "hermes gateway install --start-now --start-on-login".to_string());
         out.say("\n[Dry-run] No changes will be made. Planned actions:");
-        out.say(&format!(
-            "  Download:  {installer_url} (SHA-256 {})",
-            pins.installer_sha256(platform)
-        ));
-        out.say(&format!("  Run:       {}", installer.display()));
+        if params.from_source {
+            out.say(&format!(
+                "  Download:  {installer_url} (SHA-256 {})",
+                pins.installer_sha256(platform)
+            ));
+            out.say(&format!("  Run:       {}", installer.display()));
+        } else {
+            out.say(&format!(
+                "  Download:  {bundle_source} (checked against its manifest's SHA-256)"
+            ));
+            out.say(&format!(
+                "  Extract:   {} into {}",
+                bundle::ROOTS.join(", "),
+                paths.hermes_home.display()
+            ));
+            out.say("  Run:       upstream's completion step to publish the `hermes` command");
+        }
         for path in &writes {
             out.say(&format!("  Write:     {}", path.display()));
         }
@@ -846,8 +1060,10 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
                 "ai_model": ai_summary,
                 "terminal_backend": settings.terminal_backend,
                 "existing_install": findings,
-                "installer_url": installer_url,
-                "installer_command": installer.display(),
+                "install_method": if params.from_source { InstallMethod::Source } else { InstallMethod::Bundle },
+                "bundle": (!params.from_source).then_some(&bundle_source),
+                "installer_url": params.from_source.then_some(&installer_url),
+                "installer_command": params.from_source.then(|| installer.display()),
                 "writes": writes,
                 "opencode": opencode.as_ref().map(|_| pins.opencode_version.clone()).ok(),
                 "gateway_service": gateway,
@@ -875,7 +1091,13 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
              (existing files are backed up first)."
         );
     }
-    check_prerequisites(platform, settings.terminal_backend, &paths.home).await?;
+    check_prerequisites(
+        platform,
+        settings.terminal_backend,
+        &paths.home,
+        params.from_source,
+    )
+    .await?;
     let mut telegram_bot = None;
     if let Some(token) = telegram_token {
         telegram_bot = Some(match verify_telegram_bot_token(token).await? {
@@ -892,26 +1114,34 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
         });
     }
 
-    out.say(&format!(
-        "\n[Step 2/{TOTAL_STEPS}] Downloading the pinned Hermes installer..."
-    ));
-    download_verified(
-        &installer_url,
-        pins.installer_sha256(platform),
-        &installer_path,
-    )
-    .await?;
-    out.say("  Checksum verified.");
+    let backup_dir = paths
+        .state_dir
+        .join(format!("backup-{}", Utc::now().format("%Y%m%d-%H%M%S")));
+    let software_backup = backup_dir.join("software");
+    if params.from_source {
+        out.say(&format!(
+            "\n[Step 2/{TOTAL_STEPS}] Downloading the pinned Hermes installer..."
+        ));
+        download_verified(
+            &installer_url,
+            pins.installer_sha256(platform),
+            &installer_path,
+        )
+        .await?;
+        out.say("  Checksum verified.");
 
-    out.say(&format!(
-        "\n[Step 3/{TOTAL_STEPS}] Installing Hermes (this can take several minutes)..."
-    ));
-    let install_result = run_command(&installer, &out, "Hermes installer").await;
-    let _ = std::fs::remove_file(&installer_path);
-    install_result?;
+        out.say(&format!(
+            "\n[Step 3/{TOTAL_STEPS}] Installing Hermes (this can take several minutes)..."
+        ));
+        let install_result = run_command(&installer, &out, "Hermes installer").await;
+        let _ = std::fs::remove_file(&installer_path);
+        install_result?;
+    } else {
+        install_from_bundle(&params, platform, &paths, &pins, &software_backup, &out).await?;
+    }
     let launcher = find_launcher(platform, &paths).with_context(|| {
         format!(
-            "The Hermes installer finished but no `hermes` command was found in: {}",
+            "Hermes finished installing but no `hermes` command was found in: {}",
             launcher_candidates(platform, &paths.home, &paths.hermes_home)
                 .iter()
                 .map(|path| path.display().to_string())
@@ -923,9 +1153,6 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
     out.say(&format!(
         "\n[Step 4/{TOTAL_STEPS}] Writing Hermes configuration..."
     ));
-    let backup_dir = paths
-        .state_dir
-        .join(format!("backup-{}", Utc::now().format("%Y%m%d-%H%M%S")));
     let mut written_files = Vec::new();
     for (name, contents) in [(".env", &env_content), ("config.yaml", &config_content)] {
         let path = paths.hermes_home.join(name);
@@ -1024,6 +1251,12 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
         written_files,
         backup_dir,
         installed_at: Utc::now(),
+        install_method: if params.from_source {
+            InstallMethod::Source
+        } else {
+            InstallMethod::Bundle
+        },
+        bundle_release: (!params.from_source).then(|| pins.release.clone()),
     };
     write_private(&paths.record, &serde_json::to_string_pretty(&record)?)?;
 
@@ -1049,6 +1282,19 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
     })
 }
 
+pub fn install_source_label(record: &LocalInstallRecord) -> String {
+    match record.install_method {
+        InstallMethod::Bundle => format!(
+            "pre-built bundle {}",
+            record
+                .bundle_release
+                .as_deref()
+                .unwrap_or("(unknown release)")
+        ),
+        InstallMethod::Source => "source (upstream installer)".to_string(),
+    }
+}
+
 fn print_install_summary(
     record: &LocalInstallRecord,
     telegram_bot: Option<&str>,
@@ -1064,6 +1310,7 @@ fn print_install_summary(
         record.hermes_version,
         &record.hermes_commit[..8]
     );
+    println!("  Installed from:    {}", install_source_label(record));
     println!("  Command:           {}", record.launcher.display());
     println!("  Hermes home:       {}", record.hermes_home.display());
     println!("  AI model:          {}", record.ai_model);
@@ -1082,6 +1329,12 @@ fn print_install_summary(
     }
     if let Some(dir) = &record.backup_dir {
         println!("  Previous config:   backed up to {}", dir.display());
+        if dir.join("software").is_dir() {
+            println!(
+                "  Previous software: moved to {} (delete it once Hermes works)",
+                dir.join("software").display()
+            );
+        }
     }
     println!();
     println!("  Chat:              hermes");
@@ -1417,7 +1670,79 @@ mod tests {
             written_files,
             backup_dir: None,
             installed_at: Utc::now(),
+            install_method: InstallMethod::Bundle,
+            bundle_release: Some("hermes-bundle-v0.22.5-2".into()),
         }
+    }
+
+    #[test]
+    fn records_from_before_bundles_load_as_source_installs() {
+        let dir = TempDir::new();
+        let paths = test_paths(&dir.0);
+        let mut value = serde_json::to_value(test_record(&paths, Vec::new())).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("install_method");
+        object.remove("bundle_release");
+        let record: LocalInstallRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(record.install_method, InstallMethod::Source);
+        assert_eq!(install_source_label(&record), "source (upstream installer)");
+        let bundled = test_record(&paths, Vec::new());
+        assert_eq!(
+            install_source_label(&bundled),
+            "pre-built bundle hermes-bundle-v0.22.5-2"
+        );
+    }
+
+    #[test]
+    fn bundle_url_and_completion_follow_the_pins_and_manifest() {
+        let pins = Pins::load().unwrap();
+        assert_eq!(
+            pins.bundle_url(LocalPlatform::MacOs),
+            format!(
+                "https://github.com/{}/releases/download/{}/hermes-macos-arm64.tar.gz",
+                pins.repository, pins.release
+            )
+        );
+        assert!(pins
+            .bundle_url(LocalPlatform::Windows)
+            .ends_with("/hermes-windows-x64.tar.gz"));
+
+        let manifest = BundleManifest {
+            schema: 1,
+            release: pins.release.clone(),
+            platform: "macos-arm64".into(),
+            filename: "hermes-macos-arm64.tar.gz".into(),
+            sha256: "a".repeat(64),
+            size: 1,
+            hermes_commit: pins.hermes_commit.clone(),
+            hermes_version: pins.hermes_version.clone(),
+            build_home: "/Users/runner".into(),
+            build_hermes_home: "/Users/runner/.hermes".into(),
+            install_key: "0123456789abcdef".into(),
+            store_python: "tools/python-3.14.9/bin/python3".into(),
+            relocate: Vec::new(),
+        };
+        bundle::validate_manifest(&manifest, &pins.expected_bundle(LocalPlatform::MacOs)).unwrap();
+        let home = Path::new("/Users/alice/.hermes");
+        let spec = completion_command(home, &manifest).unwrap();
+        assert_eq!(
+            spec.program,
+            home.join("tools/python-3.14.9/bin/python3")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            spec.args,
+            [
+                "-I",
+                "-B",
+                "-X",
+                "utf8",
+                "hermes_cli/source_completion.py",
+                "--source",
+                &home.join("hermes-agent").display().to_string()
+            ]
+        );
     }
 
     #[test]

@@ -431,6 +431,9 @@ clawmacdo hermes-local-install --telegram-bot-token "$TELEGRAM_BOT_TOKEN" --tele
 # Preview downloads, commands, and file writes without changing anything
 clawmacdo hermes-local-install --dry-run
 
+# Build Hermes on this computer with upstream's installer instead (slower; compiles)
+clawmacdo hermes-local-install --from-source
+
 # Remove everything clawmacdo installed, including the Hermes data folder (asks to confirm)
 clawmacdo hermes-local-uninstall
 # Remove Hermes but keep its configuration, .env API keys, sessions, and memory
@@ -439,9 +442,20 @@ clawmacdo hermes-local-uninstall --keep-data
 
 What the install does:
 
-1. Downloads the upstream Hermes installer (`install.sh` on macOS, `install.ps1` on Windows) at the
-   same pinned commit as the Lightsail bundle (Hermes `0.22.5`), verifies its SHA-256, and runs it
-   non-interactively. A checksum mismatch stops the install before anything runs.
+1. Downloads clawmacdo's **pre-built Hermes bundle** for your platform (`hermes-macos-arm64.tar.gz`
+   or `hermes-windows-x64.tar.gz`, about 1 GB) from the pinned
+   [`hermes-bundle` release](scripts/hermes-bundle/README.md), Hermes `0.22.5` at the same commit as
+   the Lightsail bundle. Nothing is compiled on your computer. CI builds each bundle with upstream's
+   installer on a clean runner, including the dashboard, terminal UI, Python environment and Node
+   dependencies. The archive's size and SHA-256 must match its manifest before anything is extracted.
+   clawmacdo then moves the software into your Hermes home, rewrites the few files that recorded the
+   build machine's paths, and runs upstream's own completion step to publish the `hermes` command
+   (and, on Windows, add it to your user `PATH`). If the bundle for this clawmacdo version is not
+   published, the install stops with nothing changed rather than falling back to compiling.
+   `--from-source` instead downloads the upstream installer (`install.sh` on macOS, `install.ps1` on
+   Windows) at the pinned commit, verifies its SHA-256, and runs it; that builds Hermes on your
+   computer and takes several minutes. `--computer-use` requires `--from-source`, because the bundle
+   is built without upstream's computer-use driver.
 2. Writes `.env` and `config.yaml` into the Hermes home: `~/.hermes` on macOS, `%LOCALAPPDATA%\hermes`
    on Windows, or `HERMES_HOME` if set. On macOS the files are readable only by you (mode `600`).
 3. On macOS with an OpenRouter key, installs the pinned OpenCode CLI v2 and configures it with the
@@ -462,17 +476,19 @@ Telegram bot only respond while the computer is awake.
 > your desktop, is skipped unless you pass `--computer-use`.
 
 Prerequisites: on macOS, Apple's Command Line Tools for git (`xcode-select --install`); on Windows,
-the built-in Windows PowerShell. The upstream installer downloads its own Python runtime and
-dependencies, so the first install takes several minutes. Intel Macs are not supported. On macOS the
-install also stops before changing anything if npm's cache (`~/.npm`, or `npm_config_cache`) holds
-files owned by another user, usually root from an earlier `sudo npm`. Upstream's `npm ci` step fails
-on them with `EACCES`. Fix them with `sudo chown -R $(id -u):$(id -g) ~/.npm` and run the install again.
+the built-in Windows PowerShell. Intel Macs are not supported. With `--from-source`, the upstream
+installer also downloads its own Python runtime and dependencies and builds the apps, so it takes
+several minutes; on macOS it stops before changing anything if npm's cache (`~/.npm`, or
+`npm_config_cache`) holds files owned by another user, usually root from an earlier `sudo npm`.
+Upstream's `npm ci` step fails on them with `EACCES`. Fix them with
+`sudo chown -R $(id -u):$(id -g) ~/.npm` and run the install again. The pre-built bundle never runs npm.
 
 **From the web UI** (`clawmacdo serve`): choose **Hermes Agent — This computer** as the deploy
 target. It uses the same AI provider and Telegram fields as Lightsail and installs on the computer
 running the web UI. Progress streams live through the same six steps. The form lets you choose
 whether agent commands run on the computer or in a Docker sandbox. Tick **Replace an existing
-Hermes install** to reinstall over an existing install. When clawmacdo has already installed Hermes
+Hermes install** to reinstall over an existing install, or **Build from source instead** to use
+upstream's installer rather than the pre-built bundle. When clawmacdo has already installed Hermes
 here, a status banner offers **Uninstall** and **Uninstall, keep data**, each confirmed in a dialog.
 The Deployments tab offers the same actions for local installs.
 Local installs are offered only when the web UI listens on localhost (the default
@@ -482,9 +498,12 @@ because Hermes would be installed on the server instead of your computer.
 **Existing installs are protected.** If Hermes configuration, a `hermes` command on `PATH`, a gateway
 service, or a previous clawmacdo install record is found, `hermes-local-install` stops without
 changing anything. `--force` reinstalls the pinned version and replaces the configuration. Every
-file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`. Upstream's installer
-updates an existing checkout in place to the pinned commit (and migrates its config format), so if
-the installer fails partway, the existing install is left partly updated; fix the reported cause
+file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`. With the pre-built bundle,
+the existing Hermes software folders (`hermes-agent`, `tools`, `installs`) are moved aside to
+`~/.clawmacdo/hermes-local/backup-<time>/software` and put back if the install fails; your
+configuration, sessions, memories and skills stay where they are. With `--from-source`, upstream's
+installer updates an existing checkout in place to the pinned commit (and migrates its config
+format), so if it fails partway the existing install is left partly updated; fix the reported cause
 and run the install again with `--force` to finish.
 
 **Uninstall** runs upstream's `hermes uninstall --yes --full`, which stops and removes the gateway

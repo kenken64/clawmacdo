@@ -553,8 +553,10 @@ See the [README walkthrough](../README.md#provision-hermes-agent-on-aws-lightsai
 ## hermes-local-install
 
 Install Hermes Agent natively on this computer: macOS (Apple Silicon) or Windows x64. No cloud
-instance is created. The command accepts the same AI provider, model, `--env-file`/`--env`, and
-Telegram options as `hermes-provision`, and is included in minimal builds.
+instance is created. By default it installs clawmacdo's pre-built, checksum-verified bundle, so
+nothing is compiled here; `--from-source` runs upstream's installer instead. The command accepts the
+same AI provider, model, `--env-file`/`--env`, and Telegram options as `hermes-provision`, and is
+included in minimal builds.
 
 ```bash
 export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
@@ -571,22 +573,23 @@ clawmacdo hermes-local-install --dry-run
 |--------|---------|---------|
 | `--terminal-backend local\|docker` | `local` | Where agent shell commands run. `local` runs them on this computer with your permissions (a warning is printed); `docker` uses upstream's sandbox image and requires Docker Desktop to be running. |
 | `--no-opencode` | off | Skip the OpenCode CLI v2 (installed on macOS only, and only with an OpenRouter key). |
-| `--computer-use` | off | Also install upstream's computer-use driver, which can control your desktop. |
+| `--computer-use` | off | Also install upstream's computer-use driver, which can control your desktop. Requires `--from-source`. |
 | `--no-service` | off | Do not register the gateway login service; run `hermes gateway run` yourself. |
-| `--force` | off | Reinstall over an existing Hermes install. Overwritten files are backed up under `~/.clawmacdo/hermes-local/`. |
+| `--force` | off | Reinstall over an existing Hermes install. Overwritten files are backed up under `~/.clawmacdo/hermes-local/`; with the bundle, existing Hermes software folders are moved to `backup-<time>/software` there. |
+| `--from-source` | off | Build Hermes with upstream's installer instead of the pre-built bundle (slower; compiles the dashboard and terminal UI). |
 | `--dry-run` / `--json` | off | Print the plan only, or emit JSON on stdout while progress goes to stderr. |
 
 The install runs in six steps:
 1. Checks the computer.
-2. Downloads the pinned upstream installer (`install.sh` or `install.ps1` at Hermes 0.22.5's commit) and verifies its SHA-256.
-3. Runs the installer non-interactively.
+2. Downloads the pre-built bundle for this platform (`hermes-macos-arm64.tar.gz` or `hermes-windows-x64.tar.gz`, about 1 GB) from the pinned `hermes-bundle` GitHub release, after checking its manifest against the release, platform and Hermes 0.22.5 commit this clawmacdo version expects. A bundle that is not published stops the install with nothing changed. With `--from-source`, downloads the pinned upstream installer (`install.sh` or `install.ps1`) and verifies its SHA-256.
+3. Verifies the archive's size and SHA-256, moves any existing Hermes software aside, extracts the bundle, rewrites the files that recorded the build machine's paths, and runs upstream's completion step to publish the `hermes` command. A failure restores the previous software. With `--from-source`, runs the installer non-interactively.
 4. Writes `.env` and `config.yaml` to `~/.hermes` (macOS) or `%LOCALAPPDATA%\hermes` (Windows), or to `HERMES_HOME` if set.
 5. Installs OpenCode.
 6. Registers the gateway with `hermes gateway install --start-now --start-on-login`. This creates a launchd LaunchAgent on macOS, or a `Hermes_Gateway` Scheduled Task on Windows.
 
 The install stops without changes if it finds Hermes configuration, a `hermes` command on
 `PATH`, a gateway service, or an existing clawmacdo record. Prerequisites: on macOS, the Command Line Tools (`xcode-select --install`); on Windows, Windows PowerShell.
-On macOS it also stops without changes if npm's cache (`~/.npm`, or `npm_config_cache`) contains files owned by
+With `--from-source` on macOS it also stops without changes if npm's cache (`~/.npm`, or `npm_config_cache`) contains files owned by
 another user (usually root, from an earlier `sudo npm`), because upstream's `npm ci` step fails on them with `EACCES`.
 Fix them with `sudo chown -R $(id -u):$(id -g) ~/.npm`. With `--force`, upstream's installer updates an existing
 checkout in place, so a failure partway leaves that install partly updated; fix the cause and rerun with `--force`.
@@ -599,6 +602,7 @@ Sample summary:
 ============================================================
   Platform:          macOS
   Hermes:            0.22.5 (commit bf0203a7)
+  Installed from:    pre-built bundle hermes-bundle-v0.22.5-2
   Command:           /Users/me/.local/bin/hermes
   Hermes home:       /Users/me/.hermes
   AI model:          OpenRouter openai/gpt-6-sol
@@ -617,7 +621,8 @@ Sample summary:
 In `clawmacdo serve`, select the **Hermes Agent — This computer** deploy target. It is available
 only on macOS or Windows when the server listens on localhost, so the install lands on your own
 computer. The form hides the AWS, infrastructure, and dashboard/tunnel fields. It adds a choice of
-where agent commands run and a **Replace an existing Hermes install** option. Progress streams
+where agent commands run, a **Replace an existing Hermes install** option, and a **Build from
+source instead** option. Progress streams
 through the same six steps as the CLI. The web UI uses two API routes, both behind the normal
 session or API-key authentication:
 
@@ -627,8 +632,8 @@ session or API-key authentication:
 | `POST /api/hermes-local/uninstall` | Body `{"keep_data": false}`. Runs the uninstall without prompting (the browser confirms first) and returns `{ok, message, data_removed, warnings, log}`. Installs without a clawmacdo record are refused. |
 
 Local installs are started with the existing `POST /api/deploy` endpoint, using
-`"target": "hermes-local"` plus `hermes_terminal_backend` (`local` or `docker`) and
-`hermes_local_force`. A second local install or uninstall started while one is running gets
+`"target": "hermes-local"` plus `hermes_terminal_backend` (`local` or `docker`),
+`hermes_local_force`, and `hermes_local_from_source`. A second local install or uninstall started while one is running gets
 `409 Conflict`. If the server isn't on localhost, or isn't running macOS or Windows, it returns
 `403 Forbidden`.
 

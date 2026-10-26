@@ -14,6 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
+        # bundle: the published pre-built bundle (default); source: upstream's installer.
+        method: [bundle, source]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -22,6 +24,7 @@ jobs:
     env:
       CLAWMACDO: ./target/release/clawmacdo
       OPENROUTER_API_KEY: sk-or-ci-dummy-key
+      INSTALL_FLAGS: ${{ matrix.method == 'source' && '--from-source' || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +35,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: hermes-local-smoke
+          key: hermes-local-smoke-${{ matrix.method }}
 
       - name: Build CLI (minimal features)
         run: cargo build --release --bin clawmacdo --no-default-features --features minimal
@@ -51,7 +54,8 @@ jobs:
 
       - name: Install Hermes locally
         run: |
-          "$CLAWMACDO" hermes-local-install
+          "$CLAWMACDO" hermes-local-install $INSTALL_FLAGS
+          grep -q '"install_method": "${{ matrix.method }}"' "$HOME/.clawmacdo/hermes-local.json"
 
       - name: Second install refuses without --force
         run: |
@@ -121,7 +125,7 @@ jobs:
 
       - name: Reinstall, then uninstall keeping data
         run: |
-          "$CLAWMACDO" hermes-local-install --no-opencode
+          "$CLAWMACDO" hermes-local-install --no-opencode $INSTALL_FLAGS
           "$CLAWMACDO" hermes-local-uninstall --yes --keep-data
 
       - name: Verify data was kept

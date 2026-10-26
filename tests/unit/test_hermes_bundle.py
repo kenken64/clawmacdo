@@ -130,6 +130,96 @@ class BundleTests(unittest.TestCase):
                     bundle.download("https://example.com", Path(directory) / "download", 123)
 
 
+class LocalPackageTests(unittest.TestCase):
+    def test_install_key_matches_upstream_formula(self):
+        # A real macOS install: ~/.hermes/installs/3daa46fffbd74d1d.
+        with patch.object(package.Path, "resolve", lambda self: self):
+            self.assertEqual(package.install_key("/Users/kennethphang/.hermes/hermes-agent"), "3daa46fffbd74d1d")
+
+    def test_windows_path_needles_cover_json_and_forward_slash_spellings(self):
+        needles = package.path_needles("C:\\Users\\runneradmin\\AppData\\Local\\hermes", windows=True)
+        self.assertIn("C:\\Users\\runneradmin\\AppData\\Local\\hermes", needles)
+        self.assertIn("C:/Users/runneradmin/AppData/Local/hermes", needles)
+        self.assertIn("C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\hermes", needles)
+        self.assertEqual(package.path_needles("/Users/runner/.hermes", windows=False), ["/Users/runner/.hermes"])
+
+    def test_path_references_list_text_files_and_report_binaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            state = home / "installs/abc/inputs"
+            state.mkdir(parents=True)
+            (state / ".project-root").write_text("/Users/runner/.hermes/hermes-agent")
+            (home / "installs/abc/facts.json").write_text('{"env": "/users/RUNNER/.hermes/x"}')
+            native = home / "tools/node/bin/node"
+            native.parent.mkdir(parents=True)
+            native.write_bytes(b"\xff\xfe/Users/runner/.hermes/tools\x00")
+            (home / "tools/node/clean.txt").write_text("nothing here")
+            cached = home / "hermes-agent/hermes_cli/__pycache__/x.cpython-314.pyc"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"/Users/runner/.hermes/hermes-agent")
+            launcher = home / "hermes-agent/.hermes/bin/hermes"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("exec /Users/runner/.hermes/tools/python")
+            text, binary = package.find_path_references(home, package.LOCAL_ROOTS, ["/Users/runner/.hermes"], windows=False)
+            self.assertEqual(text, ["installs/abc/inputs/.project-root"])
+            self.assertEqual(binary, ["tools/node/bin/node"])
+            # Windows paths are case-insensitive.
+            text, _ = package.find_path_references(home, package.LOCAL_ROOTS, ["/Users/runner/.hermes"], windows=True)
+            self.assertIn("installs/abc/facts.json", text)
+
+    def test_tool_store_files_are_never_listed_for_rewriting(self):
+        names = ["installs/abc/facts.json",
+                 "tools/python-3.14.9/lib/python3.14/_sysconfig_vars__darwin_darwin.json",
+                 "hermes-agent/hermes_cli/web_dist/hermes-build.json"]
+        rewrite, store = package.split_tool_store(names)
+        self.assertEqual(rewrite, ["installs/abc/facts.json", "hermes-agent/hermes_cli/web_dist/hermes-build.json"])
+        self.assertEqual(store, ["tools/python-3.14.9/lib/python3.14/_sysconfig_vars__darwin_darwin.json"])
+
+    def test_only_the_selected_pm_runtime_on_the_tool_store_python_is_packaged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hermes_home = Path(directory).resolve()
+            runtime = hermes_home / "installs/abc/pm-runtime"
+            for name, home in (("boot", "/Users/runner/.local/share/uv/python/cpython-3.14/bin"),
+                               ("store", str(hermes_home / "tools/python-3.14.9/bin"))):
+                (runtime / "generations" / name).mkdir(parents=True)
+                (runtime / "generations" / name / "pyvenv.cfg").write_text(f"home = {home}\nrelocatable = true\n")
+            (runtime / "selected.json").write_text(json.dumps({"generation": "generations/store"}))
+            self.assertEqual(package.stale_pm_runtimes(hermes_home, "abc"),
+                             ("installs/abc/pm-runtime/generations/boot",))
+            (runtime / "selected.json").write_text(json.dumps({"generation": "generations/boot"}))
+            with self.assertRaisesRegex(SystemExit, "outside the tool store"):
+                package.stale_pm_runtimes(hermes_home, "abc")
+            self.assertEqual(package.stale_pm_runtimes(hermes_home, "missing"), ())
+
+    def test_local_package_omits_launchers_and_rejects_absolute_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            launcher = home / "hermes-agent/.hermes/bin/hermes"
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text("launcher")
+            (home / "hermes-agent/run_agent.py").write_text("print()")
+            output = home / "local.tar.gz"
+            include = package.local_software_filter("/Users/runner/.hermes")
+            with tarfile.open(output, "w:gz") as archive:
+                archive.add(home / "hermes-agent", arcname="hermes-agent", filter=include)
+            with tarfile.open(output) as archive:
+                names = archive.getnames()
+            self.assertIn("hermes-agent/run_agent.py", names)
+            self.assertNotIn("hermes-agent/.hermes/bin/hermes", names)
+            # uv's venv python links into the tool store; it becomes relative.
+            link = tarfile.TarInfo("installs/abc/environments/def/venv/bin/python")
+            link.type, link.linkname = tarfile.SYMTYPE, "/Users/runner/.hermes/tools/python-3.14/bin/python3"
+            self.assertEqual(include(link).linkname, "../../../../../../tools/python-3.14/bin/python3")
+            for target in ("/usr/bin/python3", "/Users/runner/.hermes/skills/x"):
+                link = tarfile.TarInfo("tools/python/bin/python3")
+                link.type, link.linkname = tarfile.SYMTYPE, target
+                with self.assertRaisesRegex(ValueError, "symlink|Symlink"):
+                    include(link)
+            outside = tarfile.TarInfo("Library/Preferences/x.plist")
+            with self.assertRaisesRegex(ValueError, "Not a software path"):
+                include(outside)
+
+
 class ParallelInstallTests(unittest.TestCase):
     def test_foreground_refreshes_indexes_and_installs_runtime_without_full_upgrade(self):
         script = r'''
