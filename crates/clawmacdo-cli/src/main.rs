@@ -11,7 +11,7 @@ const DEFAULT_MAX_BLOCKING_THREADS: usize = 8;
 #[command(
     name = "clawmacdo",
     version,
-    about = "Deploy and manage OpenClaw instances"
+    about = "Deploy and manage OpenClaw and Hermes Agent instances"
 )]
 struct Cli {
     #[command(subcommand)]

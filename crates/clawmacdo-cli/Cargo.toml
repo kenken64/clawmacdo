@@ -2,7 +2,7 @@
 name = "clawmacdo-cli"
 version = "0.98.0"
 edition = "2021"
-description = "CLI tool for migrating OpenClaw from Mac/DO to DigitalOcean"
+description = "CLI and web UI for deploying OpenClaw to multiple clouds and Hermes Agent to AWS Lightsail"
 
 [[bin]]
 name = "clawmacdo"

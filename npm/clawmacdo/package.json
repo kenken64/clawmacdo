@@ -1,13 +1,16 @@
 {
   "name": "clawmacdo",
   "version": "0.98.0",
-  "description": "CLI tool for deploying OpenClaw to multiple cloud providers with pre-installed AI dev tools",
+  "description": "CLI and web UI for deploying OpenClaw to DigitalOcean, AWS Lightsail, Tencent Cloud, Azure, or BytePlus, and Hermes Agent natively to AWS Lightsail",
   "keywords": [
     "openclaw",
+    "hermes",
+    "hermes-agent",
     "deploy",
     "cloud",
     "digitalocean",
     "aws",
+    "lightsail",
     "azure",
     "cli"
   ],
