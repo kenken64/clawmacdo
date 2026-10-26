@@ -46,7 +46,7 @@ def include_software(member):
     return member
 
 
-def local_software_filter(hermes_home):
+def local_software_filter(hermes_home, excluded=LOCAL_EXCLUDED):
     """Tar filter for local bundles built in `hermes_home`.
 
     uv points each venv's `bin/python` at the tool store with an absolute symlink; links
@@ -58,7 +58,7 @@ def local_software_filter(hermes_home):
         path = Path(member.name)
         if path.parent == Path("tools") and path.name.startswith((".staging-", "fetch-")):
             return None
-        if permitted_path(member.name, LOCAL_EXCLUDED):
+        if permitted_path(member.name, excluded):
             return None
         if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
             raise ValueError(f"Unexpected special file: {member.name}")
@@ -92,7 +92,7 @@ def path_needles(path_text, windows):
     return sorted(needles)
 
 
-def find_path_references(hermes_home, roots, needles, windows):
+def find_path_references(hermes_home, roots, needles, windows, excluded=LOCAL_EXCLUDED):
     """Files under the packaged roots that mention a build path.
 
     Text files are listed for clawmacdo to rewrite on install. Binary files are only
@@ -107,7 +107,7 @@ def find_path_references(hermes_home, roots, needles, windows):
             for filename in sorted(filenames):
                 path = Path(directory) / filename
                 relative = path.relative_to(hermes_home).as_posix()
-                if path.is_symlink() or permitted_path(relative, LOCAL_EXCLUDED) or path.suffix == ".pyc":
+                if path.is_symlink() or permitted_path(relative, excluded) or path.suffix == ".pyc":
                     continue
                 data = path.read_bytes()
                 haystack = data.lower() if windows else data
@@ -120,6 +120,35 @@ def find_path_references(hermes_home, roots, needles, windows):
                 else:
                     text.append(relative)
     return text, binary
+
+
+def pyvenv_home(cfg):
+    for line in cfg.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "home":
+            return value.strip()
+    return ""
+
+
+def stale_pm_runtimes(hermes_home, key):
+    """PM runtime generations other than the selected one, which are left out.
+
+    A fresh install first builds PM's runtime on the bootstrap Python uv downloads to
+    ~/.local/share/uv/python; the selected generation must use the tool store's Python.
+    """
+    runtime = hermes_home / "installs" / key / "pm-runtime"
+    try:
+        selected = json.loads((runtime / "selected.json").read_text())["generation"]
+    except FileNotFoundError:
+        return ()
+    home = pyvenv_home(runtime / selected / "pyvenv.cfg")
+    if not Path(home).resolve().is_relative_to(hermes_home / "tools"):
+        raise SystemExit(f"PM's selected runtime {selected} uses a Python outside the tool store: {home}")
+    return tuple(
+        f"installs/{key}/pm-runtime/generations/{path.name}"
+        for path in sorted((runtime / "generations").iterdir())
+        if path.is_dir() and f"generations/{path.name}" != selected
+    )
 
 
 def find_store_python(hermes_home, windows):
@@ -185,7 +214,8 @@ def package_local(config, output, platform, report):
     # /Users/runner/work/..., which nothing here reads. Dot-folders under the home
     # (.cache, .local, ...) are where an install could still point outside its home.
     needles = path_needles(str(hermes_home), windows) + path_needles(str(home) + os.sep + ".", windows)
-    relocate, binary = find_path_references(hermes_home, LOCAL_ROOTS, needles, windows)
+    excluded = LOCAL_EXCLUDED + stale_pm_runtimes(hermes_home, key)
+    relocate, binary = find_path_references(hermes_home, LOCAL_ROOTS, needles, windows, excluded)
     report.write_text(
         "Text files rewritten on install:\n" + "".join(f"  {name}\n" for name in relocate)
         + "Binary files naming a build path (not rewritten):\n" + "".join(f"  {name}\n" for name in binary)
@@ -196,7 +226,7 @@ def package_local(config, output, platform, report):
     archive = output / filename
     with tarfile.open(archive, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tar:
         for root in LOCAL_ROOTS:
-            tar.add(hermes_home / root, arcname=root, filter=local_software_filter(hermes_home))
+            tar.add(hermes_home / root, arcname=root, filter=local_software_filter(hermes_home, excluded))
     manifest = {
         "schema": 1, "release": config["release"], "platform": platform, "filename": filename,
         "hermes_commit": config["hermes_commit"], "hermes_version": config["hermes_version"],

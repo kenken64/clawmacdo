@@ -27,6 +27,11 @@ env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" PATH="$git_only:/usr/bin:/bin:/
   TMPDIR="$RUNNER_TEMP" LANG=en_US.UTF-8 CI=1 \
   bash "$installer" --non-interactive --commit "$commit" --skip-computer-use
 test "$(git -C "$HOME/.hermes/hermes-agent" rev-parse HEAD)" = "$commit"
+# A fresh install builds PM's own runtime on the bootstrap Python uv downloads outside the
+# Hermes home; the next PM command rebuilds it on the tool store's pinned Python.
+env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" PATH="$git_only:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TMPDIR="$RUNNER_TEMP" LANG=en_US.UTF-8 CI=1 \
+  "$HOME/.local/bin/hermes" pm doctor
 
 python3 "$repo/scripts/hermes-bundle/package.py" --config "$config" --output "$out" \
   --platform macos-arm64 --report "$report"

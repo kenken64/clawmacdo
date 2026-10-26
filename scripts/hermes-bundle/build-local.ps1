@@ -26,6 +26,13 @@ $env:CI = '1'
 if ($LASTEXITCODE -ne 0) { throw "Hermes installer failed with exit code $LASTEXITCODE" }
 $head = (git -C (Join-Path $hermesHome 'hermes-agent') rev-parse HEAD).Trim()
 if ($head -ne $config.hermes_commit) { throw "Checkout is at $head, expected $($config.hermes_commit)" }
+# A fresh install builds PM's own runtime on the bootstrap Python uv downloads outside the
+# Hermes home; the next PM command rebuilds it on the tool store's pinned Python.
+$launcher = @('hermes.exe', 'hermes.cmd') | ForEach-Object { Join-Path $hermesHome "bin\$_" } |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $launcher) { throw "No hermes launcher under $hermesHome\bin" }
+& $launcher pm doctor
+if ($LASTEXITCODE -ne 0) { throw "hermes pm doctor failed with exit code $LASTEXITCODE" }
 
 python (Join-Path $repo 'scripts/hermes-bundle/package.py') --config $configPath --output $Output `
     --platform windows-x64 --report $Report

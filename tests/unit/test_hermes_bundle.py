@@ -167,6 +167,22 @@ class LocalPackageTests(unittest.TestCase):
             text, _ = package.find_path_references(home, package.LOCAL_ROOTS, ["/Users/runner/.hermes"], windows=True)
             self.assertIn("installs/abc/facts.json", text)
 
+    def test_only_the_selected_pm_runtime_on_the_tool_store_python_is_packaged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            hermes_home = Path(directory).resolve()
+            runtime = hermes_home / "installs/abc/pm-runtime"
+            for name, home in (("boot", "/Users/runner/.local/share/uv/python/cpython-3.14/bin"),
+                               ("store", str(hermes_home / "tools/python-3.14.9/bin"))):
+                (runtime / "generations" / name).mkdir(parents=True)
+                (runtime / "generations" / name / "pyvenv.cfg").write_text(f"home = {home}\nrelocatable = true\n")
+            (runtime / "selected.json").write_text(json.dumps({"generation": "generations/store"}))
+            self.assertEqual(package.stale_pm_runtimes(hermes_home, "abc"),
+                             ("installs/abc/pm-runtime/generations/boot",))
+            (runtime / "selected.json").write_text(json.dumps({"generation": "generations/boot"}))
+            with self.assertRaisesRegex(SystemExit, "outside the tool store"):
+                package.stale_pm_runtimes(hermes_home, "abc")
+            self.assertEqual(package.stale_pm_runtimes(hermes_home, "missing"), ())
+
     def test_local_package_omits_launchers_and_rejects_absolute_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
