@@ -1,5 +1,7 @@
 use crate::commands::deploy::{self, DeployParams};
 use crate::commands::docker_fix;
+use crate::commands::hermes_config::{self, HermesAgentSettings, TerminalBackend};
+use crate::commands::hermes_local;
 use crate::commands::{openclaw_llm_wiki, whatsapp, whatsapp_setup};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
@@ -21,6 +23,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -156,6 +159,10 @@ struct DeployRequest {
     hermes_cloudflare_tunnel: bool,
     #[serde(default)]
     hermes_dashboard_password: String,
+    #[serde(default)]
+    hermes_terminal_backend: String,
+    #[serde(default)]
+    hermes_local_force: bool,
 }
 
 #[cfg(feature = "lightsail")]
@@ -199,6 +206,101 @@ impl DeployRequest {
             db: None,
         }
     }
+}
+
+/// Deploy target that installs Hermes on the computer running `clawmacdo serve`.
+const HERMES_LOCAL_TARGET: &str = "hermes-local";
+
+/// Only one local install or uninstall may run on this computer at a time.
+static LOCAL_HERMES_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Holds the local-Hermes slot until dropped.
+struct LocalHermesSlot;
+
+impl LocalHermesSlot {
+    fn acquire() -> Option<Self> {
+        LOCAL_HERMES_BUSY
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| LocalHermesSlot)
+    }
+}
+
+impl Drop for LocalHermesSlot {
+    fn drop(&mut self) {
+        LOCAL_HERMES_BUSY.store(false, Ordering::Release);
+    }
+}
+
+impl DeployRequest {
+    fn is_hermes_local(&self) -> bool {
+        self.target == HERMES_LOCAL_TARGET || self.provider == HERMES_LOCAL_TARGET
+    }
+
+    /// Settings for a local install, validated before a job starts.
+    fn hermes_local_settings(&self) -> anyhow::Result<HermesAgentSettings> {
+        let optional = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        };
+        let settings = HermesAgentSettings {
+            env_file: None,
+            env_content: Some(self.hermes_env.clone()),
+            env_vars: Vec::new(),
+            ai_provider: self.hermes_ai_provider.clone(),
+            openrouter_api_key: optional(&self.hermes_openrouter_api_key),
+            openrouter_model: self.hermes_openrouter_model.clone(),
+            bedrock_api_key: optional(&self.hermes_bedrock_api_key),
+            bedrock_region: self.hermes_bedrock_region.clone(),
+            bedrock_model: self.hermes_bedrock_model.clone(),
+            telegram_bot_token: optional(&self.hermes_telegram_bot_token),
+            telegram_allowed_users: optional(&self.hermes_telegram_allowed_users),
+            telegram_home_channel: optional(&self.hermes_telegram_home_channel),
+            terminal_backend: TerminalBackend::parse(&self.hermes_terminal_backend)?,
+        };
+        hermes_config::resolve_ai_provider(&settings)?;
+        if let Some(token) = settings.telegram_bot_token.as_deref() {
+            hermes_config::validate_telegram_bot_token(token)?;
+        }
+        Ok(settings)
+    }
+}
+
+/// Local installs land on the machine running `clawmacdo serve`, so they are offered
+/// only on a supported OS and when the web UI listens on localhost alone.
+fn local_install_block_reason(bind: &str, platform_reason: Option<String>) -> Option<String> {
+    if platform_reason.is_some() {
+        return platform_reason;
+    }
+    let bind = bind.trim();
+    let loopback = bind.eq_ignore_ascii_case("localhost")
+        || bind.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    (!loopback).then(|| {
+        format!(
+            "Installing on this computer is only available when the web UI listens on localhost \
+             (CLAWMACDO_BIND={bind}); otherwise Hermes would be installed on the server, not on \
+             the computer you are browsing from."
+        )
+    })
+}
+
+fn current_local_install_block_reason() -> Option<String> {
+    let bind = std::env::var("CLAWMACDO_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    local_install_block_reason(
+        &bind,
+        crate::commands::hermes_local::platform_block_reason(),
+    )
+}
+
+fn local_machine_name() -> String {
+    ["HOSTNAME", "COMPUTERNAME", "HOST"]
+        .iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "this-computer".to_string())
 }
 
 fn default_true() -> bool {
@@ -815,6 +917,11 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         .route("/api/openclaw-versions", get(openclaw_versions_handler))
         .route("/api/deploy/{id}/events", get(deploy_events_handler))
         .route("/api/deploy/steps/{id}", get(deploy_steps_handler))
+        .route("/api/hermes-local/status", get(hermes_local_status_handler))
+        .route(
+            "/api/hermes-local/uninstall",
+            post(hermes_local_uninstall_handler),
+        )
         .route(
             "/api/telegram/pairing/approve",
             post(approve_telegram_pairing_handler),
@@ -961,9 +1068,43 @@ async fn start_deploy_handler(
 ) -> impl IntoResponse {
     let jobs = state.jobs;
     let db = state.db;
-    let is_hermes = req.target == "hermes" || req.provider == "hermes-lightsail";
+    let is_local = req.is_hermes_local();
+    // Local installs are Hermes deploys too, so they skip the OpenClaw-only checks below.
+    let is_hermes = is_local || req.target == "hermes" || req.provider == "hermes-lightsail";
 
-    if is_hermes {
+    let mut local_job = None;
+    if is_local {
+        if let Some(reason) = current_local_install_block_reason() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse { message: reason }),
+            )
+                .into_response();
+        }
+        let settings = match req.hermes_local_settings() {
+            Ok(settings) => settings,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        message: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let Some(slot) = LocalHermesSlot::acquire() else {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    message: "A Hermes install or uninstall is already running on this computer."
+                        .into(),
+                }),
+            )
+                .into_response();
+        };
+        local_job = Some((settings, slot));
+    } else if is_hermes {
         #[cfg(not(feature = "lightsail"))]
         {
             return (
@@ -1092,15 +1233,24 @@ async fn start_deploy_handler(
 
     // Insert deployment record BEFORE spawning so it's immediately visible
     // in the Deployments tab even if the user navigates away instantly.
+    let machine_name = local_machine_name();
     {
-        let provider_str = if is_hermes {
+        let provider_str = if is_local {
+            HERMES_LOCAL_TARGET
+        } else if is_hermes {
             "hermes-lightsail"
         } else {
             &req.provider
         };
-        let region_str = &req.region;
-        let size_str = &req.size;
-        let hostname_str = hostname.as_deref().unwrap_or("");
+        let (region_str, size_str, hostname_str) = if is_local {
+            ("local", "local", machine_name.as_str())
+        } else {
+            (
+                req.region.as_str(),
+                req.size.as_str(),
+                hostname.as_deref().unwrap_or(""),
+            )
+        };
         if let Ok(conn) = db.lock() {
             let _ = db::insert_deployment(
                 &conn,
@@ -1116,6 +1266,14 @@ async fn start_deploy_handler(
     }
 
     tokio::spawn(async move {
+        if let Some((settings, _slot)) = local_job {
+            let final_status =
+                run_local_hermes_install(&req, settings, &id, &machine_name, &tx, &db_clone).await;
+            if let Some(job) = jobs_clone.write().await.get_mut(&id) {
+                job.status = final_status;
+            }
+            return;
+        }
         if is_hermes {
             #[cfg(feature = "lightsail")]
             {
@@ -1322,6 +1480,174 @@ async fn start_deploy_handler(
     });
 
     Json(DeployResponse { deploy_id }).into_response()
+}
+
+/// Install Hermes on this computer for a web UI deploy job, streaming progress to `tx`.
+async fn run_local_hermes_install(
+    req: &DeployRequest,
+    settings: HermesAgentSettings,
+    id: &str,
+    machine_name: &str,
+    tx: &mpsc::UnboundedSender<String>,
+    db: &Db,
+) -> JobStatus {
+    let ai_model = hermes_config::build_config_content(&settings)
+        .map(|(_, summary)| summary)
+        .unwrap_or_default();
+    let terminal_backend = settings.terminal_backend;
+    let result = hermes_local::install(hermes_local::HermesLocalInstallParams {
+        settings,
+        install_opencode: req.hermes_install_opencode,
+        computer_use: false,
+        install_service: true,
+        force: req.hermes_local_force,
+        dry_run: is_dry_run(),
+        json: false,
+        progress_tx: Some(tx.clone()),
+    })
+    .await;
+    match result {
+        Ok(outcome) => {
+            let dry_run = outcome.record.is_none();
+            if let Ok(conn) = db.lock() {
+                let _ = db::update_deployment_status(
+                    &conn,
+                    id,
+                    if dry_run { "dry-run" } else { "completed" },
+                    Some("localhost"),
+                    Some(machine_name),
+                );
+            }
+            let record = outcome.record.as_ref();
+            let payload = serde_json::json!({
+                "local": true,
+                "dry_run": dry_run,
+                "hostname": machine_name,
+                "hermes_home": record.map(|r| r.hermes_home.display().to_string()),
+                "launcher": record.map(|r| r.launcher.display().to_string()),
+                "hermes_version": record.map(|r| r.hermes_version.clone()),
+                "ai_model": ai_model,
+                "terminal_backend": terminal_backend,
+                "service_installed": record.is_some_and(|r| r.service_installed),
+                "telegram_bot": outcome.telegram_bot,
+                "opencode": outcome.opencode,
+            });
+            let _ = tx.send(format!("DEPLOY_COMPLETE_JSON:{payload}"));
+            JobStatus::Completed
+        }
+        Err(err) => {
+            if let Ok(conn) = db.lock() {
+                let _ = db::update_deployment_status(&conn, id, "failed", None, None);
+            }
+            let _ = tx.send(format!("DEPLOY_ERROR:{err:#}"));
+            JobStatus::Failed
+        }
+    }
+}
+
+/// Whether "Install on this computer" is available, and the current clawmacdo install.
+async fn hermes_local_status_handler() -> impl IntoResponse {
+    match hermes_local::local_install_status() {
+        Ok(status) => {
+            let reason = current_local_install_block_reason();
+            Json(serde_json::json!({
+                "supported": reason.is_none(),
+                "reason": reason,
+                "installed": status.record.is_some(),
+                "record": status.record,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                message: format!("{err:#}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct LocalUninstallRequest {
+    #[serde(default)]
+    keep_data: bool,
+}
+
+/// Remove a clawmacdo-made local Hermes install. The browser confirms first; installs
+/// without a clawmacdo record are refused, as in `hermes-local-uninstall`.
+async fn hermes_local_uninstall_handler(
+    State(state): State<AppState>,
+    Json(req): Json<LocalUninstallRequest>,
+) -> impl IntoResponse {
+    if let Some(reason) = current_local_install_block_reason() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "ok": false, "message": reason })),
+        )
+            .into_response();
+    }
+    let Some(_slot) = LocalHermesSlot::acquire() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "ok": false,
+                "message": "A Hermes install or uninstall is already running on this computer.",
+            })),
+        )
+            .into_response();
+    };
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let result = hermes_local::uninstall(hermes_local::HermesLocalUninstallParams {
+        keep_data: req.keep_data,
+        yes: true,
+        force: false,
+        dry_run: is_dry_run(),
+        json: false,
+        progress_tx: Some(tx),
+    })
+    .await;
+    let mut log = Vec::new();
+    while let Ok(line) = rx.try_recv() {
+        log.push(line);
+    }
+    match result {
+        Ok(outcome) => {
+            if outcome.performed {
+                if let Ok(conn) = state.db.lock() {
+                    let _ =
+                        db::mark_completed_deployments(&conn, HERMES_LOCAL_TARGET, "uninstalled");
+                }
+            }
+            let message = if !outcome.performed {
+                "Dry run: nothing was removed."
+            } else if req.keep_data {
+                "Hermes was removed. Its data folder was kept."
+            } else if outcome.data_removed {
+                "Hermes and its data were removed from this computer."
+            } else {
+                "Hermes was removed, but its data folder is still present."
+            };
+            Json(serde_json::json!({
+                "ok": true,
+                "message": message,
+                "dry_run": !outcome.performed,
+                "data_removed": outcome.data_removed,
+                "warnings": outcome.warnings,
+                "log": log,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "message": format!("{err:#}"),
+                "log": log,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// DDeploy events handler.
@@ -3857,6 +4183,7 @@ tailwind.config = {
 <script>
 const TOTAL_STEPS = 16;
 const HERMES_TOTAL_STEPS = 8;
+const HERMES_LOCAL_TOTAL_STEPS = 6;
 const DEPLOY_STORAGE_KEY = 'clawmacdo.savedDeploys.v1';
 let deployCounter = 0;
 let backupOptions = '<option value="none">None</option>';
@@ -4086,7 +4413,7 @@ function addDeployCard(initialState) {
     <form class="space-y-6" novalidate onsubmit="startDeploy(event, ${n})">
       <fieldset class="space-y-3">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Deploy Target</legend>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label class="deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-slate-200" data-target-option="openclaw">
             <input type="radio" name="target" value="openclaw" checked onchange="toggleDeployTarget(this, ${n})" class="h-4 w-4 border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0">
             <span>
@@ -4099,6 +4426,13 @@ function addDeployCard(initialState) {
             <span>
               <span class="block font-semibold">Hermes Agent</span>
               <span class="block text-xs text-slate-400">Provision Hermes Agent on AWS Lightsail</span>
+            </span>
+          </label>
+          <label class="deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-200" data-target-option="hermes-local">
+            <input type="radio" name="target" value="hermes-local" onchange="toggleDeployTarget(this, ${n})" class="h-4 w-4 border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
+            <span>
+              <span class="block font-semibold">Hermes Agent &mdash; This computer</span>
+              <span class="hermes-local-target-note block text-xs text-slate-400">Install natively on this Mac or Windows PC</span>
             </span>
           </label>
         </div>
@@ -4116,7 +4450,7 @@ function addDeployCard(initialState) {
           </div>
         </div>
       </fieldset>
-      <fieldset class="space-y-4">
+      <fieldset class="space-y-4 hermes-cloud-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Cloud Provider</legend>
         <div id="provider-select-wrap-${n}" class="openclaw-only">
           <label class="block text-sm font-medium text-slate-300 mb-1">Provider</label>
@@ -4176,7 +4510,7 @@ function addDeployCard(initialState) {
           ${passwordField('telegram_bot_token', 'Telegram Bot Token', '123456:ABC-DEF...', false)}
         </div>
       </fieldset>
-      <fieldset class="space-y-4">
+      <fieldset class="space-y-4 hermes-cloud-only">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Infrastructure</legend>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
@@ -4220,7 +4554,23 @@ function addDeployCard(initialState) {
       </fieldset>
       <fieldset id="hermes-config-${n}" class="hermes-only hidden space-y-4">
         <legend class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Hermes Agent</legend>
-        <p class="text-xs text-slate-400">Hermes runs directly on the Lightsail host as the ubuntu user, with the local terminal backend.</p>
+        <p class="hermes-cloud-only text-xs text-slate-400">Hermes runs directly on the Lightsail host as the ubuntu user, with the local terminal backend.</p>
+        <div class="hermes-local-only hidden space-y-4">
+          <div class="hermes-local-status hidden rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"></div>
+          <p class="text-xs text-slate-400">Installs the pinned Hermes Agent natively on the computer running this web UI and registers its gateway as a background service that starts at login. OpenCode is installed on macOS only.</p>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Agent shell commands</label>
+            <select name="hermes_terminal_backend" onchange="syncHermesLocalBackend(this.form)" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+              <option value="local" selected>Run directly on this computer</option>
+              <option value="docker">Run in a Docker sandbox (requires Docker Desktop)</option>
+            </select>
+            <p class="hermes-local-terminal-warning mt-2 text-xs text-amber-300">Warning: the agent will run shell commands on this computer with your user's permissions.</p>
+          </div>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="hermes_local_force" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
+            <span class="text-sm text-slate-300">Replace an existing Hermes install (its configuration is backed up first)</span>
+          </label>
+        </div>
         <div class="space-y-4">
           <div class="text-sm font-medium text-slate-300">AI Model</div>
           <div>
@@ -4240,7 +4590,7 @@ function addDeployCard(initialState) {
               <input type="checkbox" name="hermes_install_opencode" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
               <span class="text-sm text-slate-300">Install OpenCode CLI v2</span>
             </label>
-            <p class="text-xs text-slate-400">Hermes and OpenCode use the same OpenRouter API key and model. OpenCode is installed for the ubuntu user.</p>
+            <p class="text-xs text-slate-400">Hermes and OpenCode use the same OpenRouter API key and model.<span class="hermes-cloud-only"> OpenCode is installed for the ubuntu user.</span><span class="hermes-local-only hidden"> OpenCode is installed on macOS only.</span></p>
           </div>
           <div class="hermes-bedrock-config hidden space-y-4">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -4275,7 +4625,7 @@ function addDeployCard(initialState) {
           <label class="block text-sm font-medium text-slate-300 mb-1">Hermes .env <span class="text-slate-500">(optional)</span></label>
           <textarea name="hermes_env" rows="7" spellcheck="false" class="w-full resize-y bg-slate-800 border border-slate-700 rounded-lg px-3 sm:px-4 py-2 sm:py-2.5 font-mono text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent" placeholder="OPENROUTER_API_KEY=...\nNOUS_API_KEY=...\nEXTRA_SETTING=..."></textarea>
         </div>
-        <div class="space-y-3">
+        <div class="hermes-cloud-only space-y-3">
           <label class="flex items-center gap-3 cursor-pointer">
             <input type="checkbox" name="hermes_dashboard" checked class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0">
             <span class="text-sm text-slate-300">Run Hermes dashboard on 127.0.0.1:9119</span>
@@ -4355,6 +4705,7 @@ function addDeployCard(initialState) {
     if (hermesRadio) hermesRadio.checked = true;
   }
   toggleDeployTarget(form, n);
+  if (hermesLocalStatus) applyHermesLocalStatus();
   if (initialState && initialState.completed) {
     const progressDiv = card.querySelector('.deploy-progress');
     progressDiv.classList.remove('hidden');
@@ -4577,18 +4928,23 @@ function toggleDeployTarget(source, n) {
   const form = source && source.tagName === 'FORM' ? source : card.querySelector('form');
   if (!form) return;
   const target = getDeployTarget(form);
-  const isHermes = target === 'hermes';
+  const isLocal = target === 'hermes-local';
+  const isHermes = target === 'hermes' || isLocal;
   const providerSelect = form.querySelector('[name="provider"]');
   const submitBtn = card.querySelector('.deploy-submit-btn');
   card.dataset.deployTarget = target;
 
   card.querySelectorAll('.openclaw-only').forEach(el => el.classList.toggle('hidden', isHermes));
   card.querySelectorAll('.hermes-only').forEach(el => el.classList.toggle('hidden', !isHermes));
+  card.querySelectorAll('.hermes-cloud-only').forEach(el => el.classList.toggle('hidden', isLocal));
+  card.querySelectorAll('.hermes-local-only').forEach(el => el.classList.toggle('hidden', !isLocal));
   card.querySelectorAll('.deploy-target-option').forEach(el => {
     const active = el.dataset.targetOption === target;
     el.className = active
       ? 'deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-3 text-sm text-slate-200'
       : 'deploy-target-option flex cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm text-slate-200';
+    const input = el.querySelector('input');
+    if (input && input.disabled) el.classList.add('opacity-50', 'cursor-not-allowed');
   });
 
   if (providerSelect) {
@@ -4599,11 +4955,201 @@ function toggleDeployTarget(source, n) {
     }
     toggleProvider(providerSelect, n);
   }
-  if (submitBtn) submitBtn.textContent = isHermes ? 'Provision Hermes Agent' : 'Deploy OpenClaw';
+  if (submitBtn) submitBtn.textContent = deploySubmitLabel(target);
   const totalEl = card.querySelector('.deploy-step-total');
-  if (totalEl) totalEl.textContent = String(isHermes ? HERMES_TOTAL_STEPS : TOTAL_STEPS);
+  if (totalEl) totalEl.textContent = String(stepsForTarget(target));
   syncTailscaleKeyRequirement(form);
   syncHermesProvider(form);
+  syncHermesLocalBackend(form);
+}
+
+function stepsForTarget(target) {
+  if (target === 'hermes-local') return HERMES_LOCAL_TOTAL_STEPS;
+  return target === 'hermes' ? HERMES_TOTAL_STEPS : TOTAL_STEPS;
+}
+
+function deploySubmitLabel(target, state) {
+  const labels = {
+    'hermes-local': ['Install on this computer', 'Installing...', 'Retry Install'],
+    hermes: ['Provision Hermes Agent', 'Provisioning...', 'Retry Provision'],
+    openclaw: ['Deploy OpenClaw', 'Deploying...', 'Retry Deploy'],
+  };
+  const set = labels[target] || labels.openclaw;
+  return set[state === 'running' ? 1 : state === 'retry' ? 2 : 0];
+}
+
+function syncHermesLocalBackend(form) {
+  const select = form.querySelector('[name="hermes_terminal_backend"]');
+  const warning = form.querySelector('.hermes-local-terminal-warning');
+  if (select && warning) warning.classList.toggle('hidden', select.value !== 'local');
+}
+
+// ── Hermes on this computer ───────────────────────────────────────────────
+let hermesLocalStatus = null;
+
+async function loadHermesLocalStatus() {
+  try {
+    const res = await fetch('/api/hermes-local/status');
+    hermesLocalStatus = res.ok ? await res.json() : null;
+  } catch (_) {
+    hermesLocalStatus = null;
+  }
+  applyHermesLocalStatus();
+}
+
+function applyHermesLocalStatus() {
+  const status = hermesLocalStatus;
+  document.querySelectorAll('[id^="deploy-card-"]').forEach(card => {
+    const option = card.querySelector('[data-target-option="hermes-local"]');
+    if (option && status) {
+      const input = option.querySelector('input');
+      const note = option.querySelector('.hermes-local-target-note');
+      const unsupported = !status.supported;
+      input.disabled = unsupported;
+      option.classList.toggle('opacity-50', unsupported);
+      option.classList.toggle('cursor-not-allowed', unsupported);
+      option.title = unsupported ? (status.reason || '') : '';
+      if (note) note.textContent = unsupported ? 'Unavailable: ' + (status.reason || 'not supported here') : 'Install natively on this Mac or Windows PC';
+      if (unsupported && input.checked) {
+        card.querySelector('input[name="target"][value="openclaw"]').checked = true;
+        toggleDeployTarget(card.querySelector('form'), card.id.replace('deploy-card-', ''));
+      }
+    }
+    const banner = card.querySelector('.hermes-local-status');
+    if (!banner) return;
+    const record = status && status.record;
+    banner.classList.toggle('hidden', !record);
+    banner.textContent = '';
+    if (!record) return;
+    const line = document.createElement('p');
+    const when = record.installed_at ? new Date(record.installed_at).toLocaleString() : 'an earlier run';
+    line.textContent = 'Hermes ' + record.hermes_version + ' is installed on this computer (' + record.ai_model + ', since ' + when + '). Installing again requires "Replace an existing Hermes install".';
+    banner.appendChild(line);
+    banner.appendChild(localUninstallButtons());
+  });
+}
+
+function localUninstallButtons() {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-3 flex flex-wrap gap-2';
+  [[false, 'Uninstall', 'border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20'],
+   [true, 'Uninstall, keep data', 'border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700']].forEach(([keepData, label, cls]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'hermes-local-uninstall-btn rounded-lg border px-3 py-1.5 text-xs font-medium ' + cls;
+    btn.dataset.keepData = keepData ? 'true' : 'false';
+    btn.textContent = label;
+    btn.addEventListener('click', () => showLocalUninstallModal(keepData));
+    wrap.appendChild(btn);
+  });
+  return wrap;
+}
+
+function panelShowLocalSummary(panel, payload) {
+  const card = panel.querySelector('.deploy-summary');
+  const content = panel.querySelector('.deploy-summary-content');
+  panel.dataset.deployTarget = 'hermes-local';
+  card.classList.remove('hidden');
+  content.textContent = '';
+  const add = (label, value) => {
+    if (!value) return;
+    const p = document.createElement('p');
+    const span = document.createElement('span');
+    span.className = 'text-slate-500';
+    span.textContent = label + ': ';
+    p.appendChild(span);
+    p.appendChild(document.createTextNode(value));
+    content.appendChild(p);
+  };
+  add('Target', 'Hermes Agent on this computer (' + (payload.hostname || 'localhost') + ')');
+  if (payload.dry_run) {
+    add('Dry run', 'nothing was installed on this computer');
+    return;
+  }
+  add('Hermes', payload.hermes_version);
+  add('Command', payload.launcher);
+  add('Hermes home', payload.hermes_home);
+  add('AI model', payload.ai_model);
+  add('Terminal backend', payload.terminal_backend);
+  add('Gateway service', payload.service_installed ? 'installed; starts at login' : 'not installed; run hermes gateway run');
+  add('Telegram bot', payload.telegram_bot);
+  add('OpenCode CLI', payload.opencode || 'not installed');
+  add('Chat', 'open a new terminal and run hermes');
+  add('Dashboard', 'run hermes dashboard (local only, on demand)');
+  add('Note', 'the gateway and Telegram bot only respond while this computer is awake');
+  if (payload.terminal_backend === 'local') {
+    const warn = document.createElement('p');
+    warn.className = 'text-amber-300';
+    warn.textContent = 'Warning: the agent runs shell commands on this computer with your user\'s permissions.';
+    content.appendChild(warn);
+  }
+  content.appendChild(localUninstallButtons());
+}
+
+function showLocalUninstallModal(keepData) {
+  const existing = document.getElementById('local-uninstall-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'local-uninstall-modal';
+  modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+  modal.innerHTML = `
+    <div class="bg-slate-900 border border-slate-700 rounded-xl shadow-2xl max-w-lg w-full mx-4 p-6 space-y-4">
+      <h3 class="text-lg font-semibold text-red-400">Uninstall Hermes from this computer</h3>
+      <p class="local-uninstall-text text-sm text-slate-300"></p>
+      <div class="local-uninstall-result hidden space-y-2 text-sm"></div>
+      <div class="flex justify-end gap-2">
+        <button type="button" class="local-uninstall-cancel rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800">Cancel</button>
+        <button type="button" class="local-uninstall-confirm rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500">Uninstall</button>
+      </div>
+    </div>`;
+  modal.querySelector('.local-uninstall-text').textContent = keepData
+    ? 'This stops the Hermes gateway service and removes Hermes, its PATH entries and the OpenCode CLI clawmacdo installed. The Hermes data folder (configuration, .env API keys, sessions and memory) is kept.'
+    : 'This stops the Hermes gateway service, removes Hermes, its PATH entries and the OpenCode CLI clawmacdo installed, and permanently deletes the Hermes data folder, including .env API keys, sessions and memory.';
+  const cancel = modal.querySelector('.local-uninstall-cancel');
+  const confirmBtn = modal.querySelector('.local-uninstall-confirm');
+  cancel.addEventListener('click', () => modal.remove());
+  confirmBtn.addEventListener('click', async () => {
+    confirmBtn.disabled = true;
+    cancel.disabled = true;
+    confirmBtn.textContent = 'Uninstalling...';
+    const result = modal.querySelector('.local-uninstall-result');
+    let data = {};
+    try {
+      const res = await fetch('/api/hermes-local/uninstall', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep_data: keepData }),
+      });
+      data = await res.json().catch(() => ({}));
+      if (!res.ok) data.ok = false;
+    } catch (err) {
+      data = { ok: false, message: String(err) };
+    }
+    result.classList.remove('hidden');
+    result.textContent = '';
+    const message = document.createElement('p');
+    message.className = data.ok ? 'text-green-400' : 'text-red-400';
+    message.textContent = data.message || (data.ok ? 'Done.' : 'Uninstall failed.');
+    result.appendChild(message);
+    (data.warnings || []).forEach(w => {
+      const p = document.createElement('p');
+      p.className = 'text-amber-300';
+      p.textContent = 'Warning: ' + w;
+      result.appendChild(p);
+    });
+    if ((data.log || []).length) {
+      const pre = document.createElement('pre');
+      pre.className = 'max-h-48 overflow-auto rounded bg-slate-950 p-2 text-xs text-slate-400 whitespace-pre-wrap';
+      pre.textContent = data.log.join('\n');
+      result.appendChild(pre);
+    }
+    confirmBtn.classList.add('hidden');
+    cancel.disabled = false;
+    cancel.textContent = 'Close';
+    loadHermesLocalStatus();
+    if (typeof loadDeployments === 'function' && document.getElementById('deployments-list')) loadDeployments();
+  });
+  document.body.appendChild(modal);
 }
 
 function syncHermesProvider(form) {
@@ -4776,7 +5322,7 @@ function panelAppendLog(panel, text, color) {
 }
 
 function deploymentTotalSteps(panel) {
-  return panel && panel.dataset.deployTarget === 'hermes' ? HERMES_TOTAL_STEPS : TOTAL_STEPS;
+  return stepsForTarget(panel ? panel.dataset.deployTarget : '');
 }
 
 function panelUpdateProgress(panel, step) {
@@ -5188,7 +5734,7 @@ async function startDeploy(e, cardNum) {
     target: target,
     customer_name: val('customer_name'),
     customer_email: val('customer_email'),
-    provider: target === 'hermes' ? 'hermes-lightsail' : val('provider'),
+    provider: target === 'hermes-local' ? 'hermes-local' : target === 'hermes' ? 'hermes-lightsail' : val('provider'),
     do_token: val('do_token'),
     tencent_secret_id: val('tencent_secret_id'),
     tencent_secret_key: val('tencent_secret_key'),
@@ -5233,12 +5779,14 @@ async function startDeploy(e, cardNum) {
     hermes_telegram_bot_token: val('hermes_telegram_bot_token'),
     hermes_telegram_allowed_users: val('hermes_telegram_allowed_users'),
     hermes_telegram_home_channel: val('hermes_telegram_home_channel'),
-    hermes_dashboard: form.querySelector('[name="hermes_dashboard"]').checked,
+    hermes_dashboard: target === 'hermes' && form.querySelector('[name="hermes_dashboard"]').checked,
     hermes_cloudflare_tunnel: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked,
     hermes_dashboard_password: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked ? val('hermes_dashboard_password') : '',
+    hermes_terminal_backend: target === 'hermes-local' ? val('hermes_terminal_backend') : '',
+    hermes_local_force: target === 'hermes-local' && form.querySelector('[name="hermes_local_force"]').checked,
   };
 
-  if (target !== 'hermes' && !body.openclaw_version) {
+  if (target === 'openclaw' && !body.openclaw_version) {
     alert('Please select an OpenClaw version before deploying.');
     return;
   }
@@ -5255,7 +5803,7 @@ async function startDeploy(e, cardNum) {
   delete card.dataset.deployKeyPath;
   delete card.dataset.deployProvider;
   btn.disabled = true;
-  btn.textContent = target === 'hermes' ? 'Provisioning...' : 'Deploying...';
+  btn.textContent = deploySubmitLabel(target, 'running');
   btn.className = btn.className.replace('bg-blue-600 hover:bg-blue-500', 'bg-slate-700 cursor-not-allowed');
   progressDiv.classList.remove('hidden');
 
@@ -5282,8 +5830,9 @@ async function startDeploy(e, cardNum) {
         let dashboardUrl = '';
         let dashboardEnabled = true;
         let osUpgrade = '';
+        let payload = {};
         try {
-          const payload = JSON.parse(msg.substring('DEPLOY_COMPLETE_JSON:'.length));
+          payload = JSON.parse(msg.substring('DEPLOY_COMPLETE_JSON:'.length));
           ip = payload.ip || '';
           keyPath = payload.ssh_key_path || '';
           hostname = payload.hostname || '';
@@ -5291,12 +5840,23 @@ async function startDeploy(e, cardNum) {
           dashboardEnabled = payload.dashboard_enabled !== false;
           osUpgrade = payload.os_upgrade || '';
         } catch (_) {}
+        if (payload.local) {
+          panelSetStatus(card, 'completed');
+          panelUpdateProgress(card, HERMES_LOCAL_TOTAL_STEPS);
+          const _dsl = _stepStartTimes[deployId] && _stepStartTimes[deployId][1];
+          if (_dsl) panelAppendLog(card, 'Total install time: ' + formatDuration(Date.now() - _dsl), 'text-green-300 font-medium');
+          panelAppendLog(card, payload.dry_run ? 'Dry run finished; nothing was installed.' : 'Hermes installed on this computer.', 'text-green-400 font-semibold');
+          evtSource.close();
+          panelShowLocalSummary(card, payload);
+          loadHermesLocalStatus();
+          return;
+        }
         if (!ip || !keyPath || !hostname) {
           panelSetStatus(card, 'failed');
           panelAppendLog(card, 'ERROR: Invalid deploy completion payload', 'text-red-400 font-semibold');
           evtSource.close();
           btn.disabled = false;
-          btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
+          btn.textContent = deploySubmitLabel(target, 'retry');
           btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
           return;
         }
@@ -5339,7 +5899,7 @@ async function startDeploy(e, cardNum) {
         panelAppendLog(card, 'ERROR: ' + err, 'text-red-400 font-semibold');
         evtSource.close();
         btn.disabled = false;
-        btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
+        btn.textContent = deploySubmitLabel(target, 'retry');
         btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
         return;
       }
@@ -5379,7 +5939,7 @@ async function startDeploy(e, cardNum) {
     panelSetStatus(card, 'failed');
     panelAppendLog(card, 'Failed to start deploy: ' + err.message, 'text-red-400');
     btn.disabled = false;
-    btn.textContent = target === 'hermes' ? 'Retry Provision' : 'Retry Deploy';
+    btn.textContent = deploySubmitLabel(target, 'retry');
     btn.className = btn.className.replace('bg-slate-700 cursor-not-allowed', 'bg-blue-600 hover:bg-blue-500');
   }
 }
@@ -5475,6 +6035,12 @@ function deploymentActionsMenu(d) {
   const hostname = esc(d.hostname || '');
   const ip = esc(d.ip_address || '');
   const isHermes = (d.provider || '') === 'hermes-lightsail';
+  const isHermesLocal = (d.provider || '') === 'hermes-local';
+
+  const hermesLocalActions =
+      '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">This computer</div>' +
+      deploymentActionButton('Uninstall', 'text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border-red-500/20', 'Uninstall Hermes from this computer', 'closeDeploymentActionMenu(this); showLocalUninstallModal(false)') +
+      deploymentActionButton('Uninstall, keep data', 'text-slate-300 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-700/60 border-slate-600', 'Uninstall Hermes but keep its data folder', 'closeDeploymentActionMenu(this); showLocalUninstallModal(true)');
 
   const hermesActions =
       '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Hermes Agent</div>' +
@@ -5487,7 +6053,7 @@ function deploymentActionsMenu(d) {
       '<svg data-deploy-actions-chevron class="h-3.5 w-3.5 text-slate-400 transition-transform duration-200" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.51a.75.75 0 01-1.08 0l-4.25-4.51a.75.75 0 01.02-1.06z" clip-rule="evenodd"></path></svg>' +
     '</button>' +
     '<div class="deployment-actions-menu hidden absolute right-0 top-full z-30 mt-2 flex min-w-[13rem] flex-col gap-1.5 rounded-2xl border border-slate-700/80 bg-slate-950/95 p-2 shadow-[0_18px_40px_rgba(0,0,0,0.35)] backdrop-blur">' +
-      (isHermes ? hermesActions :
+      (isHermesLocal ? hermesLocalActions : isHermes ? hermesActions :
       '<div class="px-3 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Funnel</div>' +
       deploymentActionButton('Funnel: Turn On', funnelToggleButtonClass('off'), 'Step 1: Toggle Tailscale Funnel', 'toggleFunnel(\'' + id + '\',this)', 'id="funnel-btn-' + id + '" data-funnel-state="off"') +
       deploymentActionButton('Open Funnel URL', 'text-slate-500 bg-slate-900/70 border-slate-700 cursor-not-allowed', 'Step 2: Open the Funnel URL after it becomes available', 'closeDeploymentActionMenu(this); openFunnel(\'' + id + '\')', 'id="funnel-open-' + id + '" disabled') +
@@ -6334,6 +6900,7 @@ checkDryRun();
 // Auto-add the first deployment card
 addDeployCard();
 restoreSavedDeployments();
+loadHermesLocalStatus();
 
 // ── Snapshot tab ────────────────────────────────────────────────────────
 function initSnapshotCredFields() {
@@ -6675,6 +7242,68 @@ mod tests {
         );
         assert_eq!(normalize_pairing_code("bad-code"), None);
         assert_eq!(normalize_pairing_code("short"), None);
+    }
+
+    #[test]
+    fn local_installs_require_a_loopback_bind_and_supported_os() {
+        for bind in ["127.0.0.1", "::1", "localhost", " 127.0.0.2 "] {
+            assert_eq!(local_install_block_reason(bind, None), None, "{bind}");
+        }
+        for bind in ["0.0.0.0", "192.168.1.20", "::"] {
+            let reason = local_install_block_reason(bind, None).unwrap();
+            assert!(reason.contains("only available when the web UI listens on localhost"));
+        }
+        assert_eq!(
+            local_install_block_reason("127.0.0.1", Some("Linux is not supported".into()))
+                .as_deref(),
+            Some("Linux is not supported")
+        );
+    }
+
+    #[test]
+    fn local_hermes_request_builds_validated_settings() {
+        let base = serde_json::json!({
+            "target": "hermes-local",
+            "customer_name": "Test",
+            "customer_email": "test@example.com",
+            "hermes_openrouter_api_key": " sk-or-test ",
+            "hermes_telegram_allowed_users": "111"
+        });
+        let req: DeployRequest = serde_json::from_value(base.clone()).unwrap();
+        assert!(req.is_hermes_local());
+        assert!(!req.hermes_local_force);
+        let settings = req.hermes_local_settings().unwrap();
+        assert_eq!(settings.openrouter_api_key.as_deref(), Some("sk-or-test"));
+        assert_eq!(settings.terminal_backend, TerminalBackend::Local);
+
+        let mut docker = base.clone();
+        docker["hermes_terminal_backend"] = serde_json::json!("docker");
+        docker["hermes_local_force"] = serde_json::json!(true);
+        let req: DeployRequest = serde_json::from_value(docker).unwrap();
+        assert!(req.hermes_local_force);
+        assert_eq!(
+            req.hermes_local_settings().unwrap().terminal_backend,
+            TerminalBackend::Docker
+        );
+
+        for (field, value) in [
+            ("hermes_terminal_backend", "ssh"),
+            ("hermes_telegram_bot_token", "not-a-token"),
+            ("hermes_openrouter_api_key", " "),
+        ] {
+            let mut body = base.clone();
+            body[field] = serde_json::json!(value);
+            let req: DeployRequest = serde_json::from_value(body).unwrap();
+            assert!(req.hermes_local_settings().is_err(), "{field}={value}");
+        }
+    }
+
+    #[test]
+    fn local_hermes_slot_allows_one_job_at_a_time() {
+        let first = LocalHermesSlot::acquire().unwrap();
+        assert!(LocalHermesSlot::acquire().is_none());
+        drop(first);
+        assert!(LocalHermesSlot::acquire().is_some());
     }
 
     #[test]

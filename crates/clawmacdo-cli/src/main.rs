@@ -1545,8 +1545,10 @@ async fn async_main() -> anyhow::Result<()> {
                 force,
                 dry_run,
                 json,
+                progress_tx: None,
             })
             .await
+            .map(|_| ())
         }
         Commands::HermesLocalUninstall {
             keep_data,
@@ -1561,8 +1563,10 @@ async fn async_main() -> anyhow::Result<()> {
                 force,
                 dry_run,
                 json,
+                progress_tx: None,
             })
             .await
+            .map(|_| ())
         }
         Commands::Track {
             query,

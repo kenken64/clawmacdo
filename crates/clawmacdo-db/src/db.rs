@@ -128,6 +128,19 @@ pub fn list_deployments_paginated(
     Ok((rows, total))
 }
 
+/// Set `status` on every completed deployment for `provider`; returns how many changed.
+pub fn mark_completed_deployments(
+    conn: &Connection,
+    provider: &str,
+    status: &str,
+) -> Result<usize> {
+    conn.execute(
+        "UPDATE deployments SET status = ?1 WHERE provider = ?2 AND status = 'completed'",
+        rusqlite::params![status, provider],
+    )
+    .context("Failed to update deployment statuses")
+}
+
 /// Delete a single deployment by ID.
 pub fn delete_deployment(conn: &Connection, id: &str) -> Result<bool> {
     let changed = conn.execute(
@@ -415,6 +428,37 @@ mod tests {
         )
         .unwrap();
         update_deployment_status(conn, id, "completed", Some(ip), Some(hostname)).unwrap();
+    }
+
+    #[test]
+    fn marking_completed_deployments_only_touches_that_provider() {
+        let conn = test_conn();
+        for (id, provider, status) in [
+            ("local-done", "hermes-local", "completed"),
+            ("local-failed", "hermes-local", "failed"),
+            ("cloud-done", "hermes-lightsail", "completed"),
+        ] {
+            insert_deployment(
+                &conn,
+                id,
+                "Jane",
+                "jane@example.com",
+                provider,
+                "local",
+                "local",
+                "mac",
+            )
+            .unwrap();
+            update_deployment_status(&conn, id, status, None, None).unwrap();
+        }
+        assert_eq!(
+            mark_completed_deployments(&conn, "hermes-local", "uninstalled").unwrap(),
+            1
+        );
+        let status = |id| get_deployment_by_id(&conn, id).unwrap().unwrap().status;
+        assert_eq!(status("local-done"), "uninstalled");
+        assert_eq!(status("local-failed"), "failed");
+        assert_eq!(status("cloud-done"), "completed");
     }
 
     #[test]

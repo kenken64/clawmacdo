@@ -19,7 +19,9 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 
 const TOTAL_STEPS: u32 = 6;
 const RECORD_FILE: &str = "hermes-local.json";
@@ -480,7 +482,41 @@ fn hermes_on_path(platform: LocalPlatform) -> Option<PathBuf> {
     }
 }
 
-async fn check_prerequisites(platform: LocalPlatform, backend: TerminalBackend) -> Result<()> {
+/// npm's cache directory: `npm_config_cache` when set, otherwise `~/.npm`.
+#[cfg(unix)]
+fn npm_cache_dir(home: &Path, configured: Option<OsString>) -> PathBuf {
+    configured
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".npm"))
+}
+
+/// First entry under `root` not owned by `uid`, such as files left by an earlier `sudo npm`.
+#[cfg(unix)]
+fn first_foreign_owned(root: &Path, uid: u32) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.uid() != uid {
+            return Some(path);
+        }
+        if meta.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                pending.extend(entries.flatten().map(|entry| entry.path()));
+            }
+        }
+    }
+    None
+}
+
+async fn check_prerequisites(
+    platform: LocalPlatform,
+    backend: TerminalBackend,
+    #[cfg_attr(not(unix), allow(unused_variables))] home: &Path,
+) -> Result<()> {
     match platform {
         LocalPlatform::MacOs => {
             // `xcode-select -p` checks for git without triggering Apple's install dialog.
@@ -491,6 +527,33 @@ async fn check_prerequisites(platform: LocalPlatform, backend: TerminalBackend) 
                     "Hermes needs git from Apple's Command Line Tools. \
                      Run `xcode-select --install`, finish the dialog, then retry."
                 );
+            }
+            // Upstream's installer updates an existing checkout before its `npm ci` step,
+            // so a cache npm cannot write to would fail with Hermes half-updated.
+            #[cfg(unix)]
+            {
+                let cache = npm_cache_dir(
+                    home,
+                    std::env::var_os("npm_config_cache")
+                        .or_else(|| std::env::var_os("NPM_CONFIG_CACHE")),
+                );
+                // SAFETY: getuid has no preconditions and cannot fail.
+                let uid = unsafe { libc::getuid() };
+                let cacache = cache.join("_cacache");
+                let foreign =
+                    tokio::task::spawn_blocking(move || first_foreign_owned(&cacache, uid))
+                        .await
+                        .context("npm cache ownership check panicked")?;
+                if let Some(path) = foreign {
+                    bail!(
+                        "npm's cache contains files owned by another user, usually root from an \
+                         earlier `sudo npm`: {}. The Hermes installer runs `npm ci`, which fails on \
+                         them with EACCES partway through the install. Nothing was changed. Fix the \
+                         ownership with `sudo chown -R $(id -u):$(id -g) \"{}\"`, then try again.",
+                        path.display(),
+                        cache.display()
+                    );
+                }
             }
         }
         LocalPlatform::Windows => {
@@ -508,25 +571,91 @@ async fn check_prerequisites(platform: LocalPlatform, backend: TerminalBackend) 
     Ok(())
 }
 
-/// Progress goes to stderr in `--json` mode so stdout stays valid JSON.
-fn say(json: bool, message: &str) {
-    if json {
-        eprintln!("{message}");
-    } else {
-        println!("{message}");
+/// Where progress goes: stdout (stderr in `--json` mode so stdout stays valid JSON),
+/// plus the web UI's progress channel when one is attached.
+struct Reporter {
+    json: bool,
+    tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl Reporter {
+    fn say(&self, message: &str) {
+        if self.json {
+            eprintln!("{message}");
+        } else {
+            println!("{message}");
+        }
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(message.to_string());
+        }
     }
 }
 
-async fn run_command(spec: &CommandSpec, json: bool, what: &str) -> Result<()> {
-    let mut command = spec.command();
-    command.stdin(Stdio::null());
-    if json {
-        command.stdout(Stdio::from(std::io::stderr()));
+/// Drop ANSI colour codes and carriage-return progress redraws from installer output.
+fn clean_output_line(line: &str) -> String {
+    let line = line.rsplit('\r').next().unwrap_or_default();
+    let mut cleaned = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for code in chars.by_ref() {
+                    if code.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        cleaned.push(ch);
     }
-    let status = command
-        .status()
-        .await
-        .with_context(|| format!("Failed to start {what} ({})", spec.program))?;
+    cleaned.trim_end().to_string()
+}
+
+async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(stream: Option<R>, out: &Reporter) {
+    let Some(stream) = stream else {
+        return;
+    };
+    let mut lines = tokio::io::BufReader::new(stream).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = clean_output_line(&line);
+        if !line.trim().is_empty() {
+            out.say(&format!("    {line}"));
+        }
+    }
+}
+
+async fn run_command(spec: &CommandSpec, out: &Reporter, what: &str) -> Result<()> {
+    run_prepared(spec.command(), spec, out, what).await
+}
+
+async fn run_prepared(
+    mut command: Command,
+    spec: &CommandSpec,
+    out: &Reporter,
+    what: &str,
+) -> Result<()> {
+    command.stdin(Stdio::null());
+    let status = if out.tx.is_some() {
+        // The web UI cannot see inherited output, so stream it line by line.
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("Failed to start {what} ({})", spec.program))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        tokio::join!(forward_lines(stdout, out), forward_lines(stderr, out));
+        child.wait().await?
+    } else {
+        if out.json {
+            command.stdout(Stdio::from(std::io::stderr()));
+        }
+        command
+            .status()
+            .await
+            .with_context(|| format!("Failed to start {what} ({})", spec.program))?
+    };
     if !status.success() {
         bail!("{what} failed ({status}). Command: {}", spec.display());
     }
@@ -541,6 +670,54 @@ pub struct HermesLocalInstallParams {
     pub force: bool,
     pub dry_run: bool,
     pub json: bool,
+    /// Web UI progress channel; when set, the CLI summary is not printed.
+    pub progress_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+/// What a local install did; `record` is `None` for a dry run.
+#[cfg_attr(not(feature = "web-ui"), allow(dead_code))]
+pub struct LocalInstallOutcome {
+    pub record: Option<LocalInstallRecord>,
+    pub telegram_bot: Option<String>,
+    pub opencode: Option<String>,
+}
+
+/// Whether this computer can take a local install, and the current clawmacdo record.
+#[cfg(feature = "web-ui")]
+#[derive(Debug, serde::Serialize)]
+pub struct LocalStatus {
+    pub supported: bool,
+    pub reason: Option<String>,
+    pub platform: Option<LocalPlatform>,
+    pub record: Option<LocalInstallRecord>,
+}
+
+/// Why this operating system cannot take a local install, if it cannot.
+#[cfg(feature = "web-ui")]
+pub fn platform_block_reason() -> Option<String> {
+    LocalPlatform::current().err().map(|err| err.to_string())
+}
+
+#[cfg(feature = "web-ui")]
+pub fn local_install_status() -> Result<LocalStatus> {
+    let platform = match LocalPlatform::current() {
+        Ok(platform) => platform,
+        Err(err) => {
+            return Ok(LocalStatus {
+                supported: false,
+                reason: Some(err.to_string()),
+                platform: None,
+                record: None,
+            })
+        }
+    };
+    let paths = LocalPaths::resolve(platform)?;
+    Ok(LocalStatus {
+        supported: true,
+        reason: None,
+        platform: Some(platform),
+        record: load_record(&paths.record)?,
+    })
 }
 
 struct OpenCodePlan {
@@ -548,17 +725,20 @@ struct OpenCodePlan {
     model: String,
 }
 
-pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
+pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOutcome> {
     let json = params.json;
+    let out = Reporter {
+        json,
+        tx: params.progress_tx.clone(),
+    };
     let platform = LocalPlatform::current()?;
     let paths = LocalPaths::resolve(platform)?;
     let pins = Pins::load()?;
     let settings = &params.settings;
 
-    say(
-        json,
-        &format!("\n[Step 1/{TOTAL_STEPS}] Checking this computer..."),
-    );
+    out.say(&format!(
+        "\n[Step 1/{TOTAL_STEPS}] Checking this computer..."
+    ));
     let ai_provider = resolve_ai_provider(settings)?;
     let (config_content, ai_summary) = build_config_content(settings)?;
     let env_content = build_env_content(settings)?;
@@ -602,36 +782,27 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
         params.computer_use,
     );
 
-    say(json, &format!("  Platform:  {}", platform.label()));
-    say(
-        json,
-        &format!(
-            "  Hermes:    {} (commit {})",
-            pins.hermes_version,
-            &pins.hermes_commit[..8]
-        ),
-    );
-    say(
-        json,
-        &format!("  Home:      {}", paths.hermes_home.display()),
-    );
-    say(json, &format!("  AI model:  {ai_summary}"));
-    say(
-        json,
-        &format!("  Terminal:  {}", settings.terminal_backend.as_str()),
-    );
+    out.say(&format!("  Platform:  {}", platform.label()));
+    out.say(&format!(
+        "  Hermes:    {} (commit {})",
+        pins.hermes_version,
+        &pins.hermes_commit[..8]
+    ));
+    out.say(&format!("  Home:      {}", paths.hermes_home.display()));
+    out.say(&format!("  AI model:  {ai_summary}"));
+    out.say(&format!(
+        "  Terminal:  {}",
+        settings.terminal_backend.as_str()
+    ));
     if settings.terminal_backend == TerminalBackend::Local {
-        say(json, &format!("  {LOCAL_TERMINAL_WARNING}"));
+        out.say(&format!("  {LOCAL_TERMINAL_WARNING}"));
     }
 
     if params.dry_run {
         if !findings.is_empty() {
-            say(
-                json,
-                "  Existing install detected; a real run stops here unless --force:",
-            );
+            out.say("  Existing install detected; a real run stops here unless --force:");
             for finding in &findings {
-                say(json, &format!("    - {finding}"));
+                out.say(&format!("    - {finding}"));
             }
         }
         let mut writes = vec![
@@ -645,38 +816,26 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
         let gateway = params
             .install_service
             .then(|| "hermes gateway install --start-now --start-on-login".to_string());
-        say(
-            json,
-            "\n[Dry-run] No changes will be made. Planned actions:",
-        );
-        say(
-            json,
-            &format!(
-                "  Download:  {installer_url} (SHA-256 {})",
-                pins.installer_sha256(platform)
-            ),
-        );
-        say(json, &format!("  Run:       {}", installer.display()));
+        out.say("\n[Dry-run] No changes will be made. Planned actions:");
+        out.say(&format!(
+            "  Download:  {installer_url} (SHA-256 {})",
+            pins.installer_sha256(platform)
+        ));
+        out.say(&format!("  Run:       {}", installer.display()));
         for path in &writes {
-            say(json, &format!("  Write:     {}", path.display()));
+            out.say(&format!("  Write:     {}", path.display()));
         }
         match &opencode {
-            Ok(_) => say(
-                json,
-                &format!(
-                    "  OpenCode:  install {} via {OPENCODE_INSTALLER_URL}",
-                    pins.opencode_version
-                ),
-            ),
-            Err(reason) => say(json, &format!("  OpenCode:  skipped ({reason})")),
+            Ok(_) => out.say(&format!(
+                "  OpenCode:  install {} via {OPENCODE_INSTALLER_URL}",
+                pins.opencode_version
+            )),
+            Err(reason) => out.say(&format!("  OpenCode:  skipped ({reason})")),
         }
-        say(
-            json,
-            &format!(
-                "  Service:   {}",
-                gateway.as_deref().unwrap_or("skipped (--no-service)")
-            ),
-        );
+        out.say(&format!(
+            "  Service:   {}",
+            gateway.as_deref().unwrap_or("skipped (--no-service)")
+        ));
         if json {
             let payload = serde_json::json!({
                 "dry_run": true,
@@ -695,7 +854,11 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
-        return Ok(());
+        return Ok(LocalInstallOutcome {
+            record: None,
+            telegram_bot: None,
+            opencode: None,
+        });
     }
 
     if !findings.is_empty() && !params.force {
@@ -712,41 +875,38 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
              (existing files are backed up first)."
         );
     }
-    check_prerequisites(platform, settings.terminal_backend).await?;
+    check_prerequisites(platform, settings.terminal_backend, &paths.home).await?;
     let mut telegram_bot = None;
     if let Some(token) = telegram_token {
         telegram_bot = Some(match verify_telegram_bot_token(token).await? {
             TelegramVerification::Verified(username) => {
-                say(json, &format!("  Telegram:  verified @{username}"));
+                out.say(&format!("  Telegram:  verified @{username}"));
                 format!("@{username}")
             }
             TelegramVerification::Unverified(reason) => {
-                say(
-                    json,
-                    &format!("  Telegram:  token accepted; getMe unavailable ({reason})"),
-                );
+                out.say(&format!(
+                    "  Telegram:  token accepted; getMe unavailable ({reason})"
+                ));
                 "configured".to_string()
             }
         });
     }
 
-    say(
-        json,
-        &format!("\n[Step 2/{TOTAL_STEPS}] Downloading the pinned Hermes installer..."),
-    );
+    out.say(&format!(
+        "\n[Step 2/{TOTAL_STEPS}] Downloading the pinned Hermes installer..."
+    ));
     download_verified(
         &installer_url,
         pins.installer_sha256(platform),
         &installer_path,
     )
     .await?;
-    say(json, "  Checksum verified.");
+    out.say("  Checksum verified.");
 
-    say(
-        json,
-        &format!("\n[Step 3/{TOTAL_STEPS}] Installing Hermes (this can take several minutes)..."),
-    );
-    let install_result = run_command(&installer, json, "Hermes installer").await;
+    out.say(&format!(
+        "\n[Step 3/{TOTAL_STEPS}] Installing Hermes (this can take several minutes)..."
+    ));
+    let install_result = run_command(&installer, &out, "Hermes installer").await;
     let _ = std::fs::remove_file(&installer_path);
     install_result?;
     let launcher = find_launcher(platform, &paths).with_context(|| {
@@ -760,10 +920,9 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
         )
     })?;
 
-    say(
-        json,
-        &format!("\n[Step 4/{TOTAL_STEPS}] Writing Hermes configuration..."),
-    );
+    out.say(&format!(
+        "\n[Step 4/{TOTAL_STEPS}] Writing Hermes configuration..."
+    ));
     let backup_dir = paths
         .state_dir
         .join(format!("backup-{}", Utc::now().format("%Y%m%d-%H%M%S")));
@@ -772,21 +931,20 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
         let path = paths.hermes_home.join(name);
         let backup = backup_existing(&path, &backup_dir, &format!("hermes{name}"))?;
         write_private(&path, contents)?;
-        say(json, &format!("  Wrote {}", path.display()));
+        out.say(&format!("  Wrote {}", path.display()));
         written_files.push(WrittenFile { path, backup });
     }
 
-    say(
-        json,
-        &format!("\n[Step 5/{TOTAL_STEPS}] Setting up the OpenCode CLI..."),
-    );
+    out.say(&format!(
+        "\n[Step 5/{TOTAL_STEPS}] Setting up the OpenCode CLI..."
+    ));
     let mut opencode_binary_installed = false;
     let mut opencode_summary = None;
     match &opencode {
         Ok(plan) => {
             let opencode_bin = paths.opencode_dir().join("bin").join("opencode");
             if opencode_bin.is_file() {
-                say(json, "  Using the existing OpenCode CLI.");
+                out.say("  Using the existing OpenCode CLI.");
             } else {
                 let script = paths.state_dir.join("opencode-install.sh");
                 download_verified(
@@ -804,7 +962,7 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
                         "--no-modify-path".into(),
                     ],
                 };
-                let result = run_command(&spec, json, "OpenCode installer").await;
+                let result = run_command(&spec, &out, "OpenCode installer").await;
                 let _ = std::fs::remove_file(&script);
                 result?;
                 opencode_binary_installed = true;
@@ -821,40 +979,35 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
             }
             opencode_summary = Some(opencode_bin.display().to_string());
         }
-        Err(reason) => say(json, &format!("  Skipped: {reason}.")),
+        Err(reason) => out.say(&format!("  Skipped: {reason}.")),
     }
 
-    say(
-        json,
-        &format!("\n[Step 6/{TOTAL_STEPS}] Registering the Hermes gateway service..."),
-    );
+    out.say(&format!(
+        "\n[Step 6/{TOTAL_STEPS}] Registering the Hermes gateway service..."
+    ));
     if params.install_service {
         run_command(
             &hermes_command(
                 &launcher,
                 &["gateway", "install", "--start-now", "--start-on-login"],
             ),
-            json,
+            &out,
             "Hermes gateway service install",
         )
         .await?;
         if let Err(err) = run_command(
             &hermes_command(&launcher, &["gateway", "status"]),
-            json,
+            &out,
             "Hermes gateway status",
         )
         .await
         {
-            say(
-                json,
-                &format!("  WARNING: {err}. Check it later with `hermes gateway status`."),
-            );
+            out.say(&format!(
+                "  WARNING: {err}. Check it later with `hermes gateway status`."
+            ));
         }
     } else {
-        say(
-            json,
-            "  Skipped (--no-service). Start it manually with `hermes gateway run`.",
-        );
+        out.say("  Skipped (--no-service). Start it manually with `hermes gateway run`.");
     }
 
     let backup_dir = backup_dir.exists().then_some(backup_dir);
@@ -874,7 +1027,9 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
     };
     write_private(&paths.record, &serde_json::to_string_pretty(&record)?)?;
 
-    if json {
+    if out.tx.is_some() {
+        // The web UI renders its own summary from the returned outcome.
+    } else if json {
         let mut payload = serde_json::to_value(&record)?;
         payload["record_path"] = serde_json::json!(paths.record);
         payload["telegram_bot"] = serde_json::json!(telegram_bot);
@@ -887,7 +1042,11 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<()> {
             opencode_summary.as_deref(),
         );
     }
-    Ok(())
+    Ok(LocalInstallOutcome {
+        record: Some(record),
+        telegram_bot,
+        opencode: opencode_summary,
+    })
 }
 
 fn print_install_summary(
@@ -943,6 +1102,16 @@ pub struct HermesLocalUninstallParams {
     pub force: bool,
     pub dry_run: bool,
     pub json: bool,
+    /// Web UI progress channel; the web UI confirms first and passes `yes`.
+    pub progress_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+/// What an uninstall did; `performed` is false for dry runs and cancelled prompts.
+#[cfg_attr(not(feature = "web-ui"), allow(dead_code))]
+pub struct LocalUninstallOutcome {
+    pub performed: bool,
+    pub data_removed: bool,
+    pub warnings: Vec<String>,
 }
 
 /// What uninstall will do for one recorded file.
@@ -970,8 +1139,17 @@ fn file_actions(record: &LocalInstallRecord, keep_data: bool) -> Vec<FileAction>
         .collect()
 }
 
-pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
+pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<LocalUninstallOutcome> {
     let json = params.json;
+    let out = Reporter {
+        json,
+        tx: params.progress_tx.clone(),
+    };
+    let not_performed = LocalUninstallOutcome {
+        performed: false,
+        data_removed: false,
+        warnings: Vec::new(),
+    };
     let platform = LocalPlatform::current()?;
     let paths = LocalPaths::resolve(platform)?;
     let record = load_record(&paths.record)?;
@@ -1009,73 +1187,58 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
         .is_some_and(|record| record.opencode_binary_installed);
     let backup_dir = record.as_ref().and_then(|record| record.backup_dir.clone());
 
-    say(json, "Hermes local uninstall plan:");
+    out.say("Hermes local uninstall plan:");
     match &launcher {
-        Some(launcher) => say(
-            json,
-            &format!(
-                "  Run:       {}  (stops the gateway service, removes code and PATH entries{})",
-                hermes_command(launcher, &hermes_args).display(),
-                if params.keep_data {
-                    ""
-                } else {
-                    ", deletes the data folder"
-                }
-            ),
-        ),
-        None => say(
-            json,
+        Some(launcher) => out.say(&format!(
+            "  Run:       {}  (stops the gateway service, removes code and PATH entries{})",
+            hermes_command(launcher, &hermes_args).display(),
+            if params.keep_data {
+                ""
+            } else {
+                ", deletes the data folder"
+            }
+        )),
+        None => out.say(
             "  Hermes command not found; only the files clawmacdo recorded will be cleaned up.",
         ),
     }
     if params.keep_data {
-        say(
-            json,
-            &format!(
-                "  Keep:      {} (configuration, .env API keys, sessions, memory)",
-                hermes_home.display()
-            ),
-        );
+        out.say(&format!(
+            "  Keep:      {} (configuration, .env API keys, sessions, memory)",
+            hermes_home.display()
+        ));
     } else {
-        say(
-            json,
-            &format!(
-                "  Delete:    {} (configuration, .env API keys, sessions, memory)",
-                hermes_home.display()
-            ),
-        );
+        out.say(&format!(
+            "  Delete:    {} (configuration, .env API keys, sessions, memory)",
+            hermes_home.display()
+        ));
     }
     for action in &actions {
         match action {
-            FileAction::Restore { path, backup } => say(
-                json,
-                &format!("  Restore:   {} from {}", path.display(), backup.display()),
-            ),
-            FileAction::Remove(path) => say(json, &format!("  Delete:    {}", path.display())),
-            FileAction::Keep(path) => say(json, &format!("  Keep:      {}", path.display())),
+            FileAction::Restore { path, backup } => out.say(&format!(
+                "  Restore:   {} from {}",
+                path.display(),
+                backup.display()
+            )),
+            FileAction::Remove(path) => out.say(&format!("  Delete:    {}", path.display())),
+            FileAction::Keep(path) => out.say(&format!("  Keep:      {}", path.display())),
         }
     }
     if remove_opencode {
-        say(
-            json,
-            &format!(
-                "  Delete:    {} (OpenCode CLI installed by clawmacdo)",
-                paths.opencode_dir().display()
-            ),
-        );
+        out.say(&format!(
+            "  Delete:    {} (OpenCode CLI installed by clawmacdo)",
+            paths.opencode_dir().display()
+        ));
     }
     if let Some(dir) = backup_dir.as_ref().filter(|_| !params.keep_data) {
-        say(
-            json,
-            &format!(
-                "  Delete:    {} (config backups, may contain old API keys)",
-                dir.display()
-            ),
-        );
+        out.say(&format!(
+            "  Delete:    {} (config backups, may contain old API keys)",
+            dir.display()
+        ));
     }
 
     if params.dry_run {
-        say(json, "\n[Dry-run] Nothing was changed.");
+        out.say("\n[Dry-run] Nothing was changed.");
         if json {
             let payload = serde_json::json!({
                 "dry_run": true,
@@ -1086,7 +1249,7 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&payload)?);
         }
-        return Ok(());
+        return Ok(not_performed);
     }
     if !params.yes {
         if json {
@@ -1103,7 +1266,7 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
             .interact()?
         {
             println!("Cancelled.");
-            return Ok(());
+            return Ok(not_performed);
         }
     }
 
@@ -1112,21 +1275,10 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
         Some(launcher) => {
             let spec = hermes_command(launcher, &hermes_args);
             let mut command = spec.command();
-            command
-                .env("HERMES_HOME", &hermes_home)
-                .stdin(Stdio::null());
-            if json {
-                command.stdout(Stdio::from(std::io::stderr()));
-            }
-            let status = command
-                .status()
+            command.env("HERMES_HOME", &hermes_home);
+            run_prepared(command, &spec, &out, "`hermes uninstall`")
                 .await
-                .with_context(|| format!("Failed to run {}", spec.display()))?;
-            if !status.success() {
-                bail!(
-                    "`hermes uninstall` failed ({status}). The clawmacdo install record was kept so you can retry."
-                );
-            }
+                .context("The clawmacdo install record was kept so you can retry")?;
             let target = uninstall_target(&hermes_home, params.keep_data);
             if target.exists() {
                 if !safe_to_delete(&target, &paths.home) {
@@ -1187,10 +1339,12 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
     let _ = std::fs::remove_dir(&paths.state_dir);
 
     for warning in &warnings {
-        say(json, &format!("  WARNING: {warning}"));
+        out.say(&format!("  WARNING: {warning}"));
     }
     let data_removed = !params.keep_data && !hermes_home.exists();
-    if json {
+    if out.tx.is_some() {
+        // The web UI reports the outcome itself.
+    } else if json {
         let payload = serde_json::json!({
             "uninstalled": true,
             "hermes_home": hermes_home,
@@ -1212,7 +1366,11 @@ pub async fn uninstall(params: HermesLocalUninstallParams) -> Result<()> {
             hermes_home.display()
         );
     }
-    Ok(())
+    Ok(LocalUninstallOutcome {
+        performed: true,
+        data_removed,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -1417,6 +1575,48 @@ mod tests {
     }
 
     #[test]
+    fn installer_output_is_cleaned_for_the_web_ui() {
+        assert_eq!(clean_output_line("\u{1b}[32m✓ done\u{1b}[0m"), "✓ done");
+        assert_eq!(
+            clean_output_line("10%\r50%\r100% complete  "),
+            "100% complete"
+        );
+        assert_eq!(clean_output_line("plain"), "plain");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn web_progress_streams_child_stdout_and_stderr() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let out = Reporter {
+            json: false,
+            tx: Some(tx),
+        };
+        out.say("[Step 1/6] Checking this computer...");
+        let spec = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo out; echo err >&2".into()],
+        };
+        run_command(&spec, &out, "test command").await.unwrap();
+        let failing = CommandSpec {
+            program: "sh".into(),
+            args: vec!["-c".into(), "exit 3".into()],
+        };
+        let err = run_command(&failing, &out, "failing command")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("failing command failed"));
+        drop(out);
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line);
+        }
+        assert_eq!(lines[0], "[Step 1/6] Checking this computer...");
+        assert!(lines.contains(&"    out".to_string()), "{lines:?}");
+        assert!(lines.contains(&"    err".to_string()), "{lines:?}");
+    }
+
+    #[test]
     fn checksum_mismatch_is_rejected() {
         let expected = hex::encode(Sha256::digest(b"echo hermes"));
         assert!(verify_sha256(b"echo hermes", &expected).is_ok());
@@ -1446,6 +1646,33 @@ mod tests {
             .iter()
             .any(|f| f.contains("/opt/homebrew/bin/hermes")));
         assert!(findings.iter().any(|f| f.contains("ai.hermes.gateway")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_cache_dir_prefers_the_configured_cache() {
+        let home = Path::new("/Users/test");
+        assert_eq!(npm_cache_dir(home, None), home.join(".npm"));
+        assert_eq!(npm_cache_dir(home, Some("".into())), home.join(".npm"));
+        assert_eq!(
+            npm_cache_dir(home, Some("/var/cache/npm".into())),
+            PathBuf::from("/var/cache/npm")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_cache_ownership_check_reports_entries_owned_by_another_user() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = TempDir::new();
+        let cache = dir.0.join("_cacache");
+        std::fs::create_dir_all(cache.join("content-v2/sha512/78/00")).unwrap();
+        std::fs::write(cache.join("content-v2/sha512/78/00/blob"), "x").unwrap();
+        let uid = std::fs::metadata(&dir.0).unwrap().uid();
+
+        assert_eq!(first_foreign_owned(&cache, uid), None);
+        assert_eq!(first_foreign_owned(&cache, uid + 1), Some(cache.clone()));
+        assert_eq!(first_foreign_owned(&dir.0.join("missing"), uid + 1), None);
     }
 
     #[test]

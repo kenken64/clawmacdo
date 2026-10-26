@@ -586,6 +586,10 @@ The install runs in six steps:
 
 The install stops without changes if it finds Hermes configuration, a `hermes` command on
 `PATH`, a gateway service, or an existing clawmacdo record. Prerequisites: on macOS, the Command Line Tools (`xcode-select --install`); on Windows, Windows PowerShell.
+On macOS it also stops without changes if npm's cache (`~/.npm`, or `npm_config_cache`) contains files owned by
+another user (usually root, from an earlier `sudo npm`), because upstream's `npm ci` step fails on them with `EACCES`.
+Fix them with `sudo chown -R $(id -u):$(id -g) ~/.npm`. With `--force`, upstream's installer updates an existing
+checkout in place, so a failure partway leaves that install partly updated; fix the cause and rerun with `--force`.
 
 Sample summary:
 
@@ -607,6 +611,26 @@ Sample summary:
   Dashboard:         hermes dashboard   (local only, on demand)
   Uninstall:         clawmacdo hermes-local-uninstall
 ```
+
+### From the web UI
+
+In `clawmacdo serve`, select the **Hermes Agent — This computer** deploy target. It is available
+only on macOS or Windows when the server listens on localhost, so the install lands on your own
+computer. The form hides the AWS, infrastructure, and dashboard/tunnel fields. It adds a choice of
+where agent commands run and a **Replace an existing Hermes install** option. Progress streams
+through the same six steps as the CLI. The web UI uses two API routes, both behind the normal
+session or API-key authentication:
+
+| Route | Purpose |
+|-------|---------|
+| `GET /api/hermes-local/status` | Returns `{supported, reason, installed, record}`: whether local installs are allowed here, and the clawmacdo install record if one exists. |
+| `POST /api/hermes-local/uninstall` | Body `{"keep_data": false}`. Runs the uninstall without prompting (the browser confirms first) and returns `{ok, message, data_removed, warnings, log}`. Installs without a clawmacdo record are refused. |
+
+Local installs are started with the existing `POST /api/deploy` endpoint, using
+`"target": "hermes-local"` plus `hermes_terminal_backend` (`local` or `docker`) and
+`hermes_local_force`. A second local install or uninstall started while one is running gets
+`409 Conflict`. If the server isn't on localhost, or isn't running macOS or Windows, it returns
+`403 Forbidden`.
 
 ---
 

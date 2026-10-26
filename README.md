@@ -463,12 +463,29 @@ Telegram bot only respond while the computer is awake.
 
 Prerequisites: on macOS, Apple's Command Line Tools for git (`xcode-select --install`); on Windows,
 the built-in Windows PowerShell. The upstream installer downloads its own Python runtime and
-dependencies, so the first install takes several minutes. Intel Macs are not supported.
+dependencies, so the first install takes several minutes. Intel Macs are not supported. On macOS the
+install also stops before changing anything if npm's cache (`~/.npm`, or `npm_config_cache`) holds
+files owned by another user, usually root from an earlier `sudo npm`. Upstream's `npm ci` step fails
+on them with `EACCES`. Fix them with `sudo chown -R $(id -u):$(id -g) ~/.npm` and run the install again.
+
+**From the web UI** (`clawmacdo serve`): choose **Hermes Agent — This computer** as the deploy
+target. It uses the same AI provider and Telegram fields as Lightsail and installs on the computer
+running the web UI. Progress streams live through the same six steps. The form lets you choose
+whether agent commands run on the computer or in a Docker sandbox. Tick **Replace an existing
+Hermes install** to reinstall over an existing install. When clawmacdo has already installed Hermes
+here, a status banner offers **Uninstall** and **Uninstall, keep data**, each confirmed in a dialog.
+The Deployments tab offers the same actions for local installs.
+Local installs are offered only when the web UI listens on localhost (the default
+`CLAWMACDO_BIND=127.0.0.1`) on macOS or Windows. Otherwise the option is disabled with the reason,
+because Hermes would be installed on the server instead of your computer.
 
 **Existing installs are protected.** If Hermes configuration, a `hermes` command on `PATH`, a gateway
 service, or a previous clawmacdo install record is found, `hermes-local-install` stops without
 changing anything. `--force` reinstalls the pinned version and replaces the configuration. Every
-file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`.
+file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`. Upstream's installer
+updates an existing checkout in place to the pinned commit (and migrates its config format), so if
+the installer fails partway, the existing install is left partly updated; fix the reported cause
+and run the install again with `--force` to finish.
 
 **Uninstall** runs upstream's `hermes uninstall --yes --full`, which stops and removes the gateway
 service, the Hermes code, and its `PATH` entries. It also deletes the Hermes data folder unless you
