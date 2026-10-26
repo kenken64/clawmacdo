@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.99.0
 
 ### Added
 - **Local Hermes installs**: `hermes-local-install` installs Hermes Agent natively on macOS (Apple Silicon) or Windows x64 without a cloud instance.
