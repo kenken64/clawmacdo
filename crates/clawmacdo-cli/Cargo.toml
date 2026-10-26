@@ -1,6 +1,6 @@
 [package]
 name = "clawmacdo-cli"
-version = "0.98.1"
+version = "0.98.2"
 edition = "2021"
 description = "CLI and web UI for deploying OpenClaw to multiple clouds and Hermes Agent to AWS Lightsail"
 

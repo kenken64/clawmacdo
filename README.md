@@ -1406,7 +1406,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.98.1
+**Current version:** 0.98.2
 
 
 

@@ -7,7 +7,7 @@ external connectivity, so missing dependencies cannot be downloaded silently.
 
 ## Current published bundle
 
-Clawmacdo **v0.98.1** automatically uses
+Clawmacdo **v0.98.2** automatically uses
 [`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1)
 on Ubuntu 24.04 amd64/arm64. It includes Hermes **0.22.5** at commit
 `bf0203a794a07aac3ff764972ab9087baa4e4f4e`, OpenCode **2.1.3**, and cloudflared **2026.10.3**.
