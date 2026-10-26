@@ -378,9 +378,14 @@ fn replacements(
         }
         pairs.push((old, new));
     };
-    push(manifest.build_hermes_home.clone(), hermes_home.to_string());
-    push(manifest.build_home.clone(), home.to_string());
     let separator = if windows { "\\" } else { "/" };
+    push(manifest.build_hermes_home.clone(), hermes_home.to_string());
+    // Only the build home's dot-folders (.cache, .local, ...), matching the packager: bare
+    // `/Users/runner/...` strings also come from wheels built on other CI runners.
+    push(
+        format!("{}{separator}.", manifest.build_home),
+        format!("{home}{separator}."),
+    );
     push(
         format!("installs{separator}{}", manifest.install_key),
         format!("installs{separator}{new_key}"),
@@ -755,12 +760,14 @@ mod tests {
         );
         let text = "home = /Users/runner/.hermes/tools/python\n\
                     env = /Users/runner/.hermes/installs/0123456789abcdef/venv\n\
-                    cache = /Users/runner/.cache/uv\n";
+                    cache = /Users/runner/.cache/uv\n\
+                    wheel = /Users/runner/work/pillow/src\n";
         assert_eq!(
             replace_all(text, &pairs, false),
             "home = /Users/runner2/.hermes/tools/python\n\
              env = /Users/runner2/.hermes/installs/fedcba9876543210/venv\n\
-             cache = /Users/runner2/.cache/uv\n"
+             cache = /Users/runner2/.cache/uv\n\
+             wheel = /Users/runner/work/pillow/src\n"
         );
         // Installing into the build's own home changes nothing.
         assert!(replacements(

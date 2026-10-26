@@ -1,6 +1,7 @@
 """Exercise a relocated local bundle install: CLI, package doctor and the built dashboard."""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -15,7 +16,9 @@ def leftover_build_paths(hermes_home, manifest):
     """Text files that still name the build's location after relocation."""
     windows = sys.platform == "win32"
     needles = set()
-    for path in (manifest["build_hermes_home"], manifest["build_home"]):
+    # The same paths the packager looks for: this build's Hermes home, and dot-folders
+    # under its home. Wheels built on other CI runners name /Users/runner/work/...
+    for path in (manifest["build_hermes_home"], manifest["build_home"] + os.sep + "."):
         needles.add(path)
         if windows:
             needles |= {path.replace("\\", "/"), path.replace("\\", "\\\\")}

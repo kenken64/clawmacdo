@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import sys
 import tarfile
 
@@ -45,22 +46,37 @@ def include_software(member):
     return member
 
 
-def include_local_software(member):
-    path = Path(member.name)
-    if path.parent == Path("tools") and path.name.startswith((".staging-", "fetch-")):
-        return None
-    if permitted_path(member.name, LOCAL_EXCLUDED):
-        return None
-    if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
-        raise ValueError(f"Unexpected special file: {member.name}")
-    if member.issym() and (member.linkname.startswith("/") or ":" in member.linkname):
-        raise ValueError(f"Absolute symlink cannot be relocated: {member.name} -> {member.linkname}")
-    if not permitted_path(member.name, LOCAL_ROOTS):
-        raise ValueError(f"Not a software path: {member.name}")
-    member.uid = member.gid = 0
-    member.uname = member.gname = ""
-    member.mode &= 0o777
-    return member
+def local_software_filter(hermes_home):
+    """Tar filter for local bundles built in `hermes_home`.
+
+    uv points each venv's `bin/python` at the tool store with an absolute symlink; links
+    into the Hermes home become relative so they survive the move to another home.
+    """
+    home = Path(hermes_home).as_posix().rstrip("/") + "/"
+
+    def include(member):
+        path = Path(member.name)
+        if path.parent == Path("tools") and path.name.startswith((".staging-", "fetch-")):
+            return None
+        if permitted_path(member.name, LOCAL_EXCLUDED):
+            return None
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise ValueError(f"Unexpected special file: {member.name}")
+        if member.issym() and (member.linkname.startswith("/") or ":" in member.linkname):
+            if not member.linkname.startswith(home):
+                raise ValueError(f"Absolute symlink cannot be relocated: {member.name} -> {member.linkname}")
+            target = member.linkname[len(home):]
+            if not permitted_path(target, LOCAL_ROOTS):
+                raise ValueError(f"Symlink leaves the packaged software: {member.name} -> {member.linkname}")
+            member.linkname = posixpath.relpath(target, posixpath.dirname(member.name))
+        if not permitted_path(member.name, LOCAL_ROOTS):
+            raise ValueError(f"Not a software path: {member.name}")
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        member.mode &= 0o777
+        return member
+
+    return include
 
 
 def install_key(project_root):
@@ -165,7 +181,10 @@ def package_local(config, output, platform, report):
     if states != [key]:
         raise SystemExit(f"Expected only installs/{key}, found {states}")
 
-    needles = path_needles(str(hermes_home), windows) + path_needles(str(home), windows)
+    # Only paths of this build: wheels and tools built on other GitHub runners also name
+    # /Users/runner/work/..., which nothing here reads. Dot-folders under the home
+    # (.cache, .local, ...) are where an install could still point outside its home.
+    needles = path_needles(str(hermes_home), windows) + path_needles(str(home) + os.sep + ".", windows)
     relocate, binary = find_path_references(hermes_home, LOCAL_ROOTS, needles, windows)
     report.write_text(
         "Text files rewritten on install:\n" + "".join(f"  {name}\n" for name in relocate)
@@ -177,7 +196,7 @@ def package_local(config, output, platform, report):
     archive = output / filename
     with tarfile.open(archive, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tar:
         for root in LOCAL_ROOTS:
-            tar.add(hermes_home / root, arcname=root, filter=include_local_software)
+            tar.add(hermes_home / root, arcname=root, filter=local_software_filter(hermes_home))
     manifest = {
         "schema": 1, "release": config["release"], "platform": platform, "filename": filename,
         "hermes_commit": config["hermes_commit"], "hermes_version": config["hermes_version"],

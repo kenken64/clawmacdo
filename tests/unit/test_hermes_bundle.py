@@ -175,19 +175,25 @@ class LocalPackageTests(unittest.TestCase):
             launcher.write_text("launcher")
             (home / "hermes-agent/run_agent.py").write_text("print()")
             output = home / "local.tar.gz"
+            include = package.local_software_filter("/Users/runner/.hermes")
             with tarfile.open(output, "w:gz") as archive:
-                archive.add(home / "hermes-agent", arcname="hermes-agent", filter=package.include_local_software)
+                archive.add(home / "hermes-agent", arcname="hermes-agent", filter=include)
             with tarfile.open(output) as archive:
                 names = archive.getnames()
             self.assertIn("hermes-agent/run_agent.py", names)
             self.assertNotIn("hermes-agent/.hermes/bin/hermes", names)
-            link = tarfile.TarInfo("tools/python/bin/python3")
-            link.type, link.linkname = tarfile.SYMTYPE, "/Users/runner/.hermes/tools/python/bin/python3.14"
-            with self.assertRaisesRegex(ValueError, "Absolute symlink"):
-                package.include_local_software(link)
+            # uv's venv python links into the tool store; it becomes relative.
+            link = tarfile.TarInfo("installs/abc/environments/def/venv/bin/python")
+            link.type, link.linkname = tarfile.SYMTYPE, "/Users/runner/.hermes/tools/python-3.14/bin/python3"
+            self.assertEqual(include(link).linkname, "../../../../../../tools/python-3.14/bin/python3")
+            for target in ("/usr/bin/python3", "/Users/runner/.hermes/skills/x"):
+                link = tarfile.TarInfo("tools/python/bin/python3")
+                link.type, link.linkname = tarfile.SYMTYPE, target
+                with self.assertRaisesRegex(ValueError, "symlink|Symlink"):
+                    include(link)
             outside = tarfile.TarInfo("Library/Preferences/x.plist")
             with self.assertRaisesRegex(ValueError, "Not a software path"):
-                package.include_local_software(outside)
+                include(outside)
 
 
 class ParallelInstallTests(unittest.TestCase):
