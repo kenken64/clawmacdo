@@ -163,6 +163,8 @@ struct DeployRequest {
     hermes_terminal_backend: String,
     #[serde(default)]
     hermes_local_force: bool,
+    #[serde(default)]
+    hermes_local_from_source: bool,
 }
 
 #[cfg(feature = "lightsail")]
@@ -1501,6 +1503,8 @@ async fn run_local_hermes_install(
         computer_use: false,
         install_service: true,
         force: req.hermes_local_force,
+        from_source: req.hermes_local_from_source,
+        bundle_archive: None,
         dry_run: is_dry_run(),
         json: false,
         progress_tx: Some(tx.clone()),
@@ -1526,6 +1530,7 @@ async fn run_local_hermes_install(
                 "hermes_home": record.map(|r| r.hermes_home.display().to_string()),
                 "launcher": record.map(|r| r.launcher.display().to_string()),
                 "hermes_version": record.map(|r| r.hermes_version.clone()),
+                "installed_from": record.map(hermes_local::install_source_label),
                 "ai_model": ai_model,
                 "terminal_backend": terminal_backend,
                 "service_installed": record.is_some_and(|r| r.service_installed),
@@ -4557,7 +4562,7 @@ function addDeployCard(initialState) {
         <p class="hermes-cloud-only text-xs text-slate-400">Hermes runs directly on the Lightsail host as the ubuntu user, with the local terminal backend.</p>
         <div class="hermes-local-only hidden space-y-4">
           <div class="hermes-local-status hidden rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100"></div>
-          <p class="text-xs text-slate-400">Installs the pinned Hermes Agent natively on the computer running this web UI and registers its gateway as a background service that starts at login. OpenCode is installed on macOS only.</p>
+          <p class="text-xs text-slate-400">Installs the pinned Hermes Agent on the computer running this web UI from a pre-built, checksum-verified bundle (nothing is compiled here) and registers its gateway as a background service that starts at login. OpenCode is installed on macOS only.</p>
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-1">Agent shell commands</label>
             <select name="hermes_terminal_backend" onchange="syncHermesLocalBackend(this.form)" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
@@ -4569,6 +4574,10 @@ function addDeployCard(initialState) {
           <label class="flex items-center gap-3 cursor-pointer">
             <input type="checkbox" name="hermes_local_force" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
             <span class="text-sm text-slate-300">Replace an existing Hermes install (its configuration is backed up first)</span>
+          </label>
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" name="hermes_local_from_source" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500">
+            <span class="text-sm text-slate-300">Build from source instead (slower; compiles with upstream's installer)</span>
           </label>
         </div>
         <div class="space-y-4">
@@ -5067,6 +5076,7 @@ function panelShowLocalSummary(panel, payload) {
     return;
   }
   add('Hermes', payload.hermes_version);
+  add('Installed from', payload.installed_from);
   add('Command', payload.launcher);
   add('Hermes home', payload.hermes_home);
   add('AI model', payload.ai_model);
@@ -5784,6 +5794,7 @@ async function startDeploy(e, cardNum) {
     hermes_dashboard_password: target === 'hermes' && form.querySelector('[name="hermes_cloudflare_tunnel"]').checked ? val('hermes_dashboard_password') : '',
     hermes_terminal_backend: target === 'hermes-local' ? val('hermes_terminal_backend') : '',
     hermes_local_force: target === 'hermes-local' && form.querySelector('[name="hermes_local_force"]').checked,
+    hermes_local_from_source: target === 'hermes-local' && form.querySelector('[name="hermes_local_from_source"]').checked,
   };
 
   if (target === 'openclaw' && !body.openclaw_version) {
@@ -7272,6 +7283,7 @@ mod tests {
         let req: DeployRequest = serde_json::from_value(base.clone()).unwrap();
         assert!(req.is_hermes_local());
         assert!(!req.hermes_local_force);
+        assert!(!req.hermes_local_from_source);
         let settings = req.hermes_local_settings().unwrap();
         assert_eq!(settings.openrouter_api_key.as_deref(), Some("sk-or-test"));
         assert_eq!(settings.terminal_backend, TerminalBackend::Local);
@@ -7279,8 +7291,10 @@ mod tests {
         let mut docker = base.clone();
         docker["hermes_terminal_backend"] = serde_json::json!("docker");
         docker["hermes_local_force"] = serde_json::json!(true);
+        docker["hermes_local_from_source"] = serde_json::json!(true);
         let req: DeployRequest = serde_json::from_value(docker).unwrap();
         assert!(req.hermes_local_force);
+        assert!(req.hermes_local_from_source);
         assert_eq!(
             req.hermes_local_settings().unwrap().terminal_backend,
             TerminalBackend::Docker

@@ -254,7 +254,7 @@ enum Commands {
         /// Skip installing the OpenCode CLI v2 (macOS only)
         #[arg(long)]
         no_opencode: bool,
-        /// Also install upstream's computer-use driver, which can control this desktop
+        /// Also install upstream's computer-use driver, which can control this desktop (needs --from-source)
         #[arg(long)]
         computer_use: bool,
         /// Do not register the gateway as a background service that starts at login
@@ -263,6 +263,12 @@ enum Commands {
         /// Reinstall over an existing Hermes install (existing config is backed up first)
         #[arg(long)]
         force: bool,
+        /// Build Hermes on this computer with upstream's installer instead of using the pre-built bundle (slower; compiles)
+        #[arg(long)]
+        from_source: bool,
+        /// Install a local pre-built bundle archive (its .json manifest must sit beside it); used by CI
+        #[arg(long, hide = true, value_name = "PATH", conflicts_with = "from_source")]
+        bundle_archive: Option<PathBuf>,
         /// Show the planned downloads, commands and file writes without changing anything
         #[arg(long)]
         dry_run: bool,
@@ -1517,6 +1523,8 @@ async fn async_main() -> anyhow::Result<()> {
             computer_use,
             no_service,
             force,
+            from_source,
+            bundle_archive,
             dry_run,
             json,
         } => {
@@ -1543,6 +1551,8 @@ async fn async_main() -> anyhow::Result<()> {
                 computer_use,
                 install_service: !no_service,
                 force,
+                from_source,
+                bundle_archive,
                 dry_run,
                 json,
                 progress_tx: None,

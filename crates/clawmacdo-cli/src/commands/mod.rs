@@ -21,6 +21,7 @@ pub mod hermes_config;
 #[cfg(feature = "lightsail")]
 pub mod hermes_lightsail;
 pub mod hermes_local;
+mod hermes_local_bundle;
 pub mod hooks;
 #[cfg(feature = "lightsail")]
 pub mod ls_restore;

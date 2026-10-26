@@ -17,6 +17,39 @@ Each architecture has a `hermes-ubuntu-24.04-<arch>.tar.gz` archive, a `.tar.gz.
 and a `.tar.gz.sha256` checksum. The CLI downloads the matching archive automatically during
 `hermes-provision`; users do not need to download or publish an AWS image.
 
+## Local bundles (macOS and Windows)
+
+`hermes-local-install` installs `hermes-macos-arm64.tar.gz` (macOS Apple Silicon) or
+`hermes-windows-x64.tar.gz` (Windows x64) from the same release, so nothing compiles on the user's
+computer. `build-local.sh` and `build-local.ps1` run the pinned upstream installer, with a verified
+checksum, on clean `macos-14` and `windows-latest` runners. `package.py --platform` then packages
+only the Hermes home's software folders: `hermes-agent` (checkout, built dashboard and terminal UI,
+Node dependencies), `tools` (pinned Python, Node, npm and uv) and `installs` (the Python
+environment). Launchers, skills, configuration, `.env`, sessions and logs are never included.
+
+Upstream binds an install to its location in a few places. Its per-install state folder is
+`installs/<sha256(checkout path)[:16]>`, and some text files hold absolute paths. The packager scans
+every packaged file for the build's home paths. It lists the text files in the manifest's
+`relocate` field and writes a report of all matches as the `report-<platform>` workflow artifact.
+Binary matches, such as native debug strings, are reported but not rewritten. On install, the CLI:
+
+1. checks the manifest's release, platform and Hermes commit against its own pins;
+2. checks the archive's size and SHA-256;
+3. extracts only paths inside the three folders (links must stay inside them);
+4. renames the state folder for the new checkout path;
+5. rewrites the listed files in one pass (on Windows this covers backslash, forward-slash and
+   JSON-escaped spellings, ignoring case);
+6. runs upstream's `hermes_cli/source_completion.py` with the bundled Python to publish launchers
+   for the new location.
+
+The `verify-local` job installs each archive with the real CLI into a different home folder,
+with `CC=false`, `CXX=false`, `npm_config_offline=true` and `UV_OFFLINE=1`, so any rebuild or
+package download fails. It then checks that no text file still names the build location. It runs
+`hermes --version` and `hermes pm doctor`, serves the compiled dashboard, and uninstalls.
+
+A missing local asset stops the install with nothing changed. The CLI does not fall back to
+compiling unless the user passes `--from-source`.
+
 ## Contents and installation
 
 This is an Ubuntu-specific bundle installed at `/home/ubuntu`, preserving Hermes's native
