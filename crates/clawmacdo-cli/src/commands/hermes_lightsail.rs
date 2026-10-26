@@ -1,3 +1,10 @@
+use super::hermes_config::{
+    build_bedrock_config_content, build_env_content, build_opencode_config_content,
+    build_openrouter_config_content, has_value, normalized_bedrock_model,
+    normalized_bedrock_region, normalized_openrouter_model, resolve_ai_provider,
+    validate_telegram_bot_token, verify_telegram_bot_token, AiProvider, HermesAgentSettings,
+    TelegramVerification, TerminalBackend,
+};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use chrono::Utc;
@@ -16,10 +23,6 @@ use tokio::sync::mpsc;
 pub type Db = Arc<Mutex<rusqlite::Connection>>;
 
 pub const TOTAL_STEPS: i32 = 8;
-pub const DEFAULT_BEDROCK_REGION: &str = "ap-southeast-1";
-pub const DEFAULT_BEDROCK_MODEL: &str = "amazon.nova-pro-v1:0";
-pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6-sol";
-pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const OS_UPGRADE_START_COMMAND: &str =
     "sudo -n systemctl start --no-block clawmacdo-hermes-os-upgrade.service";
 
@@ -36,12 +39,6 @@ pub struct HermesProvisionResult {
     #[serde(flatten)]
     pub record: DeployRecord,
     pub os_upgrade: OsUpgradeLaunch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AiProvider {
-    OpenRouter,
-    Bedrock,
 }
 
 pub struct HermesLightsailParams {
@@ -74,6 +71,27 @@ pub struct HermesLightsailParams {
     pub db: Option<Db>,
 }
 
+impl HermesLightsailParams {
+    /// Lightsail instances are dedicated hosts, so Hermes always uses the local terminal.
+    fn agent_settings(&self) -> HermesAgentSettings {
+        HermesAgentSettings {
+            env_file: self.env_file.clone(),
+            env_content: self.env_content.clone(),
+            env_vars: self.env_vars.clone(),
+            ai_provider: self.ai_provider.clone(),
+            openrouter_api_key: self.openrouter_api_key.clone(),
+            openrouter_model: self.openrouter_model.clone(),
+            bedrock_api_key: self.bedrock_api_key.clone(),
+            bedrock_region: self.bedrock_region.clone(),
+            bedrock_model: self.bedrock_model.clone(),
+            telegram_bot_token: self.telegram_bot_token.clone(),
+            telegram_allowed_users: self.telegram_allowed_users.clone(),
+            telegram_home_channel: self.telegram_home_channel.clone(),
+            terminal_backend: TerminalBackend::Local,
+        }
+    }
+}
+
 fn record_step_start(db: &Option<Db>, deploy_id: &str, step: i32, label: &str) {
     db::record_step_start(db, deploy_id, step, TOTAL_STEPS, label);
 }
@@ -94,200 +112,13 @@ fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn validate_env_assignment(value: &str) -> Result<()> {
-    let Some((key, _)) = value.split_once('=') else {
-        bail!("--env values must use KEY=VALUE syntax");
-    };
-    if key.is_empty() {
-        bail!("--env key cannot be empty");
-    }
-    let mut chars = key.chars();
-    let first = chars.next().unwrap_or_default();
-    if !(first == '_' || first.is_ascii_alphabetic())
-        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-    {
-        bail!("Invalid env key '{key}'. Use shell-style names like OPENAI_API_KEY.");
-    }
-    Ok(())
-}
-
-fn append_env_assignment(out: &mut String, key: &str, value: &str) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(key);
-    out.push('=');
-    out.push_str(trimmed);
-    out.push('\n');
-}
-
-fn normalize_csv(value: &str) -> Option<String> {
-    let normalized = value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(",");
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
-fn first_csv_value(value: &str) -> Option<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .find(|part| !part.is_empty())
-        .map(str::to_string)
-}
-
-fn normalized_bedrock_region(params: &HermesLightsailParams) -> String {
-    let region = params.bedrock_region.trim();
-    if region.is_empty() {
-        DEFAULT_BEDROCK_REGION.to_string()
-    } else {
-        region.to_string()
-    }
-}
-
-fn normalized_bedrock_model(params: &HermesLightsailParams) -> String {
-    let model = params.bedrock_model.trim();
-    if model.is_empty() {
-        DEFAULT_BEDROCK_MODEL.to_string()
-    } else {
-        model.to_string()
-    }
-}
-
-fn normalized_openrouter_model(params: &HermesLightsailParams) -> String {
-    let model = params.openrouter_model.trim();
-    if model.is_empty() {
-        DEFAULT_OPENROUTER_MODEL.to_string()
-    } else {
-        model.to_string()
-    }
-}
-
-fn has_value(value: Option<&str>) -> bool {
-    value.map(str::trim).is_some_and(|value| !value.is_empty())
-}
-
-/// Validate a Telegram bot token of the form `<bot_id>:<secret>`.
-fn validate_telegram_bot_token(token: &str) -> Result<()> {
-    let token = token.trim();
-    let Some((bot_id, secret)) = token.split_once(':') else {
-        bail!("Invalid Telegram bot token: expected <bot_id>:<secret> from @BotFather.");
-    };
-    if bot_id.is_empty() || !bot_id.chars().all(|ch| ch.is_ascii_digit()) {
-        bail!("Invalid Telegram bot token: the bot ID before ':' must be numeric.");
-    }
-    if secret.is_empty()
-        || !secret
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        bail!("Invalid Telegram bot token: the secret after ':' contains unexpected characters.");
-    }
-    Ok(())
-}
-
-enum TelegramVerification {
-    Verified(String),
-    Unverified(String),
-}
-
-/// Call Telegram's `getMe` endpoint to confirm the bot token is live.
-///
-/// An invalid token is a hard error. Network failures return `Unverified` so
-/// provisioning can still proceed and be verified later.
-async fn verify_telegram_bot_token(token: &str) -> Result<TelegramVerification> {
-    validate_telegram_bot_token(token)?;
-    let url = format!("https://api.telegram.org/bot{}/getMe", token.trim());
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
-        Ok(client) => client,
-        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
-    };
-    let response = match client.get(&url).send().await {
-        Ok(response) => response,
-        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
-    };
-    let payload: serde_json::Value = match response.json().await {
-        Ok(payload) => payload,
-        Err(err) => return Ok(TelegramVerification::Unverified(err.to_string())),
-    };
-    if payload.get("ok").and_then(|value| value.as_bool()) == Some(true) {
-        let username = payload
-            .pointer("/result/username")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        Ok(TelegramVerification::Verified(username))
-    } else {
-        let description = payload
-            .get("description")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Telegram rejected the bot token");
-        bail!("Telegram bot token verification failed: {description}");
-    }
-}
-
-/// Resolve which AI provider to configure.
-///
-/// An explicit `--ai-provider` wins. Otherwise OpenRouter is preferred when
-/// an OpenRouter key is supplied, falling back to Bedrock for backwards
-/// compatibility with existing `--bedrock-api-key` deployments.
-fn resolve_ai_provider(params: &HermesLightsailParams) -> Result<AiProvider> {
-    let requested = params.ai_provider.trim().to_ascii_lowercase();
-    let has_openrouter = has_value(params.openrouter_api_key.as_deref());
-    let has_bedrock = has_value(params.bedrock_api_key.as_deref());
-
-    match requested.as_str() {
-        "openrouter" => {
-            if !has_openrouter {
-                bail!(
-                    "OpenRouter provider selected but no API key was supplied. \
-                     Pass --openrouter-api-key or set OPENROUTER_API_KEY."
-                );
-            }
-            Ok(AiProvider::OpenRouter)
-        }
-        "bedrock" | "aws-bedrock" => {
-            if !has_bedrock {
-                bail!(
-                    "Bedrock provider selected but no API key was supplied. \
-                     Pass --bedrock-api-key or set AWS_BEARER_TOKEN_BEDROCK."
-                );
-            }
-            Ok(AiProvider::Bedrock)
-        }
-        "" | "auto" => {
-            if has_openrouter {
-                Ok(AiProvider::OpenRouter)
-            } else if has_bedrock {
-                Ok(AiProvider::Bedrock)
-            } else {
-                bail!(
-                    "AI provider credentials required. Set OPENROUTER_API_KEY \
-                     (recommended) or AWS_BEARER_TOKEN_BEDROCK."
-                );
-            }
-        }
-        other => bail!("Unsupported --ai-provider '{other}'. Use openrouter or bedrock."),
-    }
+fn build_aws_cli_config_content(region: &str) -> String {
+    format!("[default]\nregion = {region}\noutput = json\n")
 }
 
 /// Validate web requests before a deployment job or cloud resource is created.
 pub(super) fn validate_configuration(params: &HermesLightsailParams) -> Result<()> {
-    resolve_ai_provider(params)?;
+    resolve_ai_provider(&params.agent_settings())?;
     dashboard_tunnel(params)?;
     if let Some(token) = params
         .telegram_bot_token
@@ -418,129 +249,6 @@ UNIT
 systemctl daemon-reload
 "#
     )
-}
-
-fn bedrock_mantle_base_url(region: &str) -> String {
-    format!("https://bedrock-mantle.{region}.api.aws/v1")
-}
-
-fn yaml_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-fn build_bedrock_config_content(region: &str, model: &str) -> String {
-    let base_url = bedrock_mantle_base_url(region);
-    format!(
-        "model:\n  default: {}\n  provider: custom\n  base_url: {}\nbedrock:\n  region: {}\nterminal:\n  backend: local\n",
-        yaml_single_quote(model),
-        yaml_single_quote(&base_url),
-        yaml_single_quote(region),
-    )
-}
-
-fn build_openrouter_config_content(model: &str) -> String {
-    format!(
-        "model:\n  default: {}\n  provider: openrouter\n  base_url: {}\nterminal:\n  backend: local\n",
-        yaml_single_quote(model),
-        yaml_single_quote(OPENROUTER_BASE_URL),
-    )
-}
-
-/// OpenCode V2 global config that routes the CLI through OpenRouter using the
-/// same model as Hermes.
-fn build_opencode_config_content(model: &str) -> String {
-    let payload = serde_json::json!({
-        "$schema": "https://opencode.ai/config.json",
-        "model": format!("openrouter/{model}"),
-        "providers": {
-            "openrouter": {
-                "env": ["OPENROUTER_API_KEY"],
-                "settings": {
-                    "apiKey": "{file:~/.config/opencode/openrouter-api-key}",
-                },
-            },
-        },
-    });
-    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
-}
-
-fn build_aws_cli_config_content(region: &str) -> String {
-    format!("[default]\nregion = {region}\noutput = json\n")
-}
-
-fn build_env_content(params: &HermesLightsailParams) -> Result<String> {
-    let mut chunks = Vec::new();
-
-    if let Some(path) = params.env_file.as_deref() {
-        let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read env file {}", path.display()))?;
-        chunks.push(contents.trim_end().to_string());
-    }
-
-    if let Some(contents) = params.env_content.as_deref() {
-        let trimmed = contents.trim_end();
-        if !trimmed.is_empty() {
-            chunks.push(trimmed.to_string());
-        }
-    }
-
-    for item in &params.env_vars {
-        let trimmed = item.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        validate_env_assignment(trimmed)?;
-        chunks.push(trimmed.to_string());
-    }
-
-    let mut env = chunks
-        .into_iter()
-        .filter(|chunk| !chunk.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !env.is_empty() && !env.ends_with('\n') {
-        env.push('\n');
-    }
-    match resolve_ai_provider(params)? {
-        AiProvider::OpenRouter => {
-            if let Some(api_key) = params.openrouter_api_key.as_deref() {
-                append_env_assignment(&mut env, "OPENROUTER_API_KEY", api_key);
-            }
-        }
-        AiProvider::Bedrock => {
-            if let Some(api_key) = params.bedrock_api_key.as_deref() {
-                let region = normalized_bedrock_region(params);
-                let base_url = bedrock_mantle_base_url(&region);
-                append_env_assignment(&mut env, "AWS_BEARER_TOKEN_BEDROCK", api_key);
-                append_env_assignment(&mut env, "OPENAI_API_KEY", api_key);
-                append_env_assignment(&mut env, "OPENAI_BASE_URL", &base_url);
-                append_env_assignment(&mut env, "AWS_REGION", &region);
-                append_env_assignment(&mut env, "AWS_DEFAULT_REGION", &region);
-            }
-        }
-    }
-    if let Some(token) = params.telegram_bot_token.as_deref() {
-        append_env_assignment(&mut env, "TELEGRAM_BOT_TOKEN", token);
-    }
-    let allowed_users = params
-        .telegram_allowed_users
-        .as_deref()
-        .and_then(normalize_csv);
-    if let Some(users) = allowed_users.as_deref() {
-        append_env_assignment(&mut env, "TELEGRAM_ALLOWED_USERS", users);
-    }
-    let home_channel = params
-        .telegram_home_channel
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| allowed_users.as_deref().and_then(first_csv_value));
-    if let Some(channel) = home_channel.as_deref() {
-        append_env_assignment(&mut env, "TELEGRAM_HOME_CHANNEL", channel);
-    }
-    append_env_assignment(&mut env, "TERMINAL_ENV", "local");
-    Ok(env)
 }
 
 fn build_opencode_install_block(api_key: Option<&str>, config_content: &str) -> String {
@@ -970,7 +678,8 @@ pub async fn run(params: HermesLightsailParams) -> Result<HermesProvisionResult>
             }
         }
     }
-    let ai_provider = match resolve_ai_provider(&params) {
+    let settings = params.agent_settings();
+    let ai_provider = match resolve_ai_provider(&settings) {
         Ok(provider) => provider,
         Err(err) => {
             record_step_failed(step_db, &deploy_id, 1, &err.to_string());
@@ -978,22 +687,22 @@ pub async fn run(params: HermesLightsailParams) -> Result<HermesProvisionResult>
         }
     };
     // Hermes and the OpenCode CLI both use this single resolved OpenRouter model.
-    let openrouter_model = normalized_openrouter_model(&params);
-    let bedrock_region = normalized_bedrock_region(&params);
-    let bedrock_model = normalized_bedrock_model(&params);
+    let openrouter_model = normalized_openrouter_model(&settings);
+    let bedrock_region = normalized_bedrock_region(&settings);
+    let bedrock_model = normalized_bedrock_model(&settings);
     let (config_content, aws_cli_config_content, ai_summary) = match ai_provider {
         AiProvider::OpenRouter => (
-            build_openrouter_config_content(&openrouter_model),
+            build_openrouter_config_content(&openrouter_model, TerminalBackend::Local),
             String::new(),
             format!("OpenRouter {openrouter_model}"),
         ),
         AiProvider::Bedrock => (
-            build_bedrock_config_content(&bedrock_region, &bedrock_model),
+            build_bedrock_config_content(&bedrock_region, &bedrock_model, TerminalBackend::Local),
             build_aws_cli_config_content(&bedrock_region),
             format!("AWS Bedrock {bedrock_model} ({bedrock_region})"),
         ),
     };
-    let env_content = build_env_content(&params)?;
+    let env_content = build_env_content(&settings)?;
     let opencode_install_block = if params.install_opencode {
         build_opencode_install_block(
             params.openrouter_api_key.as_deref(),
@@ -1259,7 +968,20 @@ pub async fn run(params: HermesLightsailParams) -> Result<HermesProvisionResult>
 
 #[cfg(test)]
 mod tests {
+    use super::super::hermes_config::{
+        DEFAULT_BEDROCK_MODEL, DEFAULT_BEDROCK_REGION, DEFAULT_OPENROUTER_MODEL,
+    };
     use super::*;
+
+    #[test]
+    fn agent_settings_pin_the_local_terminal() {
+        let params = openrouter_params("", Some("sk-or-test"), None);
+        let settings = params.agent_settings();
+        assert_eq!(settings.terminal_backend, TerminalBackend::Local);
+        assert!(build_env_content(&settings)
+            .unwrap()
+            .contains("TERMINAL_ENV=local\n"));
+    }
 
     #[test]
     fn background_upgrade_is_prepared_without_starting_during_bootstrap() {
@@ -1308,18 +1030,10 @@ mod tests {
     }
 
     #[test]
-    fn validates_repeated_env_assignments() {
-        assert!(validate_env_assignment("OPENAI_API_KEY=sk-test").is_ok());
-        assert!(validate_env_assignment("_CUSTOM=value").is_ok());
-        assert!(validate_env_assignment("1BAD=value").is_err());
-        assert!(validate_env_assignment("NO_EQUALS").is_err());
-    }
-
-    #[test]
     fn user_data_installs_native_services_without_docker() {
         let user_data = generate_user_data(
             "TELEGRAM_BOT_TOKEN=test\n",
-            &build_openrouter_config_content(DEFAULT_OPENROUTER_MODEL),
+            &build_openrouter_config_content(DEFAULT_OPENROUTER_MODEL, TerminalBackend::Local),
             "",
             &build_opencode_install_block(
                 Some("sk-or-test"),
@@ -1471,60 +1185,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn build_env_content_authorizes_telegram_users_directly() {
-        let params = HermesLightsailParams {
-            deploy_id: None,
-            customer_email: "test@example.com".to_string(),
-            name: None,
-            aws_access_key_id: String::new(),
-            aws_secret_access_key: String::new(),
-            aws_region: "ap-southeast-1".to_string(),
-            size: None,
-            env_file: None,
-            env_content: Some("NOUS_API_KEY=nous-test".to_string()),
-            env_vars: vec!["OPENROUTER_API_KEY=or-test".to_string()],
-            ai_provider: String::new(),
-            openrouter_api_key: None,
-            openrouter_model: DEFAULT_OPENROUTER_MODEL.to_string(),
-            bedrock_api_key: Some("bedrock-test".to_string()),
-            bedrock_region: DEFAULT_BEDROCK_REGION.to_string(),
-            bedrock_model: DEFAULT_BEDROCK_MODEL.to_string(),
-            install_opencode: true,
-            telegram_bot_token: Some("123456:abc".to_string()),
-            telegram_allowed_users: Some("111, 222".to_string()),
-            telegram_home_channel: None,
-            dashboard: false,
-            cloudflare_tunnel: false,
-            dashboard_password: None,
-            dry_run: true,
-            json: false,
-            progress_tx: None,
-            db: None,
-        };
-
-        let env = build_env_content(&params).unwrap();
-
-        assert!(env.contains("NOUS_API_KEY=nous-test\n"));
-        assert!(env.contains("OPENROUTER_API_KEY=or-test\n"));
-        assert!(env.contains("AWS_BEARER_TOKEN_BEDROCK=bedrock-test\n"));
-        assert!(env.contains("OPENAI_API_KEY=bedrock-test\n"));
-        assert!(env.contains("OPENAI_BASE_URL=https://bedrock-mantle.ap-southeast-1.api.aws/v1\n"));
-        assert!(env.contains("AWS_REGION=ap-southeast-1\n"));
-        assert!(env.contains("TELEGRAM_BOT_TOKEN=123456:abc\n"));
-        assert!(env.contains("TELEGRAM_ALLOWED_USERS=111,222\n"));
-        assert!(env.contains("TELEGRAM_HOME_CHANNEL=111\n"));
-    }
-
-    #[test]
-    fn bedrock_config_sets_nova_pro_in_singapore() {
-        let config = build_bedrock_config_content(DEFAULT_BEDROCK_REGION, DEFAULT_BEDROCK_MODEL);
-        assert!(config.contains("default: 'amazon.nova-pro-v1:0'"));
-        assert!(config.contains("provider: custom"));
-        assert!(config.contains("base_url: 'https://bedrock-mantle.ap-southeast-1.api.aws/v1'"));
-        assert!(config.contains("region: 'ap-southeast-1'"));
-    }
-
     fn openrouter_params(
         ai_provider: &str,
         openrouter_api_key: Option<&str>,
@@ -1559,75 +1219,5 @@ mod tests {
             progress_tx: None,
             db: None,
         }
-    }
-
-    #[test]
-    fn auto_provider_prefers_openrouter_when_key_present() {
-        let params = openrouter_params("", Some("sk-or-test"), Some("bedrock-test"));
-        assert_eq!(
-            resolve_ai_provider(&params).unwrap(),
-            AiProvider::OpenRouter
-        );
-
-        let params = openrouter_params("", None, Some("bedrock-test"));
-        assert_eq!(resolve_ai_provider(&params).unwrap(), AiProvider::Bedrock);
-    }
-
-    #[test]
-    fn explicit_provider_requires_its_key() {
-        let params = openrouter_params("openrouter", None, Some("bedrock-test"));
-        assert!(resolve_ai_provider(&params).is_err());
-
-        let params = openrouter_params("bedrock", Some("sk-or-test"), None);
-        assert!(resolve_ai_provider(&params).is_err());
-    }
-
-    #[test]
-    fn openrouter_config_and_env_use_gpt_6_sol() {
-        let params = openrouter_params("", Some("sk-or-test"), None);
-        let env = build_env_content(&params).unwrap();
-        assert!(env.contains("OPENROUTER_API_KEY=sk-or-test\n"));
-        assert!(!env.contains("AWS_BEARER_TOKEN_BEDROCK"));
-
-        let config = build_openrouter_config_content(DEFAULT_OPENROUTER_MODEL);
-        assert!(config.contains("default: 'openai/gpt-6-sol'"));
-        assert!(config.contains("provider: openrouter"));
-        assert!(config.contains("base_url: 'https://openrouter.ai/api/v1'"));
-    }
-
-    #[test]
-    fn opencode_config_uses_openrouter_model() {
-        let config = build_opencode_config_content(DEFAULT_OPENROUTER_MODEL);
-        let value: serde_json::Value = serde_json::from_str(&config).unwrap();
-        assert_eq!(value["model"], "openrouter/openai/gpt-6-sol");
-        assert_eq!(
-            value["providers"]["openrouter"]["env"][0],
-            "OPENROUTER_API_KEY"
-        );
-    }
-
-    #[test]
-    fn hermes_and_opencode_share_the_same_openrouter_model() {
-        let mut params = openrouter_params("", Some("sk-or-test"), None);
-        params.openrouter_model = "openai/gpt-6.1-sol".to_string();
-        let model = normalized_openrouter_model(&params);
-
-        let hermes = build_openrouter_config_content(&model);
-        let opencode: serde_json::Value =
-            serde_json::from_str(&build_opencode_config_content(&model)).unwrap();
-
-        assert!(hermes.contains("provider: openrouter"));
-        assert!(hermes.contains("default: 'openai/gpt-6.1-sol'"));
-        assert_eq!(opencode["model"], "openrouter/openai/gpt-6.1-sol");
-    }
-
-    #[test]
-    fn validates_telegram_bot_tokens() {
-        assert!(validate_telegram_bot_token("123456789:ABCdefGHIjklMNOpqrSTUvwxYZ").is_ok());
-        assert!(validate_telegram_bot_token("123456789:abc-def_123").is_ok());
-        assert!(validate_telegram_bot_token("").is_err());
-        assert!(validate_telegram_bot_token("not-a-token").is_err());
-        assert!(validate_telegram_bot_token("abc:secret").is_err());
-        assert!(validate_telegram_bot_token("123:bad secret").is_err());
     }
 }

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Local Hermes installs**: `hermes-local-install` installs Hermes Agent natively on macOS (Apple Silicon) or Windows x64 without a cloud instance.
+  - It downloads upstream's installer at the same pinned commit as the Lightsail bundle, verifies its SHA-256 (the Windows `install.ps1` checksum is now pinned in `scripts/hermes-bundle/bundle.json`), and runs it non-interactively.
+  - It writes the same AI provider, model, Telegram, and `.env` settings as `hermes-provision`, installs the OpenCode CLI on macOS, and registers the gateway as a launchd LaunchAgent or Windows Scheduled Task that starts at login.
+  - The local terminal backend prints a warning. `--terminal-backend docker` sandboxes agent commands, and the computer-use driver is skipped unless `--computer-use` is passed.
+  - Existing Hermes installs are detected and left untouched unless `--force` is passed; overwritten files are backed up first.
+- **Local Hermes uninstall**: `hermes-local-uninstall` removes a clawmacdo-made local install. It runs upstream's `hermes uninstall`, removes the OpenCode files clawmacdo added, and deletes the Hermes data folder after confirmation unless `--keep-data` is passed. It refuses to act on installs clawmacdo did not create unless `--force` is passed.
+- A manually triggered `hermes-local-smoke.yml` workflow runs install/uninstall round trips on clean macOS and Windows runners.
+
+### Changed
+- The Hermes AI, Telegram, and `.env` configuration code moved into a shared module used by both Lightsail and local installs. Lightsail provisioning output is unchanged.
+
 ## v0.98.2
 
 ### Fixed

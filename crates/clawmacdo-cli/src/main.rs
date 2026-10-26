@@ -212,6 +212,83 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Install Hermes Agent natively on this computer (macOS or Windows)
+    #[command(name = "hermes-local-install")]
+    HermesLocalInstall {
+        /// Path to a Hermes .env file to merge into the local configuration
+        #[arg(long)]
+        env_file: Option<PathBuf>,
+        /// Extra KEY=VALUE env var to append; repeat for multiple values
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
+        /// AI provider for Hermes: openrouter or bedrock (default: auto)
+        #[arg(long, default_value = "")]
+        ai_provider: String,
+        /// OpenRouter API key (configures Hermes and OpenCode CLI)
+        #[arg(long, env = "OPENROUTER_API_KEY")]
+        openrouter_api_key: Option<String>,
+        /// OpenRouter model ID for Hermes and OpenCode
+        #[arg(long, default_value = "openai/gpt-6-sol")]
+        openrouter_model: String,
+        /// AWS Bedrock API key for Hermes Nova Pro
+        #[arg(long, env = "AWS_BEARER_TOKEN_BEDROCK")]
+        bedrock_api_key: Option<String>,
+        /// AWS Bedrock region for Hermes AI model
+        #[arg(long, default_value = "ap-southeast-1")]
+        bedrock_region: String,
+        /// AWS Bedrock model ID for Hermes AI model
+        #[arg(long, default_value = "amazon.nova-pro-v1:0")]
+        bedrock_model: String,
+        /// Telegram bot token for the Hermes gateway
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
+        telegram_bot_token: Option<String>,
+        /// Telegram user IDs authorized to chat directly without pairing, comma-separated
+        #[arg(long, env = "TELEGRAM_ALLOWED_USERS")]
+        telegram_allowed_users: Option<String>,
+        /// Telegram home channel/user ID for notifications
+        #[arg(long, env = "TELEGRAM_HOME_CHANNEL")]
+        telegram_home_channel: Option<String>,
+        /// Where agent shell commands run: local (this computer) or docker (sandbox)
+        #[arg(long, default_value = "local")]
+        terminal_backend: String,
+        /// Skip installing the OpenCode CLI v2 (macOS only)
+        #[arg(long)]
+        no_opencode: bool,
+        /// Also install upstream's computer-use driver, which can control this desktop
+        #[arg(long)]
+        computer_use: bool,
+        /// Do not register the gateway as a background service that starts at login
+        #[arg(long)]
+        no_service: bool,
+        /// Reinstall over an existing Hermes install (existing config is backed up first)
+        #[arg(long)]
+        force: bool,
+        /// Show the planned downloads, commands and file writes without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output structured JSON (progress goes to stderr)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a Hermes Agent that hermes-local-install set up on this computer
+    #[command(name = "hermes-local-uninstall")]
+    HermesLocalUninstall {
+        /// Keep the Hermes data folder (configuration, .env API keys, sessions, memory)
+        #[arg(long)]
+        keep_data: bool,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+        /// Run `hermes uninstall` even without a clawmacdo install record
+        #[arg(long)]
+        force: bool,
+        /// Show what would be removed without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Output structured JSON (requires --yes unless --dry-run)
+        #[arg(long)]
+        json: bool,
+    },
     /// Track a deployment's progress
     Track {
         /// Deploy ID, hostname, or IP address
@@ -1423,6 +1500,70 @@ async fn async_main() -> anyhow::Result<()> {
         })
         .await
         .map(|_| ()),
+        Commands::HermesLocalInstall {
+            env_file,
+            env_vars,
+            ai_provider,
+            openrouter_api_key,
+            openrouter_model,
+            bedrock_api_key,
+            bedrock_region,
+            bedrock_model,
+            telegram_bot_token,
+            telegram_allowed_users,
+            telegram_home_channel,
+            terminal_backend,
+            no_opencode,
+            computer_use,
+            no_service,
+            force,
+            dry_run,
+            json,
+        } => {
+            let settings = commands::hermes_config::HermesAgentSettings {
+                env_file,
+                env_content: None,
+                env_vars,
+                ai_provider,
+                openrouter_api_key,
+                openrouter_model,
+                bedrock_api_key,
+                bedrock_region,
+                bedrock_model,
+                telegram_bot_token,
+                telegram_allowed_users,
+                telegram_home_channel,
+                terminal_backend: commands::hermes_config::TerminalBackend::parse(
+                    &terminal_backend,
+                )?,
+            };
+            commands::hermes_local::install(commands::hermes_local::HermesLocalInstallParams {
+                settings,
+                install_opencode: !no_opencode,
+                computer_use,
+                install_service: !no_service,
+                force,
+                dry_run,
+                json,
+            })
+            .await
+        }
+        Commands::HermesLocalUninstall {
+            keep_data,
+            yes,
+            force,
+            dry_run,
+            json,
+        } => {
+            commands::hermes_local::uninstall(commands::hermes_local::HermesLocalUninstallParams {
+                keep_data,
+                yes,
+                force,
+                dry_run,
+                json,
+            })
+            .await
+        }
         Commands::Track {
             query,
             follow,

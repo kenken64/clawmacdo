@@ -286,6 +286,7 @@ dependencies = [
  "clawmacdo-ui",
  "console",
  "dialoguer",
+ "dirs",
  "dotenvy",
  "flate2",
  "hex",

@@ -1,0 +1,135 @@
+name: Hermes local install smoke test
+
+# Real install/uninstall round trips on clean runners. Manual only: each run
+# downloads Hermes and its dependencies and takes several minutes per OS.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      CLAWMACDO: ./target/release/clawmacdo
+      OPENROUTER_API_KEY: sk-or-ci-dummy-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: hermes-local-smoke
+
+      - name: Build CLI (minimal features)
+        run: cargo build --release --bin clawmacdo --no-default-features --features minimal
+
+      - name: Dry run plans without changing anything
+        run: |
+          "$CLAWMACDO" hermes-local-install --dry-run
+          test ! -e "$HOME/.clawmacdo/hermes-local.json"
+
+      - name: Uninstall refuses without a clawmacdo record
+        run: |
+          if "$CLAWMACDO" hermes-local-uninstall --yes; then
+            echo "uninstall should refuse without a record" >&2
+            exit 1
+          fi
+
+      - name: Install Hermes locally
+        run: |
+          "$CLAWMACDO" hermes-local-install
+
+      - name: Second install refuses without --force
+        run: |
+          if "$CLAWMACDO" hermes-local-install; then
+            echo "reinstall should refuse without --force" >&2
+            exit 1
+          fi
+
+      - name: Verify install (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          "$HOME/.local/bin/hermes" --version
+          grep -q '^OPENROUTER_API_KEY=sk-or-ci-dummy-key$' "$HOME/.hermes/.env"
+          grep -q '^TERMINAL_ENV=local$' "$HOME/.hermes/.env"
+          grep -q 'backend: local' "$HOME/.hermes/config.yaml"
+          test "$(stat -f '%Lp' "$HOME/.hermes/.env")" = 600
+          launchctl print "gui/$(id -u)/ai.hermes.gateway" >/dev/null
+          "$HOME/.opencode/bin/opencode" --version
+          test -f "$HOME/.config/opencode/opencode.json"
+          test -f "$HOME/.clawmacdo/hermes-local.json"
+
+      - name: Verify install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $home_dir = Join-Path $env:LOCALAPPDATA 'hermes'
+          $launcher = @('hermes.exe', 'hermes.cmd') | ForEach-Object { Join-Path $home_dir "bin\$_" } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $launcher) { throw "hermes launcher missing under $home_dir\bin" }
+          & $launcher --version
+          if ($LASTEXITCODE) { throw "hermes --version failed" }
+          if (-not (Select-String -Path (Join-Path $home_dir '.env') -Pattern '^OPENROUTER_API_KEY=sk-or-ci-dummy-key$' -Quiet)) { throw '.env missing OpenRouter key' }
+          if (-not (Select-String -Path (Join-Path $home_dir 'config.yaml') -Pattern 'backend: local' -Quiet)) { throw 'config.yaml missing local backend' }
+          schtasks /Query /TN Hermes_Gateway
+          if ($LASTEXITCODE) { throw 'Hermes_Gateway scheduled task missing' }
+          if (-not (Test-Path (Join-Path $HOME '.clawmacdo\hermes-local.json'))) { throw 'install record missing' }
+
+      - name: Uninstall everything
+        run: |
+          "$CLAWMACDO" hermes-local-uninstall --yes
+
+      - name: Verify full removal (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          test ! -e "$HOME/.hermes/.env"
+          test ! -e "$HOME/.hermes/config.yaml"
+          test ! -e "$HOME/.local/bin/hermes"
+          test ! -e "$HOME/.opencode"
+          test ! -e "$HOME/.config/opencode/openrouter-api-key"
+          test ! -e "$HOME/.clawmacdo/hermes-local.json"
+          if launchctl print "gui/$(id -u)/ai.hermes.gateway" >/dev/null 2>&1; then
+            echo "gateway LaunchAgent still loaded" >&2
+            exit 1
+          fi
+
+      - name: Verify full removal (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $home_dir = Join-Path $env:LOCALAPPDATA 'hermes'
+          foreach ($name in '.env', 'config.yaml', 'hermes-agent') {
+            if (Test-Path (Join-Path $home_dir $name)) { throw "$name still present" }
+          }
+          schtasks /Query /TN Hermes_Gateway 2>$null
+          if (-not $LASTEXITCODE) { throw 'Hermes_Gateway scheduled task still registered' }
+          if (Test-Path (Join-Path $HOME '.clawmacdo\hermes-local.json')) { throw 'install record still present' }
+          $global:LASTEXITCODE = 0
+
+      - name: Reinstall, then uninstall keeping data
+        run: |
+          "$CLAWMACDO" hermes-local-install --no-opencode
+          "$CLAWMACDO" hermes-local-uninstall --yes --keep-data
+
+      - name: Verify data was kept
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            hermes_home="$(cygpath -u "$LOCALAPPDATA")/hermes"
+          else
+            hermes_home="$HOME/.hermes"
+          fi
+          grep -q '^OPENROUTER_API_KEY=sk-or-ci-dummy-key$' "$hermes_home/.env"
+          test ! -e "$HOME/.clawmacdo/hermes-local.json"

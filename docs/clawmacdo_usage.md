@@ -550,6 +550,89 @@ See the [README walkthrough](../README.md#provision-hermes-agent-on-aws-lightsai
 
 ---
 
+## hermes-local-install
+
+Install Hermes Agent natively on this computer: macOS (Apple Silicon) or Windows x64. No cloud
+instance is created. The command accepts the same AI provider, model, `--env-file`/`--env`, and
+Telegram options as `hermes-provision`, and is included in minimal builds.
+
+```bash
+export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
+
+clawmacdo hermes-local-install \
+  --telegram-bot-token "<YOUR_TELEGRAM_BOT_TOKEN>" \
+  --telegram-allowed-users 123456789
+
+# Preview without changing anything (add --json for machine-readable output)
+clawmacdo hermes-local-install --dry-run
+```
+
+| Option | Default | Purpose |
+|--------|---------|---------|
+| `--terminal-backend local\|docker` | `local` | Where agent shell commands run. `local` runs them on this computer with your permissions (a warning is printed); `docker` uses upstream's sandbox image and requires Docker Desktop to be running. |
+| `--no-opencode` | off | Skip the OpenCode CLI v2 (installed on macOS only, and only with an OpenRouter key). |
+| `--computer-use` | off | Also install upstream's computer-use driver, which can control your desktop. |
+| `--no-service` | off | Do not register the gateway login service; run `hermes gateway run` yourself. |
+| `--force` | off | Reinstall over an existing Hermes install. Overwritten files are backed up under `~/.clawmacdo/hermes-local/`. |
+| `--dry-run` / `--json` | off | Print the plan only, or emit JSON on stdout while progress goes to stderr. |
+
+The install runs in six steps:
+1. Checks the computer.
+2. Downloads the pinned upstream installer (`install.sh` or `install.ps1` at Hermes 0.22.5's commit) and verifies its SHA-256.
+3. Runs the installer non-interactively.
+4. Writes `.env` and `config.yaml` to `~/.hermes` (macOS) or `%LOCALAPPDATA%\hermes` (Windows), or to `HERMES_HOME` if set.
+5. Installs OpenCode.
+6. Registers the gateway with `hermes gateway install --start-now --start-on-login`. This creates a launchd LaunchAgent on macOS, or a `Hermes_Gateway` Scheduled Task on Windows.
+
+The install stops without changes if it finds Hermes configuration, a `hermes` command on
+`PATH`, a gateway service, or an existing clawmacdo record. Prerequisites: on macOS, the Command Line Tools (`xcode-select --install`); on Windows, Windows PowerShell.
+
+Sample summary:
+
+```
+============================================================
+  Hermes Agent installed on this computer
+============================================================
+  Platform:          macOS
+  Hermes:            0.22.5 (commit bf0203a7)
+  Command:           /Users/me/.local/bin/hermes
+  Hermes home:       /Users/me/.hermes
+  AI model:          OpenRouter openai/gpt-6-sol
+  Terminal backend:  local
+  Gateway service:   installed; starts at login
+  Telegram bot:      @my_hermes_bot
+  OpenCode CLI:      /Users/me/.opencode/bin/opencode
+
+  Chat:              hermes
+  Dashboard:         hermes dashboard   (local only, on demand)
+  Uninstall:         clawmacdo hermes-local-uninstall
+```
+
+---
+
+## hermes-local-uninstall
+
+Remove a Hermes install created by `hermes-local-install`, as listed in `~/.clawmacdo/hermes-local.json`.
+
+```bash
+clawmacdo hermes-local-uninstall              # asks to confirm, removes everything
+clawmacdo hermes-local-uninstall --keep-data  # keep config, .env API keys, sessions, memory
+clawmacdo hermes-local-uninstall --dry-run    # show what would be removed
+clawmacdo hermes-local-uninstall --yes --json # unattended; --json requires --yes
+```
+
+The command runs `hermes uninstall --yes --full`, or without `--full` when `--keep-data` is given.
+That stops and removes the gateway service, the Hermes code, and its `PATH` entries. It then:
+- removes the OpenCode CLI and configuration clawmacdo installed, restoring any OpenCode
+  configuration it replaced;
+- deletes the config backups, except with `--keep-data`;
+- deletes the install record.
+
+Without a record, the command refuses so that Hermes installs clawmacdo did not create are never
+touched. Run `hermes uninstall` directly for those, or pass `--force`.
+
+---
+
 ## track
 
 Track a deployment's progress by deploy ID, hostname, or IP address.

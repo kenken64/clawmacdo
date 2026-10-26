@@ -14,6 +14,7 @@ Rust CLI and web UI for deploying [OpenClaw](https://openclaw.ai) to **DigitalOc
 - **Multi-cloud**: Deploy to DigitalOcean, AWS Lightsail, Tencent Cloud, Microsoft Azure, or BytePlus Cloud with `--provider` flag
 - **Hermes Agent on Lightsail**: `hermes-provision` or the web UI installs a verified native Ubuntu 24.04 bundle alongside required OS packages, starts Hermes, and queues the full OS upgrade after deployment
 - **Hermes messaging and dashboard**: authorize Telegram users by ID and optionally expose the password-protected dashboard through a Cloudflare Quick Tunnel
+- **Hermes Agent on your own computer**: `hermes-local-install` installs the pinned, checksum-verified Hermes natively on macOS (Apple Silicon) or Windows with the same AI and Telegram settings, and registers the gateway as a login service; `hermes-local-uninstall` removes it again
 - **1-click deploy**: generate SSH keys, provision a cloud instance, install Node 24 + OpenClaw + Claude Code + Codex + Gemini CLI + OpenCode, restore config, configure `.env` (API + messaging), start the gateway, and auto-configure model failover
 - **Cloud-to-cloud migration**: SSH into a source instance, back up remotely, deploy to a new instance, restore
 - **Snapshot & restore**: create and restore named snapshots for DigitalOcean, BytePlus, and AWS Lightsail
@@ -25,7 +26,7 @@ Rust CLI and web UI for deploying [OpenClaw](https://openclaw.ai) to **DigitalOc
 
 ## Supported Cloud Providers
 
-The provider flags below apply to OpenClaw. For Hermes Agent, use [`hermes-provision`](#provision-hermes-agent-on-aws-lightsail) or select **Hermes Agent** in the web UI; Hermes provisioning currently targets AWS Lightsail.
+The provider flags below apply to OpenClaw. For Hermes Agent, use [`hermes-provision`](#provision-hermes-agent-on-aws-lightsail) or select **Hermes Agent** in the web UI; Hermes provisioning currently targets AWS Lightsail. To run Hermes on your own Mac or Windows PC instead, use [`hermes-local-install`](#install-hermes-agent-locally-macos--windows).
 
 | Provider | Flag | Credentials | Prerequisite |
 |----------|------|-------------|-------------|
@@ -415,6 +416,67 @@ AWS Bedrock. Override with `--ai-provider openrouter` or `--ai-provider bedrock`
 
 Use `--dry-run` to print the generated Lightsail user-data script without creating resources, or `--json` for
 structured output.
+
+### Install Hermes Agent locally (macOS / Windows)
+
+Run Hermes Agent on your own computer instead of a cloud instance. `hermes-local-install` supports
+**macOS on Apple Silicon** and **Windows x64**, and is included in every build, including minimal ones.
+It uses the same AI provider, model, Telegram, and `.env` options as `hermes-provision`.
+
+```bash
+# macOS or Windows (Git Bash / PowerShell syntax for env vars differs)
+export OPENROUTER_API_KEY="sk-or-..."
+clawmacdo hermes-local-install --telegram-bot-token "$TELEGRAM_BOT_TOKEN" --telegram-allowed-users 123456789
+
+# Preview downloads, commands, and file writes without changing anything
+clawmacdo hermes-local-install --dry-run
+
+# Remove everything clawmacdo installed, including the Hermes data folder (asks to confirm)
+clawmacdo hermes-local-uninstall
+# Remove Hermes but keep its configuration, .env API keys, sessions, and memory
+clawmacdo hermes-local-uninstall --keep-data
+```
+
+What the install does:
+
+1. Downloads the upstream Hermes installer (`install.sh` on macOS, `install.ps1` on Windows) at the
+   same pinned commit as the Lightsail bundle (Hermes `0.22.5`), verifies its SHA-256, and runs it
+   non-interactively. A checksum mismatch stops the install before anything runs.
+2. Writes `.env` and `config.yaml` into the Hermes home: `~/.hermes` on macOS, `%LOCALAPPDATA%\hermes`
+   on Windows, or `HERMES_HOME` if set. On macOS the files are readable only by you (mode `600`).
+3. On macOS with an OpenRouter key, installs the pinned OpenCode CLI v2 and configures it with the
+   same model. OpenCode is skipped on Windows because its installer is bash-only. Use `--no-opencode` to skip it.
+4. Registers the gateway with `hermes gateway install --start-now --start-on-login`: a launchd
+   LaunchAgent on macOS, or a Scheduled Task on Windows (no administrator rights needed). Pass
+   `--no-service` to skip this and run `hermes gateway run` yourself.
+5. Saves a record at `~/.clawmacdo/hermes-local.json` listing what it changed.
+
+After installing, open a new terminal and run `hermes` to chat or `hermes dashboard` to open the
+dashboard locally. The Cloudflare tunnel option is not offered for local installs. The gateway and
+Telegram bot only respond while the computer is awake.
+
+> **Warning — shell access on your computer:** like Lightsail deployments, local installs use the
+> `local` terminal backend, so the agent runs shell commands **directly on your computer with your
+> user's permissions**. Use `--terminal-backend docker` to run them in upstream's sandbox container
+> instead (requires Docker Desktop to be running). Upstream's computer-use driver, which can control
+> your desktop, is skipped unless you pass `--computer-use`.
+
+Prerequisites: on macOS, Apple's Command Line Tools for git (`xcode-select --install`); on Windows,
+the built-in Windows PowerShell. The upstream installer downloads its own Python runtime and
+dependencies, so the first install takes several minutes. Intel Macs are not supported.
+
+**Existing installs are protected.** If Hermes configuration, a `hermes` command on `PATH`, a gateway
+service, or a previous clawmacdo install record is found, `hermes-local-install` stops without
+changing anything. `--force` reinstalls the pinned version and replaces the configuration. Every
+file it overwrites is backed up first under `~/.clawmacdo/hermes-local/`.
+
+**Uninstall** runs upstream's `hermes uninstall --yes --full`, which stops and removes the gateway
+service, the Hermes code, and its `PATH` entries. It also deletes the Hermes data folder unless you
+pass `--keep-data`. It then removes the OpenCode CLI and configuration that clawmacdo installed,
+restoring any OpenCode configuration it replaced, along with its install record and backups. Use
+`--yes` to skip the confirmation prompt (required with `--json`). `hermes-local-uninstall` only acts on
+installs that have a clawmacdo record; to remove another Hermes install, run `hermes uninstall`
+yourself, or pass `--force`.
 
 ### Deploy to Tencent Cloud
 

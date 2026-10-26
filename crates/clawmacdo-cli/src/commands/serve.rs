@@ -6724,7 +6724,7 @@ mod tests {
         assert!(!params.install_opencode);
         assert_eq!(
             params.openrouter_model,
-            crate::commands::hermes_lightsail::DEFAULT_OPENROUTER_MODEL
+            crate::commands::hermes_config::DEFAULT_OPENROUTER_MODEL
         );
     }
 
