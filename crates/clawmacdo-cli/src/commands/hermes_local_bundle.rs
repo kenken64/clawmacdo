@@ -18,8 +18,9 @@ const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 600_000;
-const DOWNLOAD_ATTEMPTS: u32 = 3;
+const DOWNLOAD_ATTEMPTS: u32 = 4;
 const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const SMALL_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Written by `scripts/hermes-bundle/package.py` next to each local archive.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -168,21 +169,94 @@ fn http_client() -> Result<reqwest::Client> {
         .context("Failed to create an HTTP client")
 }
 
-pub(super) async fn fetch_manifest(url: &str, platform: &str) -> Result<BundleManifest> {
-    let response = http_client()?
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("Failed to download {url}"))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        bail!("{}", unavailable_message(url, platform));
+/// How long to wait before retrying after failed attempt `attempt` (1-based), or `None`
+/// when another attempt cannot help. GitHub answers busy shared addresses (CI runners,
+/// offices) with 429; `status` is `None` for network errors and timeouts.
+pub(super) fn retry_delay(
+    status: Option<reqwest::StatusCode>,
+    retry_after: Option<&str>,
+    attempt: u32,
+) -> Option<std::time::Duration> {
+    if attempt >= DOWNLOAD_ATTEMPTS {
+        return None;
     }
-    let bytes = response
-        .error_for_status()
-        .with_context(|| format!("Failed to download {url}"))?
-        .bytes()
-        .await
-        .with_context(|| format!("Failed to read {url}"))?;
+    if status.is_some_and(|status| {
+        status != reqwest::StatusCode::TOO_MANY_REQUESTS && !status.is_server_error()
+    }) {
+        return None;
+    }
+    let backoff = 5 * u64::from(attempt * attempt);
+    let seconds = retry_after
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(backoff);
+    Some(std::time::Duration::from_secs(seconds.min(60)))
+}
+
+/// Download a small file into memory, retrying rate limits, server errors and network
+/// failures. `Ok(None)` means the server answered 404.
+pub(super) async fn fetch_bytes(
+    url: &str,
+    say: &(dyn Fn(&str) + Send + Sync),
+) -> Result<Option<Vec<u8>>> {
+    let client = http_client()?;
+    let mut attempt = 1;
+    loop {
+        let request = async {
+            let response = client.get(url).send().await?;
+            let status = response.status();
+            if !status.is_success() {
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                return Ok(Err((status, retry_after)));
+            }
+            response.bytes().await.map(|bytes| Ok(bytes.to_vec()))
+        };
+        let (status, retry_after, err) =
+            match tokio::time::timeout(SMALL_DOWNLOAD_TIMEOUT, request).await {
+                Ok(Ok(Ok(bytes))) => return Ok(Some(bytes)),
+                Ok(Ok(Err((status, _)))) if status == reqwest::StatusCode::NOT_FOUND => {
+                    return Ok(None)
+                }
+                Ok(Ok(Err((status, retry_after)))) => (
+                    Some(status),
+                    retry_after,
+                    anyhow::anyhow!("Failed to download {url}: HTTP {status}"),
+                ),
+                Ok(Err(err)) => (
+                    None,
+                    None,
+                    anyhow::Error::new(err).context(format!("Failed to download {url}")),
+                ),
+                Err(_) => (
+                    None,
+                    None,
+                    anyhow::anyhow!("Failed to download {url}: timed out"),
+                ),
+            };
+        let Some(delay) = retry_delay(status, retry_after.as_deref(), attempt) else {
+            return Err(err);
+        };
+        say(&format!(
+            "  {err:#}; retrying in {}s ({}/{DOWNLOAD_ATTEMPTS})...",
+            delay.as_secs(),
+            attempt + 1
+        ));
+        tokio::time::sleep(delay).await;
+        attempt += 1;
+    }
+}
+
+pub(super) async fn fetch_manifest(
+    url: &str,
+    platform: &str,
+    say: &(dyn Fn(&str) + Send + Sync),
+) -> Result<BundleManifest> {
+    let Some(bytes) = fetch_bytes(url, say).await? else {
+        bail!("{}", unavailable_message(url, platform));
+    };
     if bytes.len() > MAX_MANIFEST_BYTES {
         bail!("The Hermes bundle manifest at {url} is too large.");
     }
@@ -233,7 +307,9 @@ async fn download_once(
         )));
     }
     if let Err(err) = response.error_for_status_ref() {
-        let fatal = err.status().is_some_and(|status| status.is_client_error());
+        let fatal = err.status().is_some_and(|status| {
+            status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+        });
         let err = anyhow::Error::new(err).context(format!("Failed to download {url}"));
         return Err(if fatal {
             DownloadError::Fatal(err)
@@ -306,7 +382,7 @@ pub(super) async fn download_archive(
                 say(&format!(
                     "  {err:#}; retrying ({attempt}/{DOWNLOAD_ATTEMPTS})..."
                 ));
-                tokio::time::sleep(std::time::Duration::from_secs(2 * u64::from(attempt))).await;
+                tokio::time::sleep(retry_delay(None, None, attempt).unwrap_or_default()).await;
                 attempt += 1;
             }
             Err(DownloadError::Retry(err) | DownloadError::Fatal(err)) => {
@@ -824,6 +900,38 @@ mod tests {
         assert!(check_symlink(entry, Path::new("../../../tools/node/bin/node")).is_ok());
         assert!(check_symlink(entry, Path::new("../../../../.ssh/id_rsa")).is_err());
         assert!(check_symlink(entry, Path::new("/usr/bin/env")).is_err());
+    }
+
+    #[test]
+    fn downloads_retry_rate_limits_server_errors_and_network_failures_only() {
+        use reqwest::StatusCode;
+        use std::time::Duration;
+        let wait = |status, retry_after, attempt| retry_delay(status, retry_after, attempt);
+        assert_eq!(
+            wait(Some(StatusCode::TOO_MANY_REQUESTS), None, 1),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            wait(Some(StatusCode::TOO_MANY_REQUESTS), Some("12"), 1),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            wait(Some(StatusCode::TOO_MANY_REQUESTS), Some("3600"), 1),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            wait(Some(StatusCode::BAD_GATEWAY), None, 2),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(wait(None, None, 3), Some(Duration::from_secs(45)));
+        assert_eq!(wait(None, None, DOWNLOAD_ATTEMPTS), None);
+        for status in [
+            StatusCode::NOT_FOUND,
+            StatusCode::FORBIDDEN,
+            StatusCode::UNAUTHORIZED,
+        ] {
+            assert_eq!(wait(Some(status), None, 1), None, "{status}");
+        }
     }
 
     #[test]

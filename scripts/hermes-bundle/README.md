@@ -7,15 +7,23 @@ external connectivity, so missing dependencies cannot be downloaded silently.
 
 ## Current published bundle
 
-Clawmacdo **v0.99.0** automatically uses
-[`hermes-bundle-v0.22.5-1`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-1)
-on Ubuntu 24.04 amd64/arm64. It includes Hermes **0.22.5** at commit
-`bf0203a794a07aac3ff764972ab9087baa4e4f4e`, OpenCode **2.1.3**, and cloudflared **2026.10.3**.
-Both architectures passed the [build and fresh-VM verification workflow](https://github.com/kenken64/clawmacdo/actions/runs/40023821213).
+Clawmacdo **v1.0.0** automatically uses
+[`hermes-bundle-v0.22.5-2`](https://github.com/kenken64/clawmacdo/releases/tag/hermes-bundle-v0.22.5-2).
+It includes Hermes **0.22.5** at commit `bf0203a794a07aac3ff764972ab9087baa4e4f4e`. The Ubuntu
+archives also include OpenCode **2.1.3** and cloudflared **2026.10.3**. All four platforms passed the
+[build and verification workflow](https://github.com/kenken64/clawmacdo/actions/runs/40343992085):
+Ubuntu 24.04 amd64 and arm64 on fresh VMs, and macOS Apple Silicon and Windows x64 by installing
+into a different home folder with compiling and package downloads disabled.
 
-Each architecture has a `hermes-ubuntu-24.04-<arch>.tar.gz` archive, a `.tar.gz.json` manifest,
-and a `.tar.gz.sha256` checksum. The CLI downloads the matching archive automatically during
-`hermes-provision`; users do not need to download or publish an AWS image.
+| Archive | Used by | Size |
+|---------|---------|------|
+| `hermes-ubuntu-24.04-amd64.tar.gz` | `hermes-provision` (Lightsail x86) | 1.2 GB |
+| `hermes-ubuntu-24.04-arm64.tar.gz` | `hermes-provision` (Lightsail Arm) | 1.2 GB |
+| `hermes-macos-arm64.tar.gz` | `hermes-local-install` on Apple Silicon | 770 MB |
+| `hermes-windows-x64.tar.gz` | `hermes-local-install` on Windows x64 | 1.1 GB |
+
+Each archive has a `.tar.gz.json` manifest and a `.tar.gz.sha256` checksum. The CLI downloads the
+matching archive automatically; users do not need to download anything or publish an AWS image.
 
 ## Local bundles (macOS and Windows)
 

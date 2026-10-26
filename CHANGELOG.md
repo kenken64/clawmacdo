@@ -21,6 +21,9 @@
 - The npm cache ownership check now runs only for `--from-source` installs, since the bundle never runs npm.
 - Bundle release bumped to `hermes-bundle-v0.22.5-2`, which also republishes the Ubuntu assets used by `hermes-provision`.
 
+### Fixed
+- Local install downloads (the bundle and its manifest, upstream's installer, and the OpenCode installer) now retry up to four times on HTTP 429 rate limits, 5xx errors and network failures. They wait for the server's `Retry-After` (at most 60 seconds) or back off 5, 20 and 45 seconds. GitHub's file host rate-limits busy shared addresses such as CI runners and offices.
+
 ## v0.99.0
 
 ### Added

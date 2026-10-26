@@ -452,6 +452,7 @@ What the install does:
    build machine's paths, and runs upstream's own completion step to publish the `hermes` command
    (and, on Windows, add it to your user `PATH`). If the bundle for this clawmacdo version is not
    published, the install stops with nothing changed rather than falling back to compiling.
+   Downloads retry up to four times on rate limits (HTTP 429), server errors and network failures.
    `--from-source` instead downloads the upstream installer (`install.sh` on macOS, `install.ps1` on
    Windows) at the pinned commit, verifies its SHA-256, and runs it; that builds Hermes on your
    computer and takes several minutes. `--computer-use` requires `--from-source`, because the bundle

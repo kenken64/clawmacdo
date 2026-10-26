@@ -374,19 +374,16 @@ fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     Ok(())
 }
 
-async fn download_verified(url: &str, expected_sha256: &str, dest: &Path) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()?;
-    let bytes = client
-        .get(url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .with_context(|| format!("Failed to download {url}"))?
-        .bytes()
-        .await
-        .with_context(|| format!("Failed to read {url}"))?;
+async fn download_verified(
+    url: &str,
+    expected_sha256: &str,
+    dest: &Path,
+    out: &Reporter,
+) -> Result<()> {
+    let say = |line: &str| out.say(line);
+    let bytes = bundle::fetch_bytes(url, &say)
+        .await?
+        .with_context(|| format!("Failed to download {url}: HTTP 404 Not Found"))?;
     verify_sha256(&bytes, expected_sha256).with_context(|| format!("Refusing {url}"))?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -826,12 +823,13 @@ async fn install_from_bundle(
         }
         None => {
             let url = pins.bundle_url(platform);
+            let say = |line: &str| out.say(line);
             let manifest =
-                bundle::fetch_manifest(&format!("{url}.json"), platform.bundle_platform()).await?;
+                bundle::fetch_manifest(&format!("{url}.json"), platform.bundle_platform(), &say)
+                    .await?;
             bundle::validate_manifest(&manifest, &expected)?;
             out.say(&format!("  {url} ({} MiB)", manifest.size / (1024 * 1024)));
             let archive = paths.state_dir.join("downloads").join(expected.filename());
-            let say = |line: &str| out.say(line);
             bundle::download_archive(&url, &archive, &manifest, &say).await?;
             (archive, manifest, true)
         }
@@ -1126,6 +1124,7 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
             &installer_url,
             pins.installer_sha256(platform),
             &installer_path,
+            &out,
         )
         .await?;
         out.say("  Checksum verified.");
@@ -1178,6 +1177,7 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
                     OPENCODE_INSTALLER_URL,
                     &pins.opencode_installer_sha256,
                     &script,
+                    &out,
                 )
                 .await?;
                 let spec = CommandSpec {
