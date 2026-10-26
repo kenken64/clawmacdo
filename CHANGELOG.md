@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.98.1
 
 ### Changed
 - The npm package description, npm keywords, CLI crate description, and `clawmacdo --help` summary now mention Hermes Agent on AWS Lightsail alongside OpenClaw.
