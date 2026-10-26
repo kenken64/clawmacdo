@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- macOS binaries (npm `@clawmacdo/darwin-arm64` and the `darwin-arm64` release tarballs) now statically include OpenSSL. Earlier builds linked the CI runner's Homebrew `openssl@3` and failed to launch with `dyld: Library not loaded` on Macs without it. Release and npm CI now fail any macOS build that links non-system libraries.
+
 ## v0.98.1
 
 ### Changed

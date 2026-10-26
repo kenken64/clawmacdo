@@ -109,6 +109,16 @@ jobs:
             strip target/${{ matrix.target }}/release/${{ matrix.binary_name }}
           fi
 
+      - name: Check macOS binary links only system libraries
+        if: runner.os == 'macOS'
+        run: |
+          binary=target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+          otool -L "$binary"
+          if otool -L "$binary" | tail -n +2 | grep -Ev '^\s+(/usr/lib/|/System/Library/)'; then
+            echo "::error::$binary links libraries that are missing on a clean Mac"
+            exit 1
+          fi
+
       - name: Package (Unix)
         if: ${{ !contains(matrix.target, 'windows') }}
         run: |

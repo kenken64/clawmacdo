@@ -15,6 +15,11 @@ tokio = { workspace = true }
 
 clawmacdo-core = { workspace = true }
 
+# Statically link OpenSSL on macOS so release binaries do not depend on the
+# build machine's Homebrew openssl@3 (/opt/homebrew/opt/openssl@3).
+[target.'cfg(target_os = "macos")'.dependencies]
+ssh2 = { workspace = true, features = ["vendored-openssl"] }
+
 
 
 

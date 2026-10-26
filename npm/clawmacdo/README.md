@@ -45,6 +45,8 @@ Pre-built binaries for every release are available on the [Releases page](https:
 | macOS    | Apple Silicon (arm64) | `clawmacdo-darwin-arm64-full.tar.gz` | `clawmacdo-darwin-arm64-minimal.tar.gz` |
 | Windows  | x86_64      | `clawmacdo-windows-amd64-full.zip` | `clawmacdo-windows-amd64-minimal.zip` |
 
+macOS binaries include OpenSSL and link only system libraries, so neither the npm package nor the release tarball needs Homebrew or `openssl@3`.
+
 ## Installation
 
 ### From npm (recommended)
