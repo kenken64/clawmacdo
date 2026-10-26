@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Breaking changes
+- `hermes-local-install` (and the web UI's **Hermes Agent — This computer** target) installs the pre-built bundle by default instead of running upstream's source installer. If the bundle for this version is not published, the install stops; pass `--from-source` (or tick **Build from source instead**) for the previous behaviour.
+- `hermes-local-install --computer-use` now requires `--from-source`.
+- `hermes-local-install --dry-run --json` reports `install_method` and `bundle`; `installer_url` and `installer_command` are `null` unless `--from-source` is passed.
+
 ### Added
 - **Pre-built local Hermes bundles**: the `hermes-bundle` release now also contains `hermes-macos-arm64.tar.gz` and `hermes-windows-x64.tar.gz`. CI builds them with upstream's installer on clean macOS and Windows runners, then verifies each one by installing it into a different home folder with compilers and package downloads disabled. The verification checks the CLI, `hermes pm doctor`, the dashboard and uninstall. The packager lists every file that names the build machine's paths; text files are rewritten on install.
 - `hermes-local-install --from-source` and a web UI **Build from source instead** option run upstream's installer, which compiles on your computer. `--computer-use` now requires `--from-source`, because the bundle is built without upstream's computer-use driver.
