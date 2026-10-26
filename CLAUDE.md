@@ -59,13 +59,13 @@ Run `pwsh -File ./scripts/release.ps1 [patch|minor|major]` to automate the full 
 
 1. `cargo fmt --all` + `cargo clippy -- -D warnings`
 2. Bump version in all `Cargo.toml` (7 crates) and `package.json` (4 npm packages)
-3. Update `CHANGELOG.md` and `README.md` version references
+3. Update `CHANGELOG.md` (promotes `## Unreleased` to the new version heading) and `README.md` version references
 4. Sync `README.md` to `npm/clawmacdo/README.md`
 5. `cargo build --release`
 6. Git commit, tag, push
 7. Create GitHub release (triggers `release.yml` + `npm-publish.yml` workflows)
 
-Default bump type is `minor`. Example: `pwsh -File ./scripts/release.ps1 patch`
+Default bump type is `minor`. Example: `pwsh -File ./scripts/release.ps1 patch`. Without PowerShell, `./scripts/release.sh patch` runs the same steps (macOS `sed`).
 
 ## Documentation Rule
 

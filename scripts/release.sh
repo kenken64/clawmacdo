@@ -56,7 +56,12 @@ for f in npm/clawmacdo/package.json npm/@clawmacdo/darwin-arm64/package.json npm
 done
 
 echo "==> Updating CHANGELOG and README..."
-sed -i '' "s/## v$CURRENT_VERSION/## v$NEW_VERSION/" CHANGELOG.md
+# Promote pending notes; otherwise keep the legacy rename of the current heading.
+if grep -q '^## Unreleased$' CHANGELOG.md; then
+  sed -i '' "s/^## Unreleased\$/## v$NEW_VERSION/" CHANGELOG.md
+else
+  sed -i '' "s/## v$CURRENT_VERSION/## v$NEW_VERSION/" CHANGELOG.md
+fi
 sed -i '' "s/What's New in v$CURRENT_VERSION/What's New in v$NEW_VERSION/" README.md
 sed -i '' "s/Current version:.*/Current version:** $NEW_VERSION/" README.md
 

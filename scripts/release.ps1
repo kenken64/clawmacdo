@@ -76,7 +76,13 @@ foreach ($packageJsonPath in @(
 Write-Host '==> Updating CHANGELOG and README...'
 $changelogPath = Join-Path $root 'CHANGELOG.md'
 $changelog = Get-Content -LiteralPath $changelogPath -Raw
-$changelog = $changelog -replace ('(?m)^## v' + [regex]::Escape($currentVersion) + '\b'), "## v$newVersion"
+# Promote pending notes; otherwise keep the legacy rename of the current heading.
+$unreleased = '(?m)^## Unreleased(?=\r?$)'
+if ($changelog -match $unreleased) {
+    $changelog = [regex]::Replace($changelog, $unreleased, "## v$newVersion", 1)
+} else {
+    $changelog = $changelog -replace ('(?m)^## v' + [regex]::Escape($currentVersion) + '\b'), "## v$newVersion"
+}
 Set-Content -LiteralPath $changelogPath -Value $changelog -Encoding utf8
 
 $readmePath = Join-Path $root 'README.md'
