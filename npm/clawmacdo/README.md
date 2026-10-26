@@ -1510,7 +1510,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
 
 ---
 
-**Current version:** 0.99.0
+**Current version:** 1.0.0
 
 
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.0
 
 ### Breaking changes
 - `hermes-local-install` (and the web UI's **Hermes Agent — This computer** target) installs the pre-built bundle by default instead of running upstream's source installer. If the bundle for this version is not published, the install stops; pass `--from-source` (or tick **Build from source instead**) for the previous behaviour.
