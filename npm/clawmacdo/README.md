@@ -460,7 +460,9 @@ What the install does:
 2. Writes `.env` and `config.yaml` into the Hermes home: `~/.hermes` on macOS, `%LOCALAPPDATA%\hermes`
    on Windows, or `HERMES_HOME` if set. On macOS the files are readable only by you (mode `600`).
 3. On macOS with an OpenRouter key, installs the pinned OpenCode CLI v2 and configures it with the
-   same model. OpenCode is skipped on Windows because its installer is bash-only. Use `--no-opencode` to skip it.
+   same model. clawmacdo downloads OpenCode's versioned npm package (`@opencode/cli-darwin-arm64`), checks
+   a pinned SHA-256, and puts the binary at `~/.opencode/bin/opencode`, as OpenCode's installer would.
+   OpenCode is skipped on Windows. Use `--no-opencode` to skip it.
 4. Registers the gateway with `hermes gateway install --start-now --start-on-login`: a launchd
    LaunchAgent on macOS, or a Scheduled Task on Windows (no administrator rights needed). Pass
    `--no-service` to skip this and run `hermes gateway run` yourself.

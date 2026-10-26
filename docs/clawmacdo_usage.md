@@ -584,7 +584,7 @@ The install runs in six steps:
 2. Downloads the pre-built bundle for this platform (`hermes-macos-arm64.tar.gz` or `hermes-windows-x64.tar.gz`, about 1 GB) from the pinned `hermes-bundle` GitHub release, after checking its manifest against the release, platform and Hermes 0.22.5 commit this clawmacdo version expects. A bundle that is not published stops the install with nothing changed. With `--from-source`, downloads the pinned upstream installer (`install.sh` or `install.ps1`) and verifies its SHA-256.
 3. Verifies the archive's size and SHA-256, moves any existing Hermes software aside, extracts the bundle, rewrites the files that recorded the build machine's paths, and runs upstream's completion step to publish the `hermes` command. A failure restores the previous software. With `--from-source`, runs the installer non-interactively.
 4. Writes `.env` and `config.yaml` to `~/.hermes` (macOS) or `%LOCALAPPDATA%\hermes` (Windows), or to `HERMES_HOME` if set.
-5. Installs OpenCode.
+5. Installs OpenCode on macOS from its versioned npm package (`@opencode/cli-darwin-arm64`), checked against a pinned SHA-256, into `~/.opencode/bin/opencode`.
 6. Registers the gateway with `hermes gateway install --start-now --start-on-login`. This creates a launchd LaunchAgent on macOS, or a `Hermes_Gateway` Scheduled Task on Windows.
 
 The install stops without changes if it finds Hermes configuration, a `hermes` command on

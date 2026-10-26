@@ -22,7 +22,8 @@
 - Bundle release bumped to `hermes-bundle-v0.22.5-2`, which also republishes the Ubuntu assets used by `hermes-provision`.
 
 ### Fixed
-- Local install downloads (the bundle and its manifest, upstream's installer, and the OpenCode installer) now retry up to four times on HTTP 429 rate limits, 5xx errors and network failures. They wait for the server's `Retry-After` (at most 60 seconds) or back off 5, 20 and 45 seconds. GitHub's file host rate-limits busy shared addresses such as CI runners and offices.
+- macOS local installs no longer fail at the OpenCode step with "Checksum mismatch … https://opencode.ai/v2/install". OpenCode replaced its install script at that unversioned URL, so the pinned checksum no longer matched (v0.99.0 is affected). clawmacdo now downloads the versioned npm package the script installs from (`@opencode/cli-darwin-arm64` 2.1.3) and checks a pinned SHA-256. It then extracts `package/bin/opencode` to `~/.opencode/bin/opencode` itself, so no install script runs.
+- Local install downloads (the bundle and its manifest, upstream's installer, and the OpenCode package) now retry up to four times on HTTP 429 rate limits, 5xx errors and network failures. They wait for the server's `Retry-After` (at most 60 seconds) or back off 5, 20 and 45 seconds. GitHub's file host rate-limits busy shared addresses such as CI runners and offices.
 
 ## v0.99.0
 

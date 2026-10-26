@@ -28,7 +28,6 @@ use tokio::sync::mpsc;
 const TOTAL_STEPS: u32 = 6;
 const RECORD_FILE: &str = "hermes-local.json";
 const STATE_DIR: &str = "hermes-local";
-const OPENCODE_INSTALLER_URL: &str = "https://opencode.ai/v2/install";
 const WINDOWS_TASK_NAME: &str = "Hermes_Gateway";
 const LAUNCH_AGENT_PREFIXES: [&str; 2] =
     ["ai.hermes.gateway", "io.nousresearch.hermes-agent.gateway"];
@@ -100,7 +99,8 @@ struct Pins {
     installer_sha256: String,
     installer_ps1_sha256: String,
     opencode_version: String,
-    opencode_installer_sha256: String,
+    opencode_darwin_arm64_sha256: String,
+    opencode_darwin_arm64_size: u64,
 }
 
 impl Pins {
@@ -133,6 +133,15 @@ impl Pins {
             hermes_commit: &self.hermes_commit,
             hermes_version: &self.hermes_version,
         }
+    }
+
+    /// OpenCode's own installer script changes in place, so clawmacdo downloads the
+    /// versioned npm package it installs from and checks a pinned checksum instead.
+    fn opencode_package_url(&self) -> String {
+        format!(
+            "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-{}.tgz",
+            self.opencode_version
+        )
     }
 
     fn bundle_url(&self, platform: LocalPlatform) -> String {
@@ -1039,8 +1048,9 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
         }
         match &opencode {
             Ok(_) => out.say(&format!(
-                "  OpenCode:  install {} via {OPENCODE_INSTALLER_URL}",
-                pins.opencode_version
+                "  OpenCode:  install {} from {}",
+                pins.opencode_version,
+                pins.opencode_package_url()
             )),
             Err(reason) => out.say(&format!("  OpenCode:  skipped ({reason})")),
         }
@@ -1172,25 +1182,44 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
             if opencode_bin.is_file() {
                 out.say("  Using the existing OpenCode CLI.");
             } else {
-                let script = paths.state_dir.join("opencode-install.sh");
-                download_verified(
-                    OPENCODE_INSTALLER_URL,
-                    &pins.opencode_installer_sha256,
-                    &script,
-                    &out,
-                )
-                .await?;
-                let spec = CommandSpec {
-                    program: "bash".into(),
-                    args: vec![
-                        script.display().to_string(),
-                        "--version".into(),
-                        pins.opencode_version.clone(),
-                        "--no-modify-path".into(),
-                    ],
-                };
-                let result = run_command(&spec, &out, "OpenCode installer").await;
-                let _ = std::fs::remove_file(&script);
+                let url = pins.opencode_package_url();
+                let archive = paths.state_dir.join("downloads").join(format!(
+                    "opencode-{}-darwin-arm64.tgz",
+                    pins.opencode_version
+                ));
+                out.say(&format!(
+                    "  Downloading OpenCode {} from {url}",
+                    pins.opencode_version
+                ));
+                let say = |line: &str| out.say(line);
+                let result = async {
+                    let not_found = format!(
+                        "OpenCode {} is not published at {url}",
+                        pins.opencode_version
+                    );
+                    bundle::download_file(
+                        &url,
+                        &archive,
+                        pins.opencode_darwin_arm64_size,
+                        &not_found,
+                        &say,
+                    )
+                    .await?;
+                    let (size, digest) = bundle::file_sha256(&archive)?;
+                    if size != pins.opencode_darwin_arm64_size
+                        || !digest.eq_ignore_ascii_case(&pins.opencode_darwin_arm64_sha256)
+                    {
+                        bail!(
+                            "Refusing {url}: expected {} bytes with SHA-256 {}, got {size} bytes \
+                             with {digest}. OpenCode was not installed.",
+                            pins.opencode_darwin_arm64_size,
+                            pins.opencode_darwin_arm64_sha256
+                        );
+                    }
+                    install_opencode_binary(&archive, &opencode_bin)
+                }
+                .await;
+                let _ = std::fs::remove_file(&archive);
                 result?;
                 opencode_binary_installed = true;
             }
@@ -1280,6 +1309,37 @@ pub async fn install(params: HermesLocalInstallParams) -> Result<LocalInstallOut
         telegram_bot,
         opencode: opencode_summary,
     })
+}
+
+/// Extract `package/bin/opencode` from OpenCode's npm package to `dest`, as its installer does.
+fn install_opencode_binary(archive: &Path, dest: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive)
+        .with_context(|| format!("Failed to open {}", archive.display()))?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in tar
+        .entries()
+        .context("Failed to read the OpenCode package")?
+    {
+        let mut entry = entry.context("Failed to read the OpenCode package")?;
+        if entry.path()?.as_ref() != Path::new("package/bin/opencode") {
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        let mut output = std::fs::File::create(dest)
+            .with_context(|| format!("Failed to write {}", dest.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .with_context(|| format!("Failed to write {}", dest.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
+        }
+        return Ok(());
+    }
+    bail!("The OpenCode package has no package/bin/opencode")
 }
 
 pub fn install_source_label(record: &LocalInstallRecord) -> String {
@@ -1691,6 +1751,61 @@ mod tests {
             install_source_label(&bundled),
             "pre-built bundle hermes-bundle-v0.22.5-2"
         );
+    }
+
+    #[test]
+    fn opencode_comes_from_its_pinned_npm_package() {
+        let pins = Pins::load().unwrap();
+        assert_eq!(
+            pins.opencode_package_url(),
+            format!(
+                "https://registry.npmjs.org/@opencode/cli-darwin-arm64/-/cli-darwin-arm64-{}.tgz",
+                pins.opencode_version
+            )
+        );
+        assert!(bundle_hex(&pins.opencode_darwin_arm64_sha256));
+        assert!(pins.opencode_darwin_arm64_size > 0);
+
+        let dir = TempDir::new();
+        let archive = dir.0.join("cli.tgz");
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            std::fs::File::create(&archive).unwrap(),
+            flate2::Compression::fast(),
+        ));
+        for (name, data) in [
+            ("package/package.json", &b"{}"[..]),
+            ("package/bin/opencode", &b"#!opencode"[..]),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        let dest = dir.0.join(".opencode/bin/opencode");
+        install_opencode_binary(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"#!opencode");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        let empty = dir.0.join("empty.tgz");
+        tar::Builder::new(flate2::write::GzEncoder::new(
+            std::fs::File::create(&empty).unwrap(),
+            flate2::Compression::fast(),
+        ))
+        .into_inner()
+        .unwrap()
+        .finish()
+        .unwrap();
+        assert!(install_opencode_binary(&empty, &dir.0.join("x")).is_err());
+    }
+
+    fn bundle_hex(value: &str) -> bool {
+        value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
     }
 
     #[test]

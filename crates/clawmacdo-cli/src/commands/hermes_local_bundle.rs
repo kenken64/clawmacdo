@@ -285,7 +285,7 @@ async fn download_once(
     url: &str,
     dest: &Path,
     size: u64,
-    platform: &str,
+    not_found: &str,
     say: &(dyn Fn(&str) + Send + Sync),
 ) -> std::result::Result<(), DownloadError> {
     let retry = |err: anyhow::Error| DownloadError::Retry(err);
@@ -296,14 +296,11 @@ async fn download_once(
         .with_context(|| format!("Failed to download {url}"))
         .map_err(retry)?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(DownloadError::Fatal(anyhow::anyhow!(
-            "{}",
-            unavailable_message(url, platform)
-        )));
+        return Err(DownloadError::Fatal(anyhow::anyhow!("{not_found}")));
     }
     if response.url().scheme() != "https" {
         return Err(DownloadError::Fatal(anyhow::anyhow!(
-            "The Hermes bundle download was redirected away from HTTPS."
+            "The download of {url} was redirected away from HTTPS."
         )));
     }
     if let Err(err) = response.error_for_status_ref() {
@@ -326,14 +323,14 @@ async fn download_once(
     loop {
         let chunk = tokio::time::timeout(CHUNK_TIMEOUT, response.chunk())
             .await
-            .map_err(|_| retry(anyhow::anyhow!("The Hermes bundle download stalled")))?
+            .map_err(|_| retry(anyhow::anyhow!("The download of {url} stalled")))?
             .with_context(|| format!("Failed to read {url}"))
             .map_err(retry)?;
         let Some(chunk) = chunk else { break };
         received += chunk.len() as u64;
         if received > size {
             return Err(DownloadError::Fatal(anyhow::anyhow!(
-                "The Hermes bundle download is larger than its manifest says ({size} bytes)."
+                "The download of {url} is larger than expected ({size} bytes)."
             )));
         }
         file.write_all(&chunk)
@@ -356,17 +353,30 @@ async fn download_once(
         .map_err(DownloadError::Fatal)?;
     if received != size {
         return Err(retry(anyhow::anyhow!(
-            "The Hermes bundle download ended early ({received} of {size} bytes)."
+            "The download of {url} ended early ({received} of {size} bytes)."
         )));
     }
     Ok(())
 }
 
-/// Stream the archive to `dest`, retrying interrupted downloads.
+/// Stream the bundle archive to `dest`, retrying interrupted downloads.
 pub(super) async fn download_archive(
     url: &str,
     dest: &Path,
     manifest: &BundleManifest,
+    say: &(dyn Fn(&str) + Send + Sync),
+) -> Result<()> {
+    let not_found = unavailable_message(url, &manifest.platform);
+    download_file(url, dest, manifest.size, &not_found, say).await
+}
+
+/// Stream a file of known `size` to `dest` with progress, retrying interrupted
+/// downloads, rate limits and server errors. `not_found` is the error for HTTP 404.
+pub(super) async fn download_file(
+    url: &str,
+    dest: &Path,
+    size: u64,
+    not_found: &str,
     say: &(dyn Fn(&str) + Send + Sync),
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
@@ -376,7 +386,7 @@ pub(super) async fn download_archive(
     let client = http_client()?;
     let mut attempt = 1;
     loop {
-        match download_once(&client, url, dest, manifest.size, &manifest.platform, say).await {
+        match download_once(&client, url, dest, size, not_found, say).await {
             Ok(()) => return Ok(()),
             Err(DownloadError::Retry(err)) if attempt < DOWNLOAD_ATTEMPTS => {
                 say(&format!(
@@ -393,25 +403,29 @@ pub(super) async fn download_archive(
     }
 }
 
-/// Check the archive's size and SHA-256 against its manifest.
-pub(super) fn verify_archive(archive: &Path, manifest: &BundleManifest) -> Result<()> {
-    let size = std::fs::metadata(archive)
-        .with_context(|| format!("Failed to read {}", archive.display()))?
-        .len();
-    let mut file = std::fs::File::open(archive)
-        .with_context(|| format!("Failed to open {}", archive.display()))?;
+/// A file's size and hex SHA-256, read in chunks.
+pub(super) fn file_sha256(path: &Path) -> Result<(u64, String)> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
+    let mut size = 0u64;
     loop {
         let read = file
             .read(&mut buffer)
-            .with_context(|| format!("Failed to read {}", archive.display()))?;
+            .with_context(|| format!("Failed to read {}", path.display()))?;
         if read == 0 {
             break;
         }
+        size += read as u64;
         hasher.update(&buffer[..read]);
     }
-    let digest = hex::encode(hasher.finalize());
+    Ok((size, hex::encode(hasher.finalize())))
+}
+
+/// Check the archive's size and SHA-256 against its manifest.
+pub(super) fn verify_archive(archive: &Path, manifest: &BundleManifest) -> Result<()> {
+    let (size, digest) = file_sha256(archive)?;
     if size != manifest.size || !digest.eq_ignore_ascii_case(&manifest.sha256) {
         bail!(
             "The Hermes bundle failed verification (expected {} bytes with SHA-256 {}, \

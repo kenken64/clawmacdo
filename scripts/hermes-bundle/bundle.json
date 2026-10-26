@@ -8,6 +8,8 @@
   "installer_ps1_sha256": "8d491a8b9b19934bb8d027b11962c394551798e969d244b68d4ab95295b970e2",
   "opencode_version": "2.1.3",
   "opencode_installer_sha256": "bfa0e5cd55b0447acdb1becbd3be1854277b5f8025742bd23ebf91bc01aa8ee8",
+  "opencode_darwin_arm64_sha256": "f1addcd5efa7fea919e66f4f26b4f25c7fc695d52225d861ebc3a0779ec04db8",
+  "opencode_darwin_arm64_size": 100520406,
   "cloudflared_version": "2026.10.3",
   "cloudflared_sha256": {
     "amd64": "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
