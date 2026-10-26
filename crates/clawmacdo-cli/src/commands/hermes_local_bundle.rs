@@ -436,6 +436,81 @@ fn replace_all(text: &str, pairs: &[(String, String)], ignore_case: bool) -> Str
     out
 }
 
+/// Upstream selects its package-manager runtime by `sha256(pm/pyproject.toml, pm/uv.lock,
+/// store Python path)` (`pm/runtime.py: _inputs`), so a moved runtime would be rebuilt from
+/// downloads. Re-key it for the moved Python, but only when the same formula reproduces the
+/// build's recorded value; otherwise leave it for upstream to rebuild.
+fn rekey_pm_runtime(
+    stage: &Path,
+    manifest: &BundleManifest,
+    hermes_home: &str,
+    windows: bool,
+) -> Result<()> {
+    let runtime = stage
+        .join("installs")
+        .join(&manifest.install_key)
+        .join("pm-runtime");
+    let selected_path = runtime.join("selected.json");
+    let Ok(contents) = std::fs::read_to_string(&selected_path) else {
+        return Ok(());
+    };
+    let mut selected: serde_json::Value = serde_json::from_str(&contents)
+        .context("Invalid pm-runtime/selected.json in the bundle")?;
+    let pm = stage.join("hermes-agent").join("pm");
+    let mut project = Sha256::new();
+    for name in ["pyproject.toml", "uv.lock"] {
+        project.update(
+            std::fs::read(pm.join(name))
+                .with_context(|| format!("The bundle is missing pm/{name}"))?,
+        );
+        project.update(b"\0");
+    }
+    let (separator, python) = if windows {
+        ("\\", manifest.store_python.replace('/', "\\"))
+    } else {
+        ("/", manifest.store_python.clone())
+    };
+    let identity = |home: &str| {
+        let mut digest = project.clone();
+        digest.update(format!("{home}{separator}{python}").as_bytes());
+        hex::encode(digest.finalize())
+    };
+    let old = identity(&manifest.build_hermes_home);
+    if selected["inputs"].as_str() != Some(old.as_str()) {
+        return Ok(());
+    }
+    let new = identity(hermes_home);
+    selected["inputs"] = serde_json::Value::String(new.clone());
+    std::fs::write(
+        &selected_path,
+        serde_json::to_string_pretty(&selected)? + "\n",
+    )
+    .context("Failed to re-key the Hermes package-manager runtime")?;
+    // The selected generation's own marker records the same identity.
+    let Some(generation) = selected["generation"].as_str() else {
+        return Ok(());
+    };
+    let marker = Path::new(generation)
+        .components()
+        .try_fold(runtime.clone(), |path, component| match component {
+            Component::Normal(part) => Some(path.join(part)),
+            _ => None,
+        })
+        .map(|path| path.join("pm-runtime.json"));
+    if let Some(marker) = marker {
+        if let Ok(text) = std::fs::read_to_string(&marker) {
+            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) {
+                if value["inputs"].as_str() == Some(old.as_str()) {
+                    value["inputs"] = serde_json::Value::String(new);
+                    std::fs::write(&marker, serde_json::to_string_pretty(&value)? + "\n")
+                        .context("Failed to re-key the Hermes package-manager runtime")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Point the staged software at this computer's Hermes home.
 fn relocate(
     stage: &Path,
@@ -463,6 +538,7 @@ fn relocate(
             }
         }
     }
+    rekey_pm_runtime(stage, manifest, hermes_home, windows)?;
     if manifest.install_key != new_key {
         let installs = stage.join("installs");
         std::fs::rename(installs.join(&manifest.install_key), installs.join(new_key))
@@ -902,6 +978,65 @@ mod tests {
             "{err:#}"
         );
         assert_eq!(std::fs::read_dir(&hermes_home).unwrap().count(), 0);
+    }
+
+    /// `pm/runtime.py: _inputs`, written out independently of the code under test.
+    fn runtime_identity(pyproject: &str, lock: &str, python: &str) -> String {
+        hex::encode(Sha256::digest(
+            format!("{pyproject}\0{lock}\0{python}").as_bytes(),
+        ))
+    }
+
+    #[test]
+    fn package_manager_runtime_is_rekeyed_only_when_the_formula_matches() {
+        let dir = TempDir::new();
+        let stage = &dir.0;
+        let pm = stage.join("hermes-agent/pm");
+        std::fs::create_dir_all(&pm).unwrap();
+        std::fs::write(pm.join("pyproject.toml"), "[project]\n").unwrap();
+        std::fs::write(pm.join("uv.lock"), "version = 1\n").unwrap();
+        let runtime = stage.join("installs/0123456789abcdef/pm-runtime");
+        let generation = runtime.join("generations/abc");
+        std::fs::create_dir_all(&generation).unwrap();
+        let m = manifest();
+        let old = runtime_identity(
+            "[project]\n",
+            "version = 1\n",
+            "/Users/runner/.hermes/tools/python-3.14.9/bin/python3",
+        );
+        let selected = serde_json::json!({"generation": "generations/abc", "inputs": old});
+        std::fs::write(runtime.join("selected.json"), selected.to_string()).unwrap();
+        std::fs::write(
+            generation.join("pm-runtime.json"),
+            serde_json::json!({ "inputs": old }).to_string(),
+        )
+        .unwrap();
+
+        rekey_pm_runtime(stage, &m, "/Users/alice/.hermes", false).unwrap();
+        let new = runtime_identity(
+            "[project]\n",
+            "version = 1\n",
+            "/Users/alice/.hermes/tools/python-3.14.9/bin/python3",
+        );
+        let read = |path: PathBuf| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        assert_eq!(read(runtime.join("selected.json"))["inputs"], new);
+        assert_eq!(
+            read(runtime.join("selected.json"))["generation"],
+            "generations/abc"
+        );
+        assert_eq!(read(generation.join("pm-runtime.json"))["inputs"], new);
+
+        // A record this formula does not reproduce is left for upstream to rebuild.
+        let foreign =
+            serde_json::json!({"generation": "generations/abc", "inputs": "f".repeat(64)});
+        std::fs::write(runtime.join("selected.json"), foreign.to_string()).unwrap();
+        rekey_pm_runtime(stage, &m, "/Users/bob/.hermes", false).unwrap();
+        assert_eq!(
+            read(runtime.join("selected.json"))["inputs"],
+            "f".repeat(64)
+        );
     }
 
     #[test]
