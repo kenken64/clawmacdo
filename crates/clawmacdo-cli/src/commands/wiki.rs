@@ -985,10 +985,10 @@ if ! command -v claude >/dev/null 2>&1; then
   echo "Claude Code binary not found in PATH." >"$LOG_FILE"
   STATUS=127
 elif command -v timeout >/dev/null 2>&1; then
-  timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text </dev/null >"$LOG_FILE" 2>&1
   STATUS=$?
 else
-  claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text </dev/null >"$LOG_FILE" 2>&1
   STATUS=$?
 fi
 set -e
@@ -1774,6 +1774,7 @@ mod tests {
         .unwrap();
         assert!(cmd.contains("raw', 'sources"));
         assert!(cmd.contains("claude -p"));
+        assert_eq!(cmd.matches("--output-format text </dev/null").count(), 2);
         assert!(cmd.contains("changed_files"));
         assert!(cmd.contains("source_files"));
         assert!(cmd.contains(".clawmacdo-ingest-summary.md"));

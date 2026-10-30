@@ -538,9 +538,9 @@ if [ "$JSON_OUTPUT" != "true" ]; then
 fi
 set +e
 if command -v timeout >/dev/null 2>&1; then
-  timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  timeout __TIMEOUT__s claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text </dev/null >"$LOG_FILE" 2>&1
 else
-  claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text >"$LOG_FILE" 2>&1
+  claude -p "$(cat "$PROMPT_FILE")" --dangerously-skip-permissions --output-format text </dev/null >"$LOG_FILE" 2>&1
 fi
 STATUS=$?
 set -e
@@ -754,6 +754,7 @@ mod tests {
         assert!(cmd.contains("my-project"));
         assert!(cmd.contains("INDEX.md"));
         assert!(cmd.contains("claude -p"));
+        assert_eq!(cmd.matches("--output-format text </dev/null").count(), 2);
         assert!(cmd.contains("Add project constraints."));
     }
 
